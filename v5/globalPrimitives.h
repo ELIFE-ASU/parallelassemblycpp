@@ -17,7 +17,7 @@ string moleculeName;
 standardBitset allEdges;
 volatile bool interruptFlag = false;
 clock_t startTime = 0;
-unsigned long long runTimeMax = 18446744073709551615;
+unsigned long long runTimeMax = 18446744073709551615ULL;
 
 typedef triple<int, int, int> iii;
 typedef triple<short, short, short> edgeL;

@@ -39,30 +39,29 @@ To confirm that the executable was built successfully:
 
 ## Tests
 
-The test runner can compile the executable and run a quick regression sample in
-one command. Each molecule runs in an isolated temporary directory, so test
-artifacts do not modify `unitTests/`:
-
-```bash
-python unitTests/unitTester.py --build --limit 20 --timeout 120
-```
-
-Run the complete 944-case battery with:
-
-```bash
-python unitTests/unitTester.py --build
-```
-
-Independent cases can run concurrently. Choose a worker count suitable for the
-available CPU and memory:
+The test runner compiles the executable and runs the complete regression
+manifest in one command. Each case runs in an isolated temporary directory, so
+test artifacts do not modify `unitTests/`:
 
 ```bash
 python unitTests/unitTester.py --build --jobs 4
 ```
 
-Use `python unitTests/unitTester.py --help` to see all options. The original
-three positional arguments—executable, molecule list, and expected-results
-file—remain supported.
+For a quicker development check, limit the number of cases:
 
-GitHub Actions runs the quick regression sample for every push and pull request.
-The complete battery can also be started manually from the Actions tab.
+```bash
+python unitTests/unitTester.py --build --limit 20
+```
+
+Audit the manifest for duplicate cases, missing fixtures, conflicting
+expectations, and fixture coverage with:
+
+```bash
+python unitTests/unitTester.py --audit
+```
+
+Use `python unitTests/unitTester.py --help` to see all options, including custom
+manifests, per-case timeouts, and verbose output.
+
+GitHub Actions audits the test data and runs the complete regression manifest
+for every push and pull request.

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Build AssemblyCpp and run its molecule regression batteries."""
+"""Build AssemblyCpp and run its regression manifest."""
 
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import os
 import re
 import shlex
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,13 +24,13 @@ from pathlib import Path
 TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
 DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "AssemblyCpp"
-DEFAULT_MOLECULES = TEST_DIRECTORY / "batteryTest2"
-DEFAULT_EXPECTED = TEST_DIRECTORY / "batteryTest2Base"
+DEFAULT_MANIFEST = TEST_DIRECTORY / "regression_cases.tsv"
+MANIFEST_HEADER = ("molecule", "expected_assembly_index")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 
 
 class TestConfigurationError(RuntimeError):
-    """Raised when a test input or build setting is invalid."""
+    """Raised when the manifest, a fixture, or a build setting is invalid."""
 
 
 @dataclass(frozen=True)
@@ -67,14 +70,7 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def read_nonempty_lines(path: Path) -> list[str]:
-    try:
-        return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    except OSError as error:
-        raise TestConfigurationError(f"cannot read {path}: {error}") from error
-
-
-def resolve_data_file(path: Path) -> Path:
+def resolve_test_path(path: Path) -> Path:
     if path.is_absolute() or path.exists():
         return path.resolve()
 
@@ -85,9 +81,9 @@ def resolve_data_file(path: Path) -> Path:
     return path.resolve()
 
 
-def resolve_molecule(name: str, data_directory: Path) -> Path:
+def resolve_fixture(name: str, fixture_directory: Path) -> Path:
     requested = Path(name)
-    candidate = requested if requested.is_absolute() else data_directory / requested
+    candidate = requested if requested.is_absolute() else fixture_directory / requested
 
     if candidate.is_file():
         return candidate.resolve()
@@ -97,48 +93,106 @@ def resolve_molecule(name: str, data_directory: Path) -> Path:
         return mol_candidate.resolve()
 
     raise TestConfigurationError(
-        f"molecule {name!r} was not found as {candidate} or {mol_candidate}"
+        f"fixture {name!r} was not found as {candidate} or {mol_candidate}"
     )
 
 
-def load_test_cases(
-    molecule_list: Path, expected_results: Path, limit: int | None
-) -> list[TestCase]:
-    molecule_list = resolve_data_file(molecule_list)
-    expected_results = resolve_data_file(expected_results)
-    molecule_names = read_nonempty_lines(molecule_list)
-    if not molecule_names:
-        raise TestConfigurationError(f"molecule list is empty: {molecule_list}")
+def load_manifest(path: Path) -> tuple[Path, list[TestCase]]:
+    manifest = resolve_test_path(path)
+    seen: dict[str, int] = {}
+    cases: list[TestCase] = []
 
-    expected_values: list[int] = []
-    for line_number, value in enumerate(
-        read_nonempty_lines(expected_results), start=1
-    ):
-        try:
-            expected_values.append(int(value))
-        except ValueError as error:
-            raise TestConfigurationError(
-                f"invalid assembly index in {expected_results}:{line_number}: {value!r}"
-            ) from error
+    try:
+        with manifest.open(newline="", encoding="utf-8") as stream:
+            reader = csv.reader(stream, delimiter="\t")
+            header = tuple(next(reader, ()))
+            if header != MANIFEST_HEADER:
+                raise TestConfigurationError(
+                    f"invalid header in {manifest}: expected {MANIFEST_HEADER}, got {header}"
+                )
 
-    if len(molecule_names) != len(expected_values):
-        raise TestConfigurationError(
-            "molecule and expected-result files have different lengths: "
-            f"{len(molecule_names)} != {len(expected_values)}"
-        )
+            for row in reader:
+                line_number = reader.line_num
+                if not row or all(not value.strip() for value in row):
+                    continue
+                if len(row) != 2:
+                    raise TestConfigurationError(
+                        f"invalid row in {manifest}:{line_number}: expected 2 columns"
+                    )
 
-    selected = zip(molecule_names, expected_values)
-    if limit is not None:
-        selected = list(selected)[:limit]
+                name, expected_text = (value.strip() for value in row)
+                if not name:
+                    raise TestConfigurationError(
+                        f"empty fixture name in {manifest}:{line_number}"
+                    )
+                if name in seen:
+                    raise TestConfigurationError(
+                        f"duplicate fixture {name!r} in {manifest}:{line_number}; "
+                        f"first declared on line {seen[name]}"
+                    )
 
-    return [
-        TestCase(
-            name=name,
-            source=resolve_molecule(name, molecule_list.parent),
-            expected=expected,
-        )
-        for name, expected in selected
+                try:
+                    expected = int(expected_text)
+                except ValueError as error:
+                    raise TestConfigurationError(
+                        f"invalid assembly index in {manifest}:{line_number}: "
+                        f"{expected_text!r}"
+                    ) from error
+
+                seen[name] = line_number
+                cases.append(
+                    TestCase(
+                        name=name,
+                        source=resolve_fixture(name, manifest.parent),
+                        expected=expected,
+                    )
+                )
+    except OSError as error:
+        raise TestConfigurationError(f"cannot read {manifest}: {error}") from error
+
+    if not cases:
+        raise TestConfigurationError(f"manifest contains no test cases: {manifest}")
+
+    return manifest, cases
+
+
+def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) -> None:
+    fixture_directory = manifest.parent
+    mol_fixtures = {path.resolve() for path in fixture_directory.glob("*.mol")}
+    referenced_mol = {
+        case.source for case in cases if case.source.suffix.lower() == ".mol"
+    }
+    fixture_only = sorted(mol_fixtures - referenced_mol)
+
+    cases_by_hash: dict[str, list[TestCase]] = defaultdict(list)
+    for case in cases:
+        digest = hashlib.sha256(case.source.read_bytes()).hexdigest()
+        cases_by_hash[digest].append(case)
+
+    shared_content = [group for group in cases_by_hash.values() if len(group) > 1]
+    conflicting_content = [
+        group for group in shared_content if len({case.expected for case in group}) > 1
     ]
+    if conflicting_content:
+        details = "; ".join(
+            ", ".join(f"{case.name}={case.expected}" for case in group)
+            for group in conflicting_content
+        )
+        raise TestConfigurationError(
+            f"byte-identical fixtures have conflicting expectations: {details}"
+        )
+
+    graph_cases = sum(case.source.suffix.lower() != ".mol" for case in cases)
+    print(f"Manifest: {manifest}")
+    print(f"Regression cases: {len(cases)} ({len(cases) - graph_cases} mol, {graph_cases} graph)")
+    print(f"Molecule fixtures: {len(mol_fixtures)}")
+    print(f"Fixture-only molecules: {len(fixture_only)}")
+    print(f"Shared-content case groups: {len(shared_content)} (consistent expectations)")
+
+    if verbose and fixture_only:
+        print("Fixture-only molecule names:")
+        for path in fixture_only:
+            print(f"  {path.stem}")
 
 
 def resolve_executable(path: Path) -> Path:
@@ -170,12 +224,11 @@ def build_executable(executable: Path, compiler: str) -> Path:
         "-std=c++23",
         "-O3",
     ]
-
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
         command.append(f"-I{Path(conda_prefix) / 'include'}")
-
     command.extend(["-o", str(executable)])
+
     print(f"Building: {shlex.join(command)}", flush=True)
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
@@ -206,11 +259,11 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
             working_directory = Path(directory)
             copied_input = working_directory / case.source.name
             shutil.copy2(case.source, copied_input)
-
-            if copied_input.suffix.lower() == ".mol":
-                input_argument = copied_input.with_suffix("")
-            else:
-                input_argument = copied_input
+            input_argument = (
+                copied_input.with_suffix("")
+                if copied_input.suffix.lower() == ".mol"
+                else copied_input
+            )
 
             completed = subprocess.run(
                 [str(executable), str(input_argument), "-pathway=0"],
@@ -230,7 +283,6 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
                     duration_seconds=duration,
                     error=format_process_diagnostics(completed),
                 )
-
             if not output_path.is_file():
                 diagnostics = format_process_diagnostics(completed)
                 suffix = f"; {diagnostics}" if diagnostics else ""
@@ -248,7 +300,7 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
                     case=case,
                     actual=None,
                     duration_seconds=duration,
-                    error=f"assembly index was not found in {output_path.name}: {output.strip()}",
+                    error=f"assembly index was not found in {output_path.name}",
                 )
 
             return TestResult(
@@ -293,8 +345,7 @@ def run_test_cases(
 
     with ThreadPoolExecutor(max_workers=jobs) as executor:
         for result in executor.map(
-            lambda case: run_test_case(executable, case, timeout),
-            cases,
+            lambda case: run_test_case(executable, case, timeout), cases
         ):
             record(result)
 
@@ -314,11 +365,10 @@ def print_result(result: TestResult) -> None:
     actual = "-" if result.actual is None else str(result.actual)
     print(
         f"{result.case.name:<32.32} {result.case.expected:>8} "
-        f"{actual:>8} {result.duration_seconds:>10.3f}  {result.status}",
-        flush=True,
+        f"{actual:>8} {result.duration_seconds:>10.3f}  {result.status}"
     )
     if result.error:
-        print(f"  {result.error}", flush=True)
+        print(f"  {result.error}")
 
 
 def print_summary(results: Sequence[TestResult]) -> None:
@@ -327,23 +377,15 @@ def print_summary(results: Sequence[TestResult]) -> None:
     errors = sum(result.status == "ERROR" for result in results)
     duration = sum(result.duration_seconds for result in results)
 
-    print()
     print(
         f"Summary: {passed} passed, {failed} failed, {errors} errors, "
         f"{len(results)} total ({duration:.3f}s cumulative)"
     )
 
 
-def print_results(results: Sequence[TestResult]) -> None:
-    print_result_header()
-    for result in results:
-        print_result(result)
-    print_summary(results)
-
-
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build AssemblyCpp and run a molecule regression battery."
+        description="Build AssemblyCpp and run its regression manifest."
     )
     parser.add_argument(
         "executable",
@@ -353,18 +395,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help=f"AssemblyCpp executable (default: {DEFAULT_EXECUTABLE})",
     )
     parser.add_argument(
-        "molecule_list",
-        nargs="?",
+        "--manifest",
         type=Path,
-        default=DEFAULT_MOLECULES,
-        help=f"molecule list (default: {DEFAULT_MOLECULES.name})",
+        default=DEFAULT_MANIFEST,
+        help=f"tab-separated regression manifest (default: {DEFAULT_MANIFEST.name})",
     )
     parser.add_argument(
-        "expected_results",
-        nargs="?",
-        type=Path,
-        default=DEFAULT_EXPECTED,
-        help=f"expected assembly indices (default: {DEFAULT_EXPECTED.name})",
+        "--audit",
+        action="store_true",
+        help="validate the manifest and report fixture coverage without running tests",
     )
     parser.add_argument(
         "--build",
@@ -390,8 +429,14 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout",
         type=positive_float,
-        default=3600.0,
-        help="per-case timeout in seconds (default: 3600)",
+        default=300.0,
+        help="per-case timeout in seconds (default: 300)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="print every passing test or list fixture-only molecules during an audit",
     )
     return parser
 
@@ -400,15 +445,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = create_argument_parser().parse_args(argv)
 
     try:
+        manifest, all_cases = load_manifest(arguments.manifest)
+        if arguments.audit:
+            audit_test_data(manifest, all_cases, arguments.verbose)
+            return 0
+
+        cases = all_cases[: arguments.limit]
         executable_path = arguments.executable
         if arguments.build:
             executable_path = build_executable(executable_path, arguments.compiler)
         executable = resolve_executable(executable_path)
-        cases = load_test_cases(
-            arguments.molecule_list,
-            arguments.expected_results,
-            arguments.limit,
-        )
     except TestConfigurationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -418,16 +464,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"timeout={arguments.timeout:g}s",
         flush=True,
     )
-    print_result_header()
+    if arguments.verbose:
+        print_result_header()
     results = run_test_cases(
         executable=executable,
         cases=cases,
         timeout=arguments.timeout,
         jobs=arguments.jobs,
-        on_result=print_result,
+        on_result=print_result if arguments.verbose else None,
     )
+
+    failures = [result for result in results if result.status != "PASS"]
+    if failures and not arguments.verbose:
+        print_result_header()
+        for result in failures:
+            print_result(result)
     print_summary(results)
-    return 0 if all(result.status == "PASS" for result in results) else 1
+    return 0 if not failures else 1
 
 
 if __name__ == "__main__":
