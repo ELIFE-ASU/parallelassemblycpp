@@ -9,3 +9,6 @@ THC	expected_pathways/THC.json
 ceftiofur	expected_pathways/ceftiofur.json
 folic_acid	expected_pathways/folic_acid.json
 dienogest	expected_pathways/dienogest.json
+methionine	expected_pathways/methionine.json
+thioflavin	expected_pathways/thioflavin.json
+8808	expected_pathways/8808.json
