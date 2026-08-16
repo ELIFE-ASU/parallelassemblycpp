@@ -18,9 +18,14 @@ Conda distribution, then run the following commands from the repository root:
 conda env create --file environment.yml
 conda activate assemblycpp-v5
 mkdir -p build
-c++ v5/main.cpp -std=c++23 -O3 \
+c++ v5/main.cpp -std=c++23 -O3 -mpopcnt -march=x86-64-v3 \
   -I"${CONDA_PREFIX}/include" -o build/AssemblyCpp
 ```
+
+The generated executable targets x86-64-v3 processors and requires POPCNT
+support. The test and benchmark `--build` commands use the same target. For an
+older x86-64 processor or a non-x86 platform, omit `-mpopcnt` and
+`-march=x86-64-v3` to produce a portable `-O3` build instead.
 
 The environment installs a C++ compiler, Boost (including the Boost Graph Library),
 and Python for the test runner. Activating it places the Conda-provided compiler

@@ -1016,6 +1016,8 @@ def build_executable(executable: Path, compiler: str) -> Path:
         str(REPOSITORY_ROOT / "v5" / "main.cpp"),
         "-std=c++23",
         "-O3",
+        "-mpopcnt",
+        "-march=x86-64-v3",
     ]
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
@@ -1250,7 +1252,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--build",
         action="store_true",
-        help="compile v5/main.cpp before running the tests",
+        help="compile v5/main.cpp for x86-64-v3 before running the tests",
     )
     parser.add_argument(
         "--compiler",
