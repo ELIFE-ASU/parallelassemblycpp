@@ -167,3 +167,29 @@ manifests, per-case timeouts, and verbose output.
 
 GitHub Actions audits the test data and runs the complete regression manifest
 for every push and pull request.
+
+## Benchmark
+
+The benchmark runner performs one warm-up followed by five measured, serial
+calculations of `unitTests/ketoconazole.mol`. It disables pathway generation,
+checks the expected assembly index on every run, and reports wall-clock and
+algorithm clock-tick summaries. Build the optimized executable and run the
+benchmark with:
+
+```bash
+python benchmarks/benchmark.py --build
+```
+
+To reuse an existing build, increase the number of measured runs, or select a
+different input:
+
+```bash
+python benchmarks/benchmark.py --runs 10
+python benchmarks/benchmark.py \
+  --input unitTests/sucrose.mol \
+  --expected 8
+```
+
+Use `python benchmarks/benchmark.py --help` for the remaining options. Run
+comparisons on the same machine and under similar load; the runner intentionally
+does not impose a pass/fail timing threshold.
