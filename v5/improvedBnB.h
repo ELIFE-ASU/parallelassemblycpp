@@ -114,7 +114,8 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
 {
     if (searchShouldStop()) return 0;
     int ordinal = std::numeric_limits<int>::max();
-    if (bitsetHashTable.count(_target.masks.front())) ordinal = bitsetHashTable[_target.masks.front()].first;
+    const auto ordinalEntry = bitsetHashTable.find(_target.masks.front());
+    if (ordinalEntry != bitsetHashTable.end()) ordinal = ordinalEntry->second.first;
     vector<standardBitset> &masks = _target.masks;
     size_t currSize = 1;
     

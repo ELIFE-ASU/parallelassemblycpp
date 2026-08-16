@@ -25,16 +25,21 @@ struct graphHash
         vector<double> dhashes(hashes.size(), 0.0);
         for (size_t i = 0; i < mg.mg.size(); i++)
         {
-            string atype1 = mg.mg[i].type;
-            if (atypeHash.count(atype1) == 0) atypeHash[atype1] = (atypeHash.size() + 1)*5;
-            dhashes[i] = (0.0 + atypeHash[atype1])/ depthFactor;
+            const string &atype1 = mg.mg[i].type;
+            auto atomType = atypeHash.try_emplace(
+                atype1,
+                static_cast<int>((atypeHash.size() + 1) * 5)
+            ).first;
+            dhashes[i] = atomType->second / depthFactor;
             for (size_t j = 0; j < mg.degree(i); j++)
             {
                 short btype = mg.btype(i, j);
-                string atype = mg.atype(mg.elem(i, j));
-                if (atypeHash.count(atype) == 0) atypeHash[atype] = (atypeHash.size() + 1)*5;
-                int atypeInt = atypeHash[atype];
-                dhashes[i] += atypeInt + btype;
+                const string &atype = mg.mg[mg.elem(i, j)].type;
+                auto neighbourType = atypeHash.try_emplace(
+                    atype,
+                    static_cast<int>((atypeHash.size() + 1) * 5)
+                ).first;
+                dhashes[i] += neighbourType->second + btype;
             }
         }
         for (int k = 1; k < depth; k++)
@@ -110,9 +115,9 @@ struct std::hash<graphHash>
             vector<float> sortedHashes = gh.hashes;
             sort(sortedHashes.begin(), sortedHashes.end());
             size_t res = 17;
-            for (size_t i = 0; i < sortedHashes.size(); i++)
+            for (const float value : sortedHashes)
             {
-                int k = int(sortedHashes[i] * 1024);
+                int k = int(value * 1024);
                 res = res * 31 + hash<int>()(k);
             }
             return res;
@@ -135,30 +140,26 @@ std::unordered_map<graphHash, pii> graphHashMap;
  */
 int canonise(standardBitset &mask)
 {
+    const auto cached = bitsetHashTable.find(mask);
+    if (cached != bitsetHashTable.end()) return cached->second.first;
+
     bool isCyclic;
-    vector<edgeL> &edgeList = univEdgeList;
-    size_t x;
-    if (bitsetHashTable.count(mask) == 0)
-    {
-        molGraph mg = constructFromEdgeList(targetMolecule, edgeList, mask, isCyclic);
-        graphHash g(mg, mg.mg.size(), isCyclic, mask);
-        if (graphHashMap.count(g) == 0)
-        {
-            x = graphHashMap.size();
-            graphHashMap[g].first = x;
-            graphHashMap[g].second = 1;
-        }
-        else
-        {
-            x = graphHashMap[g].first;
-            graphHashMap[g].second++;
-        }
-        bitsetHashTable[mask].first = x;
-        bitsetHashTable[mask].second = graphHashMap[g].second;
-    }
-    else
-    {
-        x = bitsetHashTable[mask].first;
-    }
-    return x;
+    molGraph mg = constructFromEdgeList(
+        targetMolecule,
+        univEdgeList,
+        mask,
+        isCyclic
+    );
+    graphHash candidate(mg, mg.mg.size(), isCyclic, mask);
+
+    const int nextCanonicalIndex = static_cast<int>(graphHashMap.size());
+    auto [graphEntry, inserted] = graphHashMap.try_emplace(
+        std::move(candidate),
+        pii{nextCanonicalIndex, 1}
+    );
+    if (!inserted) graphEntry->second.second++;
+
+    const pii canonicalEntry = graphEntry->second;
+    bitsetHashTable.emplace(mask, canonicalEntry);
+    return canonicalEntry.first;
 }

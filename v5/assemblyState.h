@@ -238,7 +238,8 @@ struct assemblyState
         vi sorted(masks.size(), -1);
         for (size_t i = 0; i < masks.size(); i++)
         {
-            if (bitsetHashTable.count(masks[i])) sorted[i] = bitsetHashTable[masks[i]].first;
+            const auto entry = bitsetHashTable.find(masks[i]);
+            if (entry != bitsetHashTable.end()) sorted[i] = entry->second.first;
         }
         sort(sorted.begin() + 1, sorted.end());
         return sorted;
