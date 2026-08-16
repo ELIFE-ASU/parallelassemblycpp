@@ -154,8 +154,7 @@ int main(int argc, char** argv)
     }
     else cout << "no file selected\n";
     
-    #ifdef _WIN32
-    #else
-        maxMemoryUsage("memUsage");
+    #ifdef __linux__
+        if (memTest) maxMemoryUsage("memUsage");
     #endif
 }

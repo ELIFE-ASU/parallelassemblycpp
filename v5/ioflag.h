@@ -82,6 +82,8 @@ void fillFptrTable()
     f = &owDisjointCompensate;
     fptrTable[string("compensateDisjoint")] = f;
     f = &owMemTest;
+    fptrTable[string("memTest")] = f;
+    // Preserve the previously accepted spelling for existing callers.
     fptrTable[string("testMemory")] = f;
     f = &owIntermediateMAs;
     fptrTable[string("writeIntermediateMAs")] = f;
