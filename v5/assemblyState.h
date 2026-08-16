@@ -84,18 +84,14 @@ struct assemblyState
     int maxDupBonds(vi &sizeListMain, int maxFragSize, vi &sizeList)
     {
         const int j = maxFragSize;
-        vi adjustedSizeList(sizeList.size()), adjustedSizeList2(sizeList.size());
-        for (size_t i = 0; i < sizeList.size(); i++)
-        {
-            adjustedSizeList[i] = sizeList[i] - sizeList[i] % j;
-            adjustedSizeList2[i] = sizeListMain[i] - adjustedSizeList[i];
-        }
         int dupBondsTotal = 0;
         for (size_t i = 0; i < sizeList.size(); i++)
         {
-            dupBondsTotal += (adjustedSizeList[i] - adjustedSizeList[i]/j);
-            dupBondsTotal += (adjustedSizeList2[i] - adjustedSizeList2[i]/(j - 1));
-            if (adjustedSizeList2[i] % (j - 1) != 0) dupBondsTotal--;
+            const int adjustedSize = sizeList[i] - sizeList[i] % j;
+            const int remainingSize = sizeListMain[i] - adjustedSize;
+            dupBondsTotal += adjustedSize - adjustedSize / j;
+            dupBondsTotal += remainingSize - remainingSize / (j - 1);
+            if (remainingSize % (j - 1) != 0) dupBondsTotal--;
         }
         dupBondsTotal -= ceilLog2(j);
         return dupBondsTotal;
@@ -125,7 +121,7 @@ struct assemblyState
      */
     void maxDupBonds(vi &fragSizeList, int maxFragSize, vector<vector<standardBitset> > &targetMasks)
     {
-        int dupBonds2 = 0, dupBondsTotal;
+        int dupBonds2 = 0;
         fragSizeList.resize(maxFragSize - 1);
         vector<vi> sizeLists(fragSizeList.size());
         
@@ -144,22 +140,11 @@ struct assemblyState
 
         for (int j = 3; j <= maxFragSize; j++)
         {
-            vi &sizeList = sizeLists[j - 2], &sizeList2 = sizeLists[0];
-            vi adjustedSizeList(sizeList.size()), adjustedSizeList2(sizeList.size());
-            for (size_t i = 0; i < sizeList.size(); i++)
-            {
-                adjustedSizeList[i] = sizeList[i] - sizeList[i] % j;
-                adjustedSizeList2[i] = sizeList2[i] - adjustedSizeList[i];
-            }
-            dupBondsTotal = 0;
-            for (size_t i = 0; i < sizeList.size(); i++)
-            {
-                dupBondsTotal += (adjustedSizeList[i] - adjustedSizeList[i]/j);
-                dupBondsTotal += (adjustedSizeList2[i] - adjustedSizeList2[i]/(j - 1));
-                if (adjustedSizeList2[i] % (j - 1) != 0) dupBondsTotal--;
-            }
-            dupBondsTotal -= ceilLog2(j);
-            fragSizeList[j - 2] = dupBondsTotal;
+            fragSizeList[j - 2] = maxDupBonds(
+                sizeLists[0],
+                j,
+                sizeLists[j - 2]
+            );
         }
     }
 
