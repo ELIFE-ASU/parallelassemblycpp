@@ -1,0 +1,7 @@
+name: assemblycpp-v5
+channels:
+  - conda-forge
+dependencies:
+  - boost-cpp>=1.80
+  - cxx-compiler
+  - python>=3.10

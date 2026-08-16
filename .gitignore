@@ -1,0 +1,6 @@
+CMakeLists.txt
+/unitTests/*Pathway
+/unitTests/*Out
+/.vscode
+/build
+/unitTests/*MAs
