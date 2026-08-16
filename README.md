@@ -41,7 +41,8 @@ To confirm that the executable was built successfully:
 
 The test runner compiles the executable and runs the complete regression
 manifest in one command. Each case runs in an isolated temporary directory, so
-test artifacts do not modify `unitTests/`:
+test artifacts do not modify `unitTests/`. Selected cases also compare generated
+pathways with reviewed JSON golden files:
 
 ```bash
 python unitTests/unitTester.py --build --jobs 4

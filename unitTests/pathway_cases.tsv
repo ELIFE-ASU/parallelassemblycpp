@@ -1,0 +1,4 @@
+molecule	expected_pathway
+113	expected_pathways/113.json
+tryptophan	expected_pathways/tryptophan.json
+graphio_test	expected_pathways/graphio_test.json

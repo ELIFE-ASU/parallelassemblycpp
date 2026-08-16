@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -25,7 +27,10 @@ TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
 DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "AssemblyCpp"
 DEFAULT_MANIFEST = TEST_DIRECTORY / "regression_cases.tsv"
+DEFAULT_PATHWAY_MANIFEST = TEST_DIRECTORY / "pathway_cases.tsv"
 MANIFEST_HEADER = ("molecule", "expected_assembly_index")
+PATHWAY_MANIFEST_HEADER = ("molecule", "expected_pathway")
+PATHWAY_KEYS = {"file_graph", "remnant", "duplicates", "removed_edges"}
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 
 
@@ -38,6 +43,7 @@ class TestCase:
     name: str
     source: Path
     expected: int
+    expected_pathway: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -45,15 +51,16 @@ class TestResult:
     case: TestCase
     actual: int | None
     duration_seconds: float
+    failure: str | None = None
     error: str | None = None
 
     @property
     def status(self) -> str:
         if self.error is not None:
             return "ERROR"
-        if self.actual == self.case.expected:
-            return "PASS"
-        return "FAIL"
+        if self.failure is not None or self.actual != self.case.expected:
+            return "FAIL"
+        return "PASS"
 
 
 def positive_int(value: str) -> int:
@@ -156,6 +163,90 @@ def load_manifest(path: Path) -> tuple[Path, list[TestCase]]:
     return manifest, cases
 
 
+def parse_pathway_document(path: Path) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"cannot read {path}: {error}") from error
+    except json.JSONDecodeError as error:
+        raise ValueError(f"invalid JSON in {path}: {error}") from error
+
+    if not isinstance(document, dict):
+        raise ValueError(f"pathway document must be a JSON object: {path}")
+    if set(document) != PATHWAY_KEYS:
+        raise ValueError(
+            f"invalid pathway keys in {path}: expected {sorted(PATHWAY_KEYS)}, "
+            f"got {sorted(document)}"
+        )
+    for key in PATHWAY_KEYS:
+        if not isinstance(document[key], list):
+            raise ValueError(f"pathway field {key!r} must be an array in {path}")
+
+    return document
+
+
+def load_pathway_manifest(
+    path: Path, cases: Sequence[TestCase]
+) -> tuple[Path, list[TestCase]]:
+    manifest = resolve_test_path(path)
+    case_names = {case.name for case in cases}
+    pathways: dict[str, Path] = {}
+
+    try:
+        with manifest.open(newline="", encoding="utf-8") as stream:
+            reader = csv.reader(stream, delimiter="\t")
+            header = tuple(next(reader, ()))
+            if header != PATHWAY_MANIFEST_HEADER:
+                raise TestConfigurationError(
+                    f"invalid header in {manifest}: expected "
+                    f"{PATHWAY_MANIFEST_HEADER}, got {header}"
+                )
+
+            for row in reader:
+                line_number = reader.line_num
+                if not row or all(not value.strip() for value in row):
+                    continue
+                if len(row) != 2:
+                    raise TestConfigurationError(
+                        f"invalid row in {manifest}:{line_number}: expected 2 columns"
+                    )
+
+                name, relative_path = (value.strip() for value in row)
+                if name in pathways:
+                    raise TestConfigurationError(
+                        f"duplicate pathway case {name!r} in "
+                        f"{manifest}:{line_number}"
+                    )
+                if name not in case_names:
+                    raise TestConfigurationError(
+                        f"pathway case {name!r} is not in the regression manifest"
+                    )
+
+                expected_pathway = (manifest.parent / relative_path).resolve()
+                try:
+                    parse_pathway_document(expected_pathway)
+                except ValueError as error:
+                    raise TestConfigurationError(str(error)) from error
+                pathways[name] = expected_pathway
+    except OSError as error:
+        raise TestConfigurationError(f"cannot read {manifest}: {error}") from error
+
+    if not pathways:
+        raise TestConfigurationError(
+            f"pathway manifest contains no test cases: {manifest}"
+        )
+
+    return manifest, [
+        TestCase(
+            name=case.name,
+            source=case.source,
+            expected=case.expected,
+            expected_pathway=pathways.get(case.name),
+        )
+        for case in cases
+    ]
+
+
 def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) -> None:
     fixture_directory = manifest.parent
     mol_fixtures = {path.resolve() for path in fixture_directory.glob("*.mol")}
@@ -188,6 +279,7 @@ def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) ->
     print(f"Molecule fixtures: {len(mol_fixtures)}")
     print(f"Fixture-only molecules: {len(fixture_only)}")
     print(f"Shared-content case groups: {len(shared_content)} (consistent expectations)")
+    print(f"Pathway golden cases: {sum(case.expected_pathway is not None for case in cases)}")
 
     if verbose and fixture_only:
         print("Fixture-only molecule names:")
@@ -250,6 +342,32 @@ def format_process_diagnostics(completed: subprocess.CompletedProcess[str]) -> s
     return "; ".join(diagnostics)
 
 
+def compare_pathway_output(actual_path: Path, expected_path: Path) -> str | None:
+    if not actual_path.is_file():
+        return f"expected pathway output was not created: {actual_path}"
+
+    try:
+        actual = parse_pathway_document(actual_path)
+    except ValueError as error:
+        return str(error)
+    expected = parse_pathway_document(expected_path)
+    if actual == expected:
+        return None
+
+    expected_lines = json.dumps(expected, indent=2, sort_keys=True).splitlines()
+    actual_lines = json.dumps(actual, indent=2, sort_keys=True).splitlines()
+    difference = "\n".join(
+        difflib.unified_diff(
+            expected_lines,
+            actual_lines,
+            fromfile=str(expected_path),
+            tofile=actual_path.name,
+            lineterm="",
+        )
+    )
+    return f"pathway output differs from its golden file:\n{difference}"
+
+
 def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResult:
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", Path(case.name).name)
     started = time.perf_counter()
@@ -266,7 +384,11 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
             )
 
             completed = subprocess.run(
-                [str(executable), str(input_argument), "-pathway=0"],
+                [
+                    str(executable),
+                    str(input_argument),
+                    f"-pathway={int(case.expected_pathway is not None)}",
+                ],
                 cwd=working_directory,
                 capture_output=True,
                 text=True,
@@ -303,10 +425,18 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
                     error=f"assembly index was not found in {output_path.name}",
                 )
 
+            actual_index = int(match.group(1))
+            pathway_failure = None
+            if case.expected_pathway is not None:
+                pathway_failure = compare_pathway_output(
+                    Path(f"{input_argument}Pathway"), case.expected_pathway
+                )
+
             return TestResult(
                 case=case,
-                actual=int(match.group(1)),
+                actual=actual_index,
                 duration_seconds=duration,
+                failure=pathway_failure,
             )
     except subprocess.TimeoutExpired:
         return TestResult(
@@ -369,6 +499,8 @@ def print_result(result: TestResult) -> None:
     )
     if result.error:
         print(f"  {result.error}")
+    if result.failure:
+        print(f"  {result.failure}")
 
 
 def print_summary(results: Sequence[TestResult]) -> None:
@@ -401,6 +533,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help=f"tab-separated regression manifest (default: {DEFAULT_MANIFEST.name})",
     )
     parser.add_argument(
+        "--pathway-manifest",
+        type=Path,
+        default=DEFAULT_PATHWAY_MANIFEST,
+        help=(
+            "tab-separated pathway golden manifest "
+            f"(default: {DEFAULT_PATHWAY_MANIFEST.name})"
+        ),
+    )
+    parser.add_argument(
         "--audit",
         action="store_true",
         help="validate the manifest and report fixture coverage without running tests",
@@ -427,6 +568,11 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help="run only the first N cases",
     )
     parser.add_argument(
+        "--pathways-only",
+        action="store_true",
+        help="run only cases with expected pathway golden files",
+    )
+    parser.add_argument(
         "--timeout",
         type=positive_float,
         default=300.0,
@@ -446,11 +592,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         manifest, all_cases = load_manifest(arguments.manifest)
+        _, all_cases = load_pathway_manifest(
+            arguments.pathway_manifest, all_cases
+        )
         if arguments.audit:
             audit_test_data(manifest, all_cases, arguments.verbose)
             return 0
 
-        cases = all_cases[: arguments.limit]
+        cases = (
+            [case for case in all_cases if case.expected_pathway is not None]
+            if arguments.pathways_only
+            else all_cases
+        )
+        cases = cases[: arguments.limit]
         executable_path = arguments.executable
         if arguments.build:
             executable_path = build_executable(executable_path, arguments.compiler)
