@@ -300,6 +300,368 @@ def resolve_executable(path: Path) -> Path:
     )
 
 
+def run_cli_command(
+    executable: Path, arguments: Sequence[str], working_directory: Path
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            [str(executable), *arguments],
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TestConfigurationError(
+            f"CLI check timed out after {error.timeout:g} seconds: "
+            f"{shlex.join([str(executable), *arguments])}"
+        ) from error
+    except OSError as error:
+        raise TestConfigurationError(f"cannot run CLI check: {error}") from error
+
+
+def require_cli(
+    condition: bool,
+    message: str,
+    completed: subprocess.CompletedProcess[str] | None = None,
+) -> None:
+    if condition:
+        return
+
+    diagnostics = ""
+    if completed is not None:
+        diagnostics = format_process_diagnostics(completed)
+    suffix = f"; {diagnostics}" if diagnostics else ""
+    raise TestConfigurationError(f"CLI check failed: {message}{suffix}")
+
+
+def run_cli_checks(executable: Path) -> int:
+    """Exercise help, validation, aliases, input handling, and output flags."""
+    scenarios = 0
+    help_tokens = (
+        "Usage:",
+        "--runtime=<TICKS>",
+        "--enum-max=<COUNT>",
+        "--pathway=<0|1>",
+        "--remove-hydrogens=<0|1>",
+        "--compensate-disjoint=<0|1>",
+        "--memory-report=<0|1>",
+        "--write-intermediate-mas=<0|1>",
+        "Outputs:",
+        "Compatibility:",
+    )
+
+    with tempfile.TemporaryDirectory(prefix="assemblycpp-cli-") as directory:
+        working_directory = Path(directory)
+
+        for help_option in ("--help", "-h"):
+            completed = run_cli_command(
+                executable, [help_option], working_directory
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"{help_option} should exit successfully",
+                completed,
+            )
+            missing_tokens = [
+                token for token in help_tokens if token not in completed.stdout
+            ]
+            require_cli(
+                not missing_tokens,
+                f"{help_option} output is missing {missing_tokens}",
+                completed,
+            )
+            require_cli(
+                "pathwayFolder" not in completed.stdout,
+                f"{help_option} still documents the removed pathwayFolder option",
+                completed,
+            )
+            scenarios += 1
+
+        completed = run_cli_command(executable, [], working_directory)
+        require_cli(
+            completed.returncode == 2,
+            "a missing INPUT should be a command-line error",
+            completed,
+        )
+        require_cli(
+            "missing required INPUT" in completed.stderr,
+            "the missing-input error should explain what is required",
+            completed,
+        )
+        scenarios += 1
+
+        completed = run_cli_command(
+            executable, ["missing-input-file"], working_directory
+        )
+        require_cli(
+            completed.returncode == 1,
+            "a missing input file should fail the calculation",
+            completed,
+        )
+        require_cli(
+            "input file not found" in completed.stderr,
+            "a missing input file should produce a clear error",
+            completed,
+        )
+        scenarios += 1
+
+        compatibility_options = (
+            "-runtime=1000000000",
+            "--runTime=1000000000",
+            "-runTime=1000000000",
+            "-enumMax=1000000",
+            "-removeHydrogens=0",
+            "-compensateDisjoint=0",
+            "-disjointCompensation=0",
+            "-memTest=0",
+            "-testMemory=0",
+            "-writeIntermediateMAs=0",
+        )
+        for option in compatibility_options:
+            completed = run_cli_command(
+                executable, ["--help", option], working_directory
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"compatibility option {option!r} should remain accepted",
+                completed,
+            )
+            scenarios += 1
+
+        invalid_cases = (
+            (["input", "--does-not-exist=1"], "unknown option"),
+            (["input", "--pathway"], "requires"),
+            (["input", "--pathway="], "expects 0 or 1"),
+            (["input", "--pathway=2"], "expects 0 or 1"),
+            (["input", "--remove-hydrogens=yes"], "expects 0 or 1"),
+            (["input", "--enum-max=0"], "expects a value from 1"),
+            (["input", "--enum-max=12junk"], "non-negative whole number"),
+            (["input", "--runtime=-1"], "non-negative whole number"),
+            (["input", f"--runtime={'9' * 100}"], "non-negative whole number"),
+            (
+                ["input", "--pathway=0", "--pathway=1"],
+                "specified more than once",
+            ),
+            (["first-input", "second-input"], "expected one INPUT"),
+        )
+        for arguments, error_text in invalid_cases:
+            completed = run_cli_command(executable, arguments, working_directory)
+            require_cli(
+                completed.returncode == 2,
+                f"invalid arguments {arguments!r} should be rejected",
+                completed,
+            )
+            require_cli(
+                error_text in completed.stderr,
+                f"invalid arguments {arguments!r} should report {error_text!r}",
+                completed,
+            )
+            scenarios += 1
+
+        source = TEST_DIRECTORY / "butane.mol"
+        input_path = working_directory / "input.mol"
+        shutil.copy2(source, input_path)
+        completed = run_cli_command(
+            executable,
+            [
+                "--runtime=1000000000",
+                "--enum-max=1000000",
+                "--pathway=0",
+                "--remove-hydrogens=0",
+                "--compensate-disjoint=1",
+                "--memory-report=0",
+                "--write-intermediate-mas=1",
+                input_path.name,
+            ],
+            working_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "canonical options before a .mol input should run successfully",
+            completed,
+        )
+        require_cli(
+            (working_directory / "inputOut").is_file(),
+            "a .mol input should create output without .mol in the output name",
+            completed,
+        )
+        require_cli(
+            (working_directory / "inputIntermediateMAs").is_file(),
+            "--write-intermediate-mas=1 should create its output",
+            completed,
+        )
+        require_cli(
+            not (working_directory / "inputPathway").exists(),
+            "--pathway=0 should suppress pathway output",
+            completed,
+        )
+        require_cli(
+            not (working_directory / "memUsage").exists(),
+            "--memory-report=0 should suppress memory output",
+            completed,
+        )
+        scenarios += 1
+
+        dash_input = working_directory / "-dash-input.mol"
+        shutil.copy2(source, dash_input)
+        completed = run_cli_command(
+            executable,
+            ["--pathway=0", "--", dash_input.name],
+            working_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "-- should allow an input name beginning with a dash",
+            completed,
+        )
+        require_cli(
+            (working_directory / "-dash-inputOut").is_file(),
+            "the dash-prefixed input should create the expected output",
+            completed,
+        )
+        scenarios += 1
+
+        disconnected_graph = "\n".join(
+            (
+                "disconnected",
+                "4",
+                "1 2 3 4",
+                "C C C C",
+                "1 1",
+                "",
+            )
+        )
+        compensation_cases = (
+            (
+                "canonical-off",
+                "--compensate-disjoint=0",
+                "--write-intermediate-mas=1",
+                1,
+            ),
+            (
+                "canonical-on",
+                "--compensate-disjoint=1",
+                "--write-intermediate-mas=1",
+                0,
+            ),
+            (
+                "legacy-parser",
+                "-compensateDisjoint=1",
+                "-writeIntermediateMAs=1",
+                0,
+            ),
+            (
+                "legacy-docs",
+                "-disjointCompensation=1",
+                "--write-intermediate-mas=1",
+                0,
+            ),
+        )
+        for (
+            name,
+            compensation_option,
+            intermediate_option,
+            expected_index,
+        ) in compensation_cases:
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            (case_directory / "input").write_text(disconnected_graph)
+            completed = run_cli_command(
+                executable,
+                [
+                    "input",
+                    "-pathway=0",
+                    compensation_option,
+                    intermediate_option,
+                ],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"disjoint-compensation scenario {name!r} should succeed",
+                completed,
+            )
+
+            output_path = case_directory / "inputOut"
+            intermediate_path = case_directory / "inputIntermediateMAs"
+            require_cli(
+                output_path.is_file() and intermediate_path.is_file(),
+                f"disjoint-compensation scenario {name!r} omitted an output file",
+                completed,
+            )
+            output_match = ASSEMBLY_INDEX_PATTERN.search(output_path.read_text())
+            require_cli(
+                output_match is not None and int(output_match.group(1)) == expected_index,
+                f"disjoint-compensation scenario {name!r} returned the wrong final index",
+                completed,
+            )
+            intermediate_rows = [
+                line.split()
+                for line in intermediate_path.read_text().splitlines()
+                if line.strip()
+            ]
+            last_intermediate = None
+            if (
+                intermediate_rows
+                and len(intermediate_rows[-1]) == 2
+                and intermediate_rows[-1][1].lstrip("-").isdigit()
+            ):
+                last_intermediate = int(intermediate_rows[-1][1])
+            require_cli(
+                last_intermediate == expected_index,
+                f"disjoint-compensation scenario {name!r} returned the wrong intermediate index",
+                completed,
+            )
+            require_cli(
+                not (case_directory / "inputPathway").exists(),
+                "legacy -pathway=0 should suppress pathway output",
+                completed,
+            )
+            scenarios += 1
+
+    for memory_option, expected_on_linux in (
+        (None, False),
+        ("--memory-report=0", False),
+        ("--memory-report=1", True),
+        ("-memTest=1", True),
+        ("-testMemory=1", True),
+    ):
+        with tempfile.TemporaryDirectory(
+            prefix="assemblycpp-memory-"
+        ) as directory:
+            working_directory = Path(directory)
+            shutil.copy2(TEST_DIRECTORY / "butane.mol", working_directory / "input.mol")
+            arguments = ["input.mol", "--pathway=0"]
+            if memory_option is not None:
+                arguments.append(memory_option)
+            completed = run_cli_command(executable, arguments, working_directory)
+            require_cli(
+                completed.returncode == 0,
+                f"memory scenario {memory_option or 'default'} should succeed",
+                completed,
+            )
+
+            memory_path = working_directory / "memUsage"
+            should_exist = expected_on_linux and sys.platform.startswith("linux")
+            require_cli(
+                memory_path.exists() == should_exist,
+                f"memory scenario {memory_option or 'default'} created an unexpected report",
+                completed,
+            )
+            if should_exist:
+                require_cli(
+                    re.fullmatch(r"VmPeak:\s+\d+\s+kB\n?", memory_path.read_text())
+                    is not None,
+                    "the Linux memory report should contain a VmPeak value in kB",
+                    completed,
+                )
+            scenarios += 1
+
+    return scenarios
+
+
 def build_executable(executable: Path, compiler: str) -> Path:
     executable = executable.resolve()
     executable.parent.mkdir(parents=True, exist_ok=True)
@@ -387,7 +749,7 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
                 [
                     str(executable),
                     str(input_argument),
-                    f"-pathway={int(case.expected_pathway is not None)}",
+                    f"--pathway={int(case.expected_pathway is not None)}",
                 ],
                 cwd=working_directory,
                 capture_output=True,
@@ -609,10 +971,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.build:
             executable_path = build_executable(executable_path, arguments.compiler)
         executable = resolve_executable(executable_path)
+        cli_scenarios = run_cli_checks(executable)
     except TestConfigurationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
+    print(f"CLI checks: {cli_scenarios} passed", flush=True)
     print(
         f"Running {len(cases)} tests with {arguments.jobs} worker(s); "
         f"timeout={arguments.timeout:g}s",

@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <bitset>
 #include <csignal>
+#include <ctime>
 #include <vector>
 #ifdef _WIN32
     #include <windows.h>
@@ -48,62 +49,80 @@ using standardBitset = bitset<BITSET_LENGTH>;
  * 
  * @param filename output filename
  */
-void writeoutIntermediateMAs(string &filename)
+void writeoutIntermediateMAs(const string &filename)
 {
     ofstream ofs(filename);
-    int compensation = 1;
-    if (disjointCompensation) compensation = disjointFragments;
+    const int compensation = disjointCompensation ? disjointFragments : 1;
     for (size_t i = 0; i < intermediateMAs.size(); i++)
     {
-        ofs << intermediateMAs[i].first << ' ' << intermediateMAs[i].second  - disjointFragments + 1 << '\n';
+        ofs << intermediateMAs[i].first << ' '
+            << intermediateMAs[i].second - compensation + 1 << '\n';
     }
 }
 
-/**
- * @brief Function that takes a molfile fileName.mol and finds its assembly index
- *
- * This function will open the file, parse it, and then calls improvedBnb
- *
- * @param fileName The molfile in question
- */
-void assemblyCalculator(string &fileName)
+bool hasMolfileExtension(const string &filename)
 {
-    cout << "opening " << fileName << '\n';
-    string in = fileName + ".mol";
-    string out = fileName + "Out";
-    string intermediates = fileName + "IntermediateMAs";
-    ifstream molfile(in.c_str());
+    return filename.size() >= 4 && filename.compare(filename.size() - 4, 4, ".mol") == 0;
+}
+
+/**
+ * @brief Read a molfile or native graph and calculate its assembly index.
+ *
+ * Molfile paths may include or omit the .mol extension. Native graph paths are
+ * used exactly as provided.
+ *
+ * @param input Input path supplied on the command line.
+ * @return true if the input was read and the calculation output was written.
+ */
+bool assemblyCalculator(const string &input)
+{
+    const bool explicitMolfile = hasMolfileExtension(input);
+    const string outputBase = explicitMolfile ? input.substr(0, input.size() - 4) : input;
+    const string molfileName = explicitMolfile ? input : input + ".mol";
+    molGraph mol_graph;
+    ifstream molfile(molfileName);
+
     if (molfile.is_open())
     {
-        ofstream outputFile(out.c_str());
-        moleculeName = fileName + "Pathway";
-        molGraph mol_graph;
-        vector<double> coords;
+        cout << "opening " << molfileName << '\n';
         molfileParser(molfile, mol_graph);
-        clock_t t1 = clock();
-        outputFile << fileName << " has assembly index: ";
-        improvedBnB(mol_graph, outputFile);
-        clock_t t2 = clock();
-        outputFile << "time to completion: " << t2 - t1 << '\n';
-        if (writeIntermediateMAs) writeoutIntermediateMAs(intermediates);
+    }
+    else if (!explicitMolfile)
+    {
+        ifstream graphFile(input);
+        if (graphFile.is_open())
+        {
+            cout << "opening " << input << '\n';
+            graphio(graphFile, mol_graph);
+        }
+        else
+        {
+            cerr << "error: input file not found: '" << input
+                 << "' (also tried '" << molfileName << "')\n";
+            return false;
+        }
     }
     else
     {
-        ifstream graphFile(fileName.c_str());
-        if (graphFile.is_open())
-        {
-            ofstream outputFile(out.c_str());
-            molGraph mol_graph;
-            graphio(graphFile, mol_graph);
-            moleculeName = fileName + "Pathway";
-            clock_t startTime = clock();
-            outputFile << fileName << " has assembly index: ";
-            improvedBnB(mol_graph, outputFile);
-            outputFile << "time to completion: " << clock() - startTime << '\n';
-            if (writeIntermediateMAs) writeoutIntermediateMAs(intermediates);
-        }
-        else cout << "No file found\n";
+        cerr << "error: input file not found: '" << input << "'\n";
+        return false;
     }
+
+    const string outputName = outputBase + "Out";
+    ofstream outputFile(outputName);
+    if (!outputFile.is_open())
+    {
+        cerr << "error: could not open output file '" << outputName << "'\n";
+        return false;
+    }
+
+    moleculeName = outputBase + "Pathway";
+    const clock_t calculationStart = clock();
+    outputFile << outputBase << " has assembly index: ";
+    improvedBnB(mol_graph, outputFile);
+    outputFile << "time to completion: " << clock() - calculationStart << '\n';
+    if (writeIntermediateMAs) writeoutIntermediateMAs(outputBase + "IntermediateMAs");
+    return true;
 }
 
 /**
@@ -142,19 +161,30 @@ int main(int argc, char** argv)
     #else
         signal(SIGINT, signalHandler);
     #endif
-    if (argc > 1)
+    CommandLineArguments arguments;
+    try
     {
-        cout << "argv1: " << argv[1] << "\n";
-        string s = argv[1];
-
-        if (argc > 2) flagParser(argc, argv);
-
-        if (s == "--help") help();
-        else assemblyCalculator(s);
+        arguments = parseCommandLine(argc, argv);
     }
-    else cout << "no file selected\n";
-    
+    catch (const std::invalid_argument& error)
+    {
+        cerr << "error: " << error.what() << "\n"
+             << "Usage: AssemblyCpp INPUT [OPTIONS]\n"
+             << "Try 'AssemblyCpp --help' for more information.\n";
+        return 2;
+    }
+
+    if (arguments.showHelp)
+    {
+        help();
+        return 0;
+    }
+
+    const bool succeeded = assemblyCalculator(arguments.input);
+
     #ifdef __linux__
-        if (memTest) maxMemoryUsage("memUsage");
+        if (succeeded && memTest) maxMemoryUsage("memUsage");
     #endif
+
+    return succeeded ? 0 : 1;
 }

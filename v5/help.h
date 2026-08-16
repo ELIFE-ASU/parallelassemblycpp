@@ -1,27 +1,68 @@
-string helpstring = R"(The following are possible flags for assemblyCpp:
-
--runTime=x : sets runTime to x miliseconds in windows and x microseconds in linux, default is unlimited
-
--enumMax=x: sets the number of subgraphs the algorithm is allowed to enumerate to x, default is 50,000,000. Setting this too large will cause memory issues for big graphs
-
--pathwayFolder=x: sets the pathway folder for the string assembly algorithm to x
-
--pathway=x: if x is 1 (the default), a pathway file is generated, else if x is 0 no pathway will be generated
-
--removeHydrogens=x: AssemblyCpp removes explicit hydrogens by default. If x is set to 0, the calculation takes into account explicit hydrogens. Only applies to molfile inputs.
-
--disjointCompensation=x: Compensates for joint assembly spaces if x=1 by subtracting 1 for each disjoint graph after the first, else does nothing if x=0 (default)
-
--memTest=x: Turn on memory usage tracking if x=1 (linux only), else does nothing if x=0 or windows (default)
-
--writeIntermediateMAs=x: Write out the smallest MA found so far and the time it was found at into a separate file if x=1, else does nothing if x=0 (default)
-)";
-
 /**
- * @brief Produces helpstring
- * 
+ * @brief Print command-line usage and option documentation.
  */
 void help()
 {
-    cout << helpstring << endl;
+    cout << R"(AssemblyCpp v5
+
+Usage:
+  AssemblyCpp INPUT [OPTIONS]
+  AssemblyCpp [OPTIONS] INPUT
+  AssemblyCpp --help
+
+Input:
+  INPUT may be a .mol file, a molfile path with the .mol suffix omitted, or a
+  file in AssemblyCpp's native graph format. For a molfile, output names use
+  the input path without the .mol suffix.
+
+Options:
+  -h, --help
+      Show this help and exit.
+)";
+
+    for (const InputFlagDefinition& definition : inputFlagDefinitions())
+    {
+        cout << "  --" << definition.name << "=<" << definition.valueName << ">\n"
+             << "      " << definition.description
+             << " Default: " << definition.defaultValue << ".\n";
+    }
+
+    cout << R"(
+Option notes:
+  Boolean values must be exactly 0 (disabled) or 1 (enabled).
+  --runtime is measured in raw std::clock ticks. CLOCKS_PER_SEC ticks represent
+  one second according to the platform's C++ runtime; whether clock() measures
+  processor or elapsed time is implementation-specific. A runtime or
+  enumeration limit can stop an exhaustive search, leaving the best assembly
+  index found so far.
+
+Outputs:
+  INPUTOut              Assembly index and std::clock ticks.
+  INPUTPathway          Recovered pathway when --pathway=1.
+  INPUTIntermediateMAs  Improved intermediate indices when enabled.
+  ./memUsage            Linux VmPeak report when --memory-report=1.
+
+Compatibility:
+  Both one and two leading dashes are accepted for the canonical names and the
+  former option names below:
+)";
+
+    for (const InputFlagDefinition& definition : inputFlagDefinitions())
+    {
+        if (definition.aliases.empty()) continue;
+        cout << "  --" << definition.name << ": ";
+        for (size_t i = 0; i < definition.aliases.size(); i++)
+        {
+            if (i > 0) cout << ", ";
+            cout << "-" << definition.aliases[i] << "=<" << definition.valueName << ">";
+        }
+        cout << '\n';
+    }
+
+    cout << R"(
+Examples:
+  AssemblyCpp molecule.mol
+  AssemblyCpp molecule --pathway=0 --enum-max=1000000
+  AssemblyCpp --remove-hydrogens=0 molecule.mol
+)";
 }

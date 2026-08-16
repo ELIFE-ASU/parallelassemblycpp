@@ -11,6 +11,10 @@ comparing it, so formatting changes do not invalidate a structurally identical
 pathway. The selected cases cover numerical and named molfiles as well as the
 plain graph-input format.
 
+Before running molecule cases, `unitTester.py` also checks the executable's CLI:
+help text, strict option validation, compatibility names, option/input ordering,
+output toggles, `.mol` path handling, and Linux memory reporting.
+
 Run only the pathway golden cases with:
 
 ```bash

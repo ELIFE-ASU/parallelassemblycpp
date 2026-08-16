@@ -14,7 +14,7 @@
 #else
     void signalHandler(int signum) {
         cout << "Interrupt signal received. Lowest AI found: " <<  minAIfound << '\n';
-        recoverPathway2(removedEdges);
+        if (isPathway) recoverPathway2(removedEdges);
         exit(signum);
     }
 #endif
