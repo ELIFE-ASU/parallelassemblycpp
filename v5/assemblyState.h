@@ -1,20 +1,4 @@
 /**
- * @brief vector<int> hash, used to hash assembly states
- */
-template<>
-struct std::hash<vi>
-{
-    size_t operator()(const vi &v) const
-    {
-        std::size_t seed = v.size();
-        for(auto& i : v) {
-            seed ^= i + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        }
-        return seed;
-    }
-};
-
-/**
  * @brief Struct which is inserted into the hash table to store assembly states and recover the pathway
  */
 struct assemblyPath
@@ -75,20 +59,8 @@ struct assemblyState
     vector<standardBitset> masks;
     /// @brief number of duplicated bonds
     int sumDupBonds = 0;
-    /// @brief index of the state
-    int ix = 0;
     /// @brief path that was used to generate this state
     assemblyPath * apPtr = nullptr;
-
-   /**
-   * @brief Return the maximum fragment size, by counting the number of set bits in the first mask
-   *
-   * @return int (maximum size of a fragment)
-   */
-    int maxFragSizeF()
-    {
-        return masks[0].count();
-    }
 
     /**
      * @brief Old branch and bound heuristic, used only during initial enumeration
@@ -98,28 +70,7 @@ struct assemblyState
      */
     int maxDupBonds()
     {
-        int dupBonds2 = 0, dupBondsTotal, maxFragSize = maxFragSizeF();
-        vi sizeList(masks.size());
-        
-        for (size_t i = 0; i < masks.size(); i++)
-        {
-            sizeList[i] = masks[i].count();
-        }
-
-        for (size_t i = 0; i < sizeList.size(); i++) dupBonds2 += sizeList[i]/2;
-        dupBonds2--;
-        for (int j = 3; j <= maxFragSize; j++)
-        {
-            dupBondsTotal = 0;
-            for (size_t i = 0; i < sizeList.size(); i++)
-            {
-                dupBondsTotal += (sizeList[i] - sizeList[i]/j);
-                if (sizeList[i] % j != 0) dupBondsTotal--;
-            }
-            dupBondsTotal -= ceil(log2(j));
-            if (dupBondsTotal > dupBonds2) dupBonds2 = dupBondsTotal;
-        }
-        return dupBonds2;
+        return maxDupBonds(static_cast<int>(masks[0].count()));
     }
 
     /**
@@ -132,23 +83,21 @@ struct assemblyState
      */
     int maxDupBonds(vi &sizeListMain, int maxFragSize, vi &sizeList)
     {
-        int dupBonds2 = 0, dupBondsTotal;
-
-        int j = maxFragSize;
+        const int j = maxFragSize;
         vi adjustedSizeList(sizeList.size()), adjustedSizeList2(sizeList.size());
         for (size_t i = 0; i < sizeList.size(); i++)
         {
             adjustedSizeList[i] = sizeList[i] - sizeList[i] % j;
             adjustedSizeList2[i] = sizeListMain[i] - adjustedSizeList[i];
         }
-        dupBondsTotal = 0;
+        int dupBondsTotal = 0;
         for (size_t i = 0; i < sizeList.size(); i++)
         {
             dupBondsTotal += (adjustedSizeList[i] - adjustedSizeList[i]/j);
             dupBondsTotal += (adjustedSizeList2[i] - adjustedSizeList2[i]/(j - 1));
             if (adjustedSizeList2[i] % (j - 1) != 0) dupBondsTotal--;
         }
-        dupBondsTotal -= ceil(log2(j));
+        dupBondsTotal -= ceilLog2(j);
         return dupBondsTotal;
     }
 
@@ -159,30 +108,13 @@ struct assemblyState
      */
     int maxDupBonds(vi &sizeListMain, int maxFragSize, vector<standardBitset> &targetMasks)
     {
-        int dupBonds2 = 0, dupBondsTotal;
         vi sizeList(targetMasks.size());
         
         for (size_t i = 0; i < masks.size(); i++)
         {
-            sizeList[i] = targetMasks[i].count();
+            sizeList[i] = static_cast<int>(targetMasks[i].count());
         }
-
-        int j = maxFragSize;
-        vi adjustedSizeList(sizeList.size()), adjustedSizeList2(sizeList.size());
-        for (size_t i = 0; i < sizeList.size(); i++)
-        {
-            adjustedSizeList[i] = sizeList[i] - sizeList[i] % j;
-            adjustedSizeList2[i] = sizeListMain[i] - adjustedSizeList[i];
-        }
-        dupBondsTotal = 0;
-        for (size_t i = 0; i < sizeList.size(); i++)
-        {
-            dupBondsTotal += (adjustedSizeList[i] - adjustedSizeList[i]/j);
-            dupBondsTotal += (adjustedSizeList2[i] - adjustedSizeList2[i]/(j - 1));
-            if (adjustedSizeList2[i] % (j - 1) != 0) dupBondsTotal--;
-        }
-        dupBondsTotal -= ceil(log2(j));
-        return dupBondsTotal;
+        return maxDupBonds(sizeListMain, maxFragSize, sizeList);
     }
 
     /**
@@ -226,7 +158,7 @@ struct assemblyState
                 dupBondsTotal += (adjustedSizeList2[i] - adjustedSizeList2[i]/(j - 1));
                 if (adjustedSizeList2[i] % (j - 1) != 0) dupBondsTotal--;
             }
-            dupBondsTotal -= ceil(log2(j));
+            dupBondsTotal -= ceilLog2(j);
             fragSizeList[j - 2] = dupBondsTotal;
         }
     }
@@ -257,7 +189,7 @@ struct assemblyState
                 dupBondsTotal += (sizeList[i] - sizeList[i]/j);
                 if (sizeList[i] % j != 0) dupBondsTotal--;
             }
-            dupBondsTotal -= ceil(log2(j));
+            dupBondsTotal -= ceilLog2(j);
             if (dupBondsTotal > dupBonds2) dupBonds2 = dupBondsTotal;
         }
         return dupBonds2;
@@ -297,7 +229,7 @@ struct assemblyState
     }
 
     /**
-     * @brief Calculates the hash for the assembly state by returning a vi which is subjected to the vi hash
+     * @brief Build the canonical fragment key used by apWrapper's hash
      * 
      * @return vi The vector<int> to be hashed
      */
@@ -310,28 +242,5 @@ struct assemblyState
         }
         sort(sorted.begin() + 1, sorted.end());
         return sorted;
-    }
-    
-    /**
-     * @brief Prints the assembly state
-     * 
-     */
-    void print()
-    {
-        cout << "printing assembly state: " << ix << '\n';
-        cout << "masks:\n";
-        for (size_t i = 0; i < masks.size(); i++)
-        {
-            cout << masks[i] << '\n';
-        }
-        for (size_t i = 0; i < masks.size(); i++)
-        {
-            cout << "Fragment: " << i <<'\n';
-            bool isCyclic;
-            molGraph mg = constructFromEdgeList(targetMolecule, univEdgeList, masks[i], isCyclic);
-            mg.printToCout();
-        }
-        cout << "AI: " << AI() << '\n';
-        cout << "lowbound: " << lowBoundAI() << '\n';
     }
 };

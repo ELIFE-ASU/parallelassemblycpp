@@ -2,7 +2,7 @@
  * @brief Splits the assembly state into fragments after a given duplicate is removed using the disjoint-set data structure
  *
  * @param _target The assembly state to be fragmented
- * @param validMatchings The matching with the duplicate pair. matching.first is retained and matching.second is deleted
+ * @param matching The duplicate pair. matching.first is retained and matching.second is deleted
  * @param _result The resulting assembly state
  */
 void fragmentAssemblyState(assemblyState &_target, validMatchings & matching, 
@@ -35,7 +35,11 @@ assemblyState &_result)
     }
     for (size_t i = 0; i < masks.size(); i++)
     {
-        if (i != matching.frag1 && i != matching.frag2 && masks[i] != 0)
+        if (
+            i != static_cast<size_t>(matching.frag1) &&
+            i != static_cast<size_t>(matching.frag2) &&
+            masks[i] != 0
+        )
         {
             vector<standardBitset> tempMasks;
             if (bitsetHashTable.count(masks[i]) == 0)
@@ -58,10 +62,9 @@ assemblyState &_result)
  */
 void clearPathMap()
 {
-    vector<std::unordered_set<assemblyPath*>::iterator> vit;
-    for (auto it = pathAssemblyMap.begin(); it != pathAssemblyMap.end(); ++it)
+    for (const apWrapper &wrapper : pathAssemblyMap)
     {
-        delete (*it).ap;
+        delete wrapper.ap;
     }
     pathAssemblyMap.clear();
 }

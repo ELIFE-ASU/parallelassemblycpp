@@ -582,8 +582,7 @@ def run_cli_checks(executable: Path) -> int:
                 completed,
             )
             require_cli(
-                output_path.is_file()
-                and expected_status in output_path.read_text().splitlines(),
+                expected_status in output_path.read_text().splitlines(),
                 f"{name} scenario should record {expected_status!r}",
                 completed,
             )
@@ -841,18 +840,7 @@ def run_cli_checks(executable: Path) -> int:
                 f"disjoint-compensation scenario {name!r} returned the wrong final index",
                 completed,
             )
-            intermediate_rows = [
-                line.split()
-                for line in intermediate_path.read_text().splitlines()
-                if line.strip()
-            ]
-            last_intermediate = None
-            if (
-                intermediate_rows
-                and len(intermediate_rows[-1]) == 2
-                and intermediate_rows[-1][1].lstrip("-").isdigit()
-            ):
-                last_intermediate = int(intermediate_rows[-1][1])
+            last_intermediate = read_last_intermediate_index(intermediate_path)
             require_cli(
                 last_intermediate == expected_index,
                 f"disjoint-compensation scenario {name!r} returned the wrong intermediate index",

@@ -176,6 +176,7 @@ def run_once(
         "--",
         input_name,
     ]
+    output_path.unlink(missing_ok=True)
     started = time.perf_counter()
     try:
         completed = subprocess.run(
@@ -215,10 +216,7 @@ def run_benchmark(
         input_path = working_directory / source.name
         shutil.copy2(source, input_path)
 
-        if input_path.name.endswith(".mol"):
-            output_name = f"{input_path.name[:-4]}Out"
-        else:
-            output_name = f"{input_path.name}Out"
+        output_name = f"{input_path.name.removesuffix('.mol')}Out"
         output_path = working_directory / output_name
 
         for current in range(1, warmup + 1):
@@ -357,10 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             warmup=arguments.warmup,
             timeout=arguments.timeout,
         )
-    except BenchmarkError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-    except OSError as error:
+    except (BenchmarkError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

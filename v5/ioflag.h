@@ -10,10 +10,10 @@ enum class InputFlag
     runtime,
     enumMax,
     pathway,
-    removeHydrogens,
+    removeHydrogensFlag,
     compensateDisjoint,
     memoryReport,
-    writeIntermediateMAs
+    writeIntermediateMAsFlag
 };
 
 struct InputFlagDefinition
@@ -63,7 +63,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             {}
         },
         {
-            InputFlag::removeHydrogens,
+            InputFlag::removeHydrogensFlag,
             "remove-hydrogens",
             "0|1",
             "1",
@@ -87,7 +87,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             {"memTest", "testMemory"}
         },
         {
-            InputFlag::writeIntermediateMAs,
+            InputFlag::writeIntermediateMAsFlag,
             "write-intermediate-mas",
             "0|1",
             "0",
@@ -176,7 +176,7 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             isPathway = parseBooleanFlag(definition, value);
             break;
 
-        case InputFlag::removeHydrogens:
+        case InputFlag::removeHydrogensFlag:
             removeHydrogens = parseBooleanFlag(definition, value);
             break;
 
@@ -188,7 +188,7 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             memTest = parseBooleanFlag(definition, value);
             break;
 
-        case InputFlag::writeIntermediateMAs:
+        case InputFlag::writeIntermediateMAsFlag:
             writeIntermediateMAs = parseBooleanFlag(definition, value);
             break;
     }

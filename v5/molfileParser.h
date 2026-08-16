@@ -8,41 +8,35 @@
 string molfileParser(ifstream &molfile, molGraph &mg)
 {
     string name, currLine;
-    double x; //placeholder to store coordinates which are not necessary
-    int totalAtoms = 0, totalBonds = 0;
 
     getline(molfile, name);
     for (int i = 0; i < 2; i++) {getline(molfile, currLine);}
     
     getline(molfile, currLine);
-    istringstream iss(currLine);
-    string molLine = iss.str(), atoms = molLine.substr(0, 3), bonds = molLine.substr(3, 3); 
-    totalAtoms = stoi(atoms);
-    totalBonds = stoi(bonds);
-    cout << "Detecting " << totalAtoms << " atoms and " << totalBonds << " bonds\n";
+    const int atomCount = stoi(currLine.substr(0, 3));
+    const int bondCount = stoi(currLine.substr(3, 3));
+    cout << "Detecting " << atomCount << " atoms and " << bondCount << " bonds\n";
 
-    for (int i = 0; i < totalAtoms; i++)
+    for (int i = 0; i < atomCount; i++)
     {
         getline(molfile, currLine);
-        istringstream iss(currLine);
-        for (int i = 0; i < 3; i++) {iss >> x; coords.push_back(x);}
-        string s; iss >> s;
-        mg.addAtom(s);
-    }
-    for (int i = 0; i < totalBonds; i++)
-    {
-        getline(molfile, currLine);
-        istringstream iss(currLine);
-        int atomA, atomB, bondOrder;
-        string molLine = iss.str(), atomAs = molLine.substr(0, 3), 
-        atomBs = molLine.substr(3, 3), bondOrderS = molLine.substr(6, 3);
-        atomA = stoi(atomAs), atomB = stoi(atomBs), bondOrder = stoi(bondOrderS);
-        mg.addBond(atomA - 1, atomB - 1, bondOrder);
-        string temp;
-        while(iss)
+        istringstream atomLine(currLine);
+        double ignoredCoordinate;
+        for (int coordinate = 0; coordinate < 3; coordinate++)
         {
-            string s0; iss >> s0; temp += s0 + ' ';
+            atomLine >> ignoredCoordinate;
         }
+        string atomType;
+        atomLine >> atomType;
+        mg.addAtom(atomType);
+    }
+    for (int i = 0; i < bondCount; i++)
+    {
+        getline(molfile, currLine);
+        const int atomA = stoi(currLine.substr(0, 3));
+        const int atomB = stoi(currLine.substr(3, 3));
+        const int bondOrder = stoi(currLine.substr(6, 3));
+        mg.addBond(atomA - 1, atomB - 1, bondOrder);
     }
     if (removeHydrogens)
     {

@@ -4,7 +4,7 @@
 struct disjointSetNode
 {
     int parent = -1, rank = 0;
-    disjointSetNode(){}
+    disjointSetNode() = default;
     disjointSetNode(int _parent): parent(_parent){}
 };
 
@@ -22,7 +22,7 @@ struct disjointSet
     /// standard disjoint set function
     size_t find(size_t idx)
     {
-        if (elements[idx].parent != idx)
+        if (elements[idx].parent != static_cast<int>(idx))
         {
             elements[idx].parent = find(elements[idx].parent);
         }
@@ -61,7 +61,7 @@ struct ufdsSplitNode
     /// parent, rank, fragment this is part of
     int parent = -1, rank = 0, val = -1;
 
-    ufdsSplitNode(){}
+    ufdsSplitNode() = default;
     ufdsSplitNode(int _parent, int _val): parent(_parent)
     {
         val = _val;
@@ -82,7 +82,7 @@ struct ufdsSplit
     /// standard disjoint set function
     size_t find(size_t idx)
     {
-        if (elements[idx].parent != idx)
+        if (elements[idx].parent != static_cast<int>(idx))
         {
             elements[idx].parent = find(elements[idx].parent);
         }
@@ -145,7 +145,7 @@ struct ufdsSplit
     {
         vi uniques(maxElement + 1, -1);
         vector<standardBitset> tempMaskList;
-        for (size_t i = 0; i <= maxElement; i++)
+        for (int i = 0; i <= maxElement; i++)
         {
             if (elements[i].parent != -1)
             {
@@ -175,5 +175,3 @@ struct ufdsSplit
         }
     }
 };
-
-

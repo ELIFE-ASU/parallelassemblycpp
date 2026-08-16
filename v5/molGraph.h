@@ -5,7 +5,7 @@ struct bond
 {
     short n;
     short type;
-    bond(){}
+    bond() = default;
     bond(short _n, short _type): n(_n), type(_type){}
 };
 
@@ -17,7 +17,7 @@ struct atom
     string type;
     vector<bond> list;
 
-    atom(){}
+    atom() = default;
     atom(string _type): type(_type){}
 
 };
@@ -102,8 +102,7 @@ struct molGraph
      */
     char btype(size_t a, size_t b)
     {
-        if (a < 0 || b < 0) return 0;
-        return (char)mg[a].list[b].type;
+        return static_cast<char>(mg[a].list[b].type);
     }
 
     /**
@@ -113,39 +112,59 @@ struct molGraph
      */
     short btypeS(size_t a, size_t b)
     {
-        if (a < 0 || b < 0) return 0;
         return mg[a].list[b].type;
     }
+
+private:
+    /**
+     * @brief Rebuild the graph while dropping removed atoms and zero-order bonds.
+     */
+    void rebuild(bool removeMarkedAtoms)
+    {
+        const size_t removed = mg.size();
+        vector<size_t> reverseMap(mg.size(), removed);
+        molGraph output;
+
+        for (size_t i = 0; i < mg.size(); i++)
+        {
+            if (removeMarkedAtoms && mg[i].type == "COLLAPSE") continue;
+            reverseMap[i] = output.mg.size();
+            output.addAtom(mg[i].type);
+        }
+
+        for (size_t source = 0; source < mg.size(); source++)
+        {
+            if (reverseMap[source] == removed) continue;
+
+            for (size_t bondIndex = 0; bondIndex < degree(source); bondIndex++)
+            {
+                const size_t target = static_cast<size_t>(elem(source, bondIndex));
+                if (
+                    reverseMap[target] != removed &&
+                    btypeS(source, bondIndex) != 0 &&
+                    reverseMap[source] < reverseMap[target]
+                )
+                {
+                    output.addBond(
+                        static_cast<int>(reverseMap[source]),
+                        static_cast<int>(reverseMap[target]),
+                        btype(source, bondIndex)
+                    );
+                }
+            }
+        }
+
+        *this = std::move(output);
+    }
+
+public:
 
     /**
      * @brief Remove all bonds of order 0. Used in preprocessing.
      */
     void collapse()
     {
-        size_t originalSize = mg.size(), newSize;
-        vector<size_t> map, revmap(originalSize, -1);
-        molGraph output;
-        for (size_t i = 0; i < originalSize; i++)
-        {
-            revmap[i] = map.size();
-            map.push_back(i);
-            output.addAtom(mg[i].type);
-        }
-        newSize = map.size();
-        for (size_t i = 0; i < newSize; i++)
-        {
-            int k = map[i];
-            for (size_t j = 0; j < degree(k); j++)
-            {
-                if (revmap[elem(k, j)] != -1 && btypeS(k, j) != 0)
-                {
-                    size_t x = revmap[elem(k, j)];
-                    if (i < x)
-                        output.addBond(i, x, btype(k, j));
-                }
-            }
-        }
-        *this = output;
+        rebuild(false);
     }
 
     /**
@@ -165,32 +184,7 @@ struct molGraph
      */
     void removeAndCollapse()
     {
-        size_t originalSize = mg.size(), newSize;
-        vector<size_t> map, revmap(originalSize, -1);
-        molGraph output;
-        for (size_t i = 0; i < originalSize; i++)
-        {
-            if (mg[i].type != "COLLAPSE") 
-            {
-                revmap[i] = map.size();
-                map.push_back(i);
-                output.addAtom(mg[i].type);
-            }
-        }
-        newSize = map.size();
-        for (size_t i = 0; i < newSize; i++)
-        {
-            int k = map[i];
-            for (size_t j = 0; j < degree(k); j++)
-            {
-                if (revmap[elem(k, j)] != -1 && btypeS(k, j) != 0)
-                {
-                    size_t x = revmap[elem(k, j)];
-                    if (i < x) output.addBond(i, x, btype(k, j));
-                }
-            }
-        }
-        *this = output;
+        rebuild(true);
     }
 
     /**
@@ -200,14 +194,16 @@ struct molGraph
     vector<edgeL> writeEdgeList()
     {
         vector<edgeL> out;
-        for (short i = 0; i < mg.size(); i++)
+        for (size_t i = 0; i < mg.size(); i++)
         {
-            for (short j = 0; j < degree(i); j++)
+            for (size_t j = 0; j < degree(i); j++)
             {
                 short k = elem(i, j);
-                if (i < k)
+                if (i < static_cast<size_t>(k))
                 {
-                    edgeL t(i, k, j);
+                    short source = static_cast<short>(i);
+                    short bondIndex = static_cast<short>(j);
+                    edgeL t(source, k, bondIndex);
                     out.push_back(t);
                 }
             }
@@ -220,17 +216,19 @@ struct molGraph
      */
     void writeEdgeList(std::unordered_map<string, pair<int, edgeL> > &ht)
     {
-        for (short i = 0; i < mg.size(); i++)
+        for (size_t i = 0; i < mg.size(); i++)
         {
-            for (short j = 0; j < degree(i); j++)
+            for (size_t j = 0; j < degree(i); j++)
             {
                 short k = elem(i, j);
-                if (i < k)
+                if (i < static_cast<size_t>(k))
                 {
                     string is = atype(i), ks = atype(k), out;
                     if (is < ks) out = is + btype(i, j) + ks;
                     else out = ks + btype(i, j) + is;
-                    edgeL t(i, k, j);
+                    short source = static_cast<short>(i);
+                    short bondIndex = static_cast<short>(j);
+                    edgeL t(source, k, bondIndex);
                     if (ht.count(out) == 0)
                     {
                         pair<int, edgeL> p(1, t);
@@ -352,7 +350,7 @@ molGraph constructFromEdgeList(molGraph &mg, vector<edgeL> &edgeList,
 /**
  * @brief Preprocesses the graph by removing all unique edges for the pathway algorithm
  * @param mg The input molGraph
- * @param writeback The edge list after preprocessing
+ * @param writeback Edges removed during preprocessing
  * @return molGraph (the final output)
  */
 molGraph preprocessWriteback(molGraph &mg, vector<edgeL> &writeback)

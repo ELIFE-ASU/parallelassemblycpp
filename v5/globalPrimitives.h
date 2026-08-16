@@ -1,6 +1,3 @@
-#include <cstdint>
-#include <limits>
-#include <type_traits>
 #ifdef _WIN32
     #include <atomic>
 #endif
@@ -9,17 +6,13 @@ template <typename T1, typename T2, typename T3>
 struct triple
 {
     T1 a; T2 b; T3 c;
-    triple(){}
+    triple() = default;
     triple(T1 &_a, T2 &_b, T3 &_c): a(_a), b(_b), c(_c) {}
 };
 
-int DISCHARGE_FREQUENCY = 30000000, ENUM_MAX = 50000000;
-int minAIfound = -1;
-int recursiveCount = 1;
-int assemblyIx = 0;
+int ENUM_MAX = 50000000;
 
 std::unordered_map<string, int> atypeHash;
-vector<double> coords;
 string moleculeName;
 standardBitset allEdges;
 #ifdef _WIN32
@@ -30,22 +23,24 @@ standardBitset allEdges;
     volatile std::sig_atomic_t userInterruptReceived = 0;
 #endif
 clock_t startTime = 0;
-unsigned long long runTimeMax = 18446744073709551615ULL;
+unsigned long long runTimeMax = std::numeric_limits<unsigned long long>::max();
 bool runtimeLimitReached = false;
 bool enumerationLimitReached = false;
 
-typedef triple<int, int, int> iii;
-typedef triple<short, short, short> edgeL;
+using edgeL = triple<short, short, short>;
 unsigned int totalBonds = 0;
-vector<edgeL> removedEdges;
 vector<edgeL> originalEdgeList, univEdgeList;
 
 /// Hash table for edgelists for pathway algorithm
 std::unordered_map<standardBitset, pii> bitsetHashTable;
 
-bool isPathway = 1, removeHydrogens = 1, disjointCompensation = 0, memTest = 0, writeIntermediateMAs = 0;
+bool isPathway = true;
+bool removeHydrogens = true;
+bool disjointCompensation = false;
+bool memTest = false;
+bool writeIntermediateMAs = false;
 int disjointFragments = 1;
-vector<pair<unsigned long long, int> > intermediateMAs;
+vector<pair<unsigned long long, int>> intermediateMAs;
 
 bool interruptionRequested()
 {

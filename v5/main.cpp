@@ -1,30 +1,38 @@
-#include <iostream>
 #include <algorithm>
-#include <string>
-#include <fstream>
-#include <unordered_map>
-#include <unordered_set>
-#include <stack>
-#include <sys/stat.h>
-#include <iomanip>
+#include <bit>
 #include <bitset>
+#include <cstdint>
 #include <csignal>
 #include <ctime>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 #ifdef _WIN32
     #include <windows.h>
-#else
-    #include <unistd.h>
 #endif
 
 using namespace std;
-typedef vector<int> vi;
-typedef vector<bool> vb;
-typedef pair<int, int> pii;
-#define BITSET_LENGTH 512
-#define MAX_INT 2147483647
-#define HASH_DEPTH_MAX 7
+using vi = vector<int>;
+using vb = vector<bool>;
+using pii = pair<int, int>;
+constexpr size_t BITSET_LENGTH = 512;
+constexpr int HASH_DEPTH_MAX = 7;
 using standardBitset = bitset<BITSET_LENGTH>;
+
+constexpr int ceilLog2(int value)
+{
+    return std::bit_width(static_cast<unsigned int>(value - 1));
+}
 
 #include "globalPrimitives.h"
 #include "ufds.h"
@@ -76,7 +84,7 @@ bool writeoutIntermediateMAs(const string &filename)
 
 bool hasMolfileExtension(const string &filename)
 {
-    return filename.size() >= 4 && filename.compare(filename.size() - 4, 4, ".mol") == 0;
+    return filename.ends_with(".mol");
 }
 
 /**

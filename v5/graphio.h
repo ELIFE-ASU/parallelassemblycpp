@@ -10,7 +10,8 @@ void graphio(ifstream &ifs, molGraph &mg)
     int graphSize, a, b;
     vector<pii> edgeList;
     getline(ifs, moleculeName);
-    istringstream issm(moleculeName); issm >> moleculeName;
+    istringstream nameLine(moleculeName);
+    nameLine >> moleculeName;
     cout << "Name of graph is: " << moleculeName << '\n';
     getline(ifs, s);
     istringstream iss1(s);
@@ -23,17 +24,17 @@ void graphio(ifstream &ifs, molGraph &mg)
     }
     getline(ifs, s);
     istringstream iss2(s);
-    for (size_t i = 0; i < graphSize; i++)
+    for (int i = 0; i < graphSize; i++)
     {
         iss2 >> s;
         mg.addAtom(s);
     }
     getline(ifs, s);
     istringstream iss3(s);
-    for (size_t i = 0; i < edgeList.size(); i++)
+    for (const pii &edge : edgeList)
     {
         iss3 >> a;
-        mg.addBond(edgeList[i].first - 1, edgeList[i].second - 1, a);
+        mg.addBond(edge.first - 1, edge.second - 1, a);
     }
     mg.printToCout();
 }

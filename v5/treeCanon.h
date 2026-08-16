@@ -15,8 +15,6 @@ string treeCanonRecursive(molGraph &mg, int curr, int parent, char type)
     else bondName = "$";
     string name = "(" + bondName + atomName;
     
-    if (mg.degree(curr) == 0) {name += ')'; 
-    return name;}
     vector<string> stringArray;
     vector<bond> &v = mg.mg[curr].list;
     for (size_t i = 0; i < v.size(); i++)
@@ -58,9 +56,8 @@ int centroidDFS(molGraph &mg, vector<int> &weight, int curr, int prev)
  */
 pii centroid(molGraph &mg, int currRoot)
 {
-    float size = mg.mg.size() + 0.0;
-    vector<bool> visited((int)size, 0);
-    vector<int> weight((int)size, 1);
+    const auto size = static_cast<float>(mg.mg.size());
+    vector<int> weight(mg.mg.size(), 1);
     bool isCentroid = 0; int prevRoot = -1;
     centroidDFS(mg, weight, currRoot, -1);
     bool has2Centroids = 0;
@@ -109,4 +106,3 @@ string centroidTreeCanon(molGraph &mg, int n)
     else canonicalForm = stringArray[0];
     return canonicalForm;
 }
-
