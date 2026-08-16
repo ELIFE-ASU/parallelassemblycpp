@@ -336,6 +336,29 @@ def require_cli(
     raise TestConfigurationError(f"CLI check failed: {message}{suffix}")
 
 
+def read_first_line_assembly_index(path: Path) -> int | None:
+    """Return an index only when the first output line is fully numeric."""
+    if not path.is_file():
+        return None
+    lines = path.read_text().splitlines()
+    if not lines:
+        return None
+    match = ASSEMBLY_INDEX_PATTERN.search(lines[0])
+    if match is None or match.end() != len(lines[0]):
+        return None
+    return int(match.group(1))
+
+
+def read_last_intermediate_index(path: Path) -> int | None:
+    """Return the assembly index in the final well-formed intermediate row."""
+    if not path.is_file():
+        return None
+    rows = [line.split() for line in path.read_text().splitlines() if line.strip()]
+    if not rows or len(rows[-1]) != 2 or not rows[-1][1].lstrip("-").isdigit():
+        return None
+    return int(rows[-1][1])
+
+
 def run_cli_checks(executable: Path) -> int:
     """Exercise help, validation, aliases, input handling, and output flags."""
     scenarios = 0
@@ -523,6 +546,227 @@ def run_cli_checks(executable: Path) -> int:
         )
         scenarios += 1
 
+        cutoff_cases = (
+            (
+                "runtime-limit",
+                TEST_DIRECTORY / "butane.mol",
+                "--runtime=0",
+                "status: runtime limit reached",
+            ),
+            (
+                "enumeration-limit",
+                TEST_DIRECTORY / "113.mol",
+                "--enum-max=1",
+                "status: enumeration limit reached",
+            ),
+        )
+        for name, source_path, limit_option, expected_status in cutoff_cases:
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            shutil.copy2(source_path, case_directory / "input.mol")
+            completed = run_cli_command(
+                executable,
+                ["input.mol", "--pathway=0", limit_option],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"{name} scenario should return its best result successfully",
+                completed,
+            )
+            output_path = case_directory / "inputOut"
+            index = read_first_line_assembly_index(output_path)
+            require_cli(
+                index is not None and index != 2_147_483_647,
+                f"{name} scenario should put a finite assembly index on the first line",
+                completed,
+            )
+            require_cli(
+                output_path.is_file()
+                and expected_status in output_path.read_text().splitlines(),
+                f"{name} scenario should record {expected_status!r}",
+                completed,
+            )
+            scenarios += 1
+
+        explicit_hydrogen_mol = "\n".join(
+            (
+                "Explicit hydrogens",
+                "AssemblyCpp CLI test",
+                "",
+                "  6  5  0  0  0  0  0  0  0  0999 V2000",
+                "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
+                "    0.0000    1.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
+                "    1.0000    0.5000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+                "    2.0000    0.5000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+                "    3.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
+                "    3.0000    1.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
+                "  1  3  1  0  0  0  0",
+                "  2  3  1  0  0  0  0",
+                "  3  4  1  0  0  0  0",
+                "  4  5  1  0  0  0  0",
+                "  4  6  1  0  0  0  0",
+                "M  END",
+                "",
+            )
+        )
+        hydrogen_cases = (
+            ("hydrogens-default", [], ["C", "C"], 1),
+            (
+                "hydrogens-on",
+                ["--remove-hydrogens=1"],
+                ["C", "C"],
+                1,
+            ),
+            (
+                "hydrogens-off",
+                ["--remove-hydrogens=0"],
+                ["H", "H", "C", "C", "H", "H"],
+                5,
+            ),
+        )
+        for (
+            name,
+            hydrogen_options,
+            expected_colours,
+            expected_edge_count,
+        ) in hydrogen_cases:
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            (case_directory / "input.mol").write_text(explicit_hydrogen_mol)
+            completed = run_cli_command(
+                executable,
+                ["input.mol", "--pathway=1", *hydrogen_options],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"explicit-hydrogen scenario {name!r} should succeed",
+                completed,
+            )
+            pathway_path = case_directory / "inputPathway"
+            require_cli(
+                pathway_path.is_file(),
+                f"explicit-hydrogen scenario {name!r} omitted its pathway",
+                completed,
+            )
+            pathway = parse_pathway_document(pathway_path)
+            graph = pathway["file_graph"][0]
+            require_cli(
+                graph["VertexColours"] == expected_colours
+                and len(graph["Edges"]) == expected_edge_count,
+                f"explicit-hydrogen scenario {name!r} transformed the wrong "
+                "atoms or bonds",
+                completed,
+            )
+            scenarios += 1
+
+        native_hydrogen_graph = "\n".join(
+            (
+                "native-hydrogens",
+                "4",
+                "1 3 2 3 3 4",
+                "H H C C",
+                "1 1 1",
+                "",
+            )
+        )
+        expected_native_graph = None
+        for name, hydrogen_option in (
+            ("native-hydrogens-on", "--remove-hydrogens=1"),
+            ("native-hydrogens-off", "--remove-hydrogens=0"),
+        ):
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            (case_directory / "input").write_text(native_hydrogen_graph)
+            completed = run_cli_command(
+                executable,
+                ["input", "--pathway=1", hydrogen_option],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"native-graph hydrogen scenario {name!r} should succeed",
+                completed,
+            )
+            pathway_path = case_directory / "inputPathway"
+            require_cli(
+                pathway_path.is_file(),
+                f"native-graph hydrogen scenario {name!r} omitted its pathway",
+                completed,
+            )
+            graph = parse_pathway_document(pathway_path)["file_graph"][0]
+            require_cli(
+                graph["VertexColours"] == ["H", "H", "C", "C"]
+                and len(graph["Edges"]) == 3,
+                "--remove-hydrogens should not transform native graph inputs",
+                completed,
+            )
+            if expected_native_graph is None:
+                expected_native_graph = graph
+            else:
+                require_cli(
+                    graph == expected_native_graph,
+                    "native graph output should be identical with hydrogen "
+                    "removal on or off",
+                    completed,
+                )
+            scenarios += 1
+
+        all_hydrogen_mol = "\n".join(
+            (
+                "Hydrogen",
+                "AssemblyCpp CLI test",
+                "",
+                "  2  1  0  0  0  0  0  0  0  0999 V2000",
+                "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
+                "    1.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
+                "  1  2  1  0  0  0  0",
+                "M  END",
+                "",
+            )
+        )
+        empty_graph_results: list[tuple[int, int]] = []
+        for name, compensation_option in (
+            ("empty-compensation-off", "--compensate-disjoint=0"),
+            ("empty-compensation-on", "--compensate-disjoint=1"),
+        ):
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            (case_directory / "input.mol").write_text(all_hydrogen_mol)
+            completed = run_cli_command(
+                executable,
+                [
+                    "input.mol",
+                    "--pathway=0",
+                    "--remove-hydrogens=1",
+                    compensation_option,
+                    "--write-intermediate-mas=1",
+                ],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"empty-graph compensation scenario {name!r} should succeed",
+                completed,
+            )
+            final_index = read_first_line_assembly_index(case_directory / "inputOut")
+            intermediate_index = read_last_intermediate_index(
+                case_directory / "inputIntermediateMAs"
+            )
+            require_cli(
+                final_index is not None and intermediate_index == final_index,
+                f"empty-graph compensation scenario {name!r} should report "
+                "consistent indices",
+                completed,
+            )
+            empty_graph_results.append((final_index, intermediate_index))
+            scenarios += 1
+        require_cli(
+            empty_graph_results[0] == empty_graph_results[1],
+            "disjoint compensation should not change an empty processed graph",
+        )
+
         disconnected_graph = "\n".join(
             (
                 "disconnected",
@@ -620,6 +864,113 @@ def run_cli_checks(executable: Path) -> int:
                 completed,
             )
             scenarios += 1
+
+        for enum_limit, expect_limit_status in ((1, True), (2, False)):
+            case_directory = working_directory / f"enum-boundary-{enum_limit}"
+            case_directory.mkdir()
+            (case_directory / "input").write_text(disconnected_graph)
+            completed = run_cli_command(
+                executable,
+                ["input", "--pathway=0", f"--enum-max={enum_limit}"],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"enum boundary {enum_limit} should return a best result",
+                completed,
+            )
+            output_path = case_directory / "inputOut"
+            status_present = (
+                output_path.is_file()
+                and "status: enumeration limit reached"
+                in output_path.read_text().splitlines()
+            )
+            require_cli(
+                status_present == expect_limit_status,
+                f"enum boundary {enum_limit} enforced the wrong state cap",
+                completed,
+            )
+            scenarios += 1
+
+        output_failure_cases = [
+            (
+                "pathway-output-failure",
+                "inputPathway",
+                ["--pathway=1", "--write-intermediate-mas=0", "--memory-report=0"],
+            ),
+            (
+                "intermediate-output-failure",
+                "inputIntermediateMAs",
+                ["--pathway=0", "--write-intermediate-mas=1", "--memory-report=0"],
+            ),
+        ]
+        if sys.platform.startswith("linux"):
+            output_failure_cases.append(
+                (
+                    "memory-output-failure",
+                    "memUsage",
+                    [
+                        "--pathway=0",
+                        "--write-intermediate-mas=0",
+                        "--memory-report=1",
+                    ],
+                )
+            )
+
+        for name, target_name, output_options in output_failure_cases:
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            shutil.copy2(source, case_directory / "input.mol")
+            (case_directory / target_name).mkdir()
+            completed = run_cli_command(
+                executable,
+                ["input.mol", *output_options],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode != 0,
+                f"{name} should fail when {target_name!r} cannot be opened",
+                completed,
+            )
+            require_cli(
+                f"could not open output file '{target_name}'" in completed.stderr,
+                f"{name} should identify the output it could not open",
+                completed,
+            )
+            scenarios += 1
+
+        disabled_output_directory = working_directory / "disabled-output-sentinels"
+        disabled_output_directory.mkdir()
+        shutil.copy2(source, disabled_output_directory / "input.mol")
+        sentinels = {
+            "inputPathway": "existing pathway sentinel\n",
+            "inputIntermediateMAs": "existing intermediate sentinel\n",
+            "memUsage": "existing memory sentinel\n",
+        }
+        for filename, content in sentinels.items():
+            (disabled_output_directory / filename).write_text(content)
+        completed = run_cli_command(
+            executable,
+            [
+                "input.mol",
+                "--pathway=0",
+                "--write-intermediate-mas=0",
+                "--memory-report=0",
+            ],
+            disabled_output_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "disabled output flags should not obstruct a successful calculation",
+            completed,
+        )
+        for filename, content in sentinels.items():
+            require_cli(
+                (disabled_output_directory / filename).read_text() == content,
+                f"disabled output flag unexpectedly overwrote {filename!r}",
+                completed,
+            )
+        scenarios += 1
 
     for memory_option, expected_on_linux in (
         (None, False),

@@ -30,17 +30,21 @@ Options:
     cout << R"(
 Option notes:
   Boolean values must be exactly 0 (disabled) or 1 (enabled).
-  --runtime is measured in raw std::clock ticks. CLOCKS_PER_SEC ticks represent
-  one second according to the platform's C++ runtime; whether clock() measures
-  processor or elapsed time is implementation-specific. A runtime or
-  enumeration limit can stop an exhaustive search, leaving the best assembly
-  index found so far.
+  --runtime is a cooperatively checked search budget measured in raw std::clock
+  ticks. CLOCKS_PER_SEC ticks represent one second according to the platform's
+  C++ runtime; whether clock() measures processor or elapsed time is
+  implementation-specific. Checks occur between search operations, so the
+  requested budget can be exceeded by the duration of an in-progress operation.
+  A runtime or enumeration limit can stop an exhaustive search. INPUTOut still
+  begins with the numeric best index found so far and then records which limit
+  was reached; that value is not necessarily a proven minimum.
 
 Outputs:
-  INPUTOut              Assembly index and std::clock ticks.
+  INPUTOut              Assembly index, search status, and std::clock ticks.
   INPUTPathway          Recovered pathway when --pathway=1.
   INPUTIntermediateMAs  Improved intermediate indices when enabled.
-  ./memUsage            Linux VmPeak report when --memory-report=1.
+  ./memUsage            Linux VmPeak report after other outputs succeed when
+                        --memory-report=1.
 
 Compatibility:
   Both one and two leading dashes are accepted for the canonical names and the

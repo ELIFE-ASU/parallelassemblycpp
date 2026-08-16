@@ -210,8 +210,9 @@ void printRemnantGraph(standardBitset mask, ofstream &ofs)
  * Outputs the pathway to a file whose name is stored in globals::moleculeName, which is the molecule name appended with "Pathway", e.g. "aspirinPathway"
  *
  * @param removedEdges Edges that were removed during assembly
+ * @return true if the complete pathway output was written successfully.
  */
-void recoverPathway2(vector<edgeL> &removedEdges)
+bool recoverPathway2(vector<edgeL> &removedEdges)
 {
     minAssemblyPathway.clear();
     assemblyPath *curr, *prev;
@@ -251,7 +252,13 @@ void recoverPathway2(vector<edgeL> &removedEdges)
         r.list.push_back(duplicate);
         v.push_back(r);
     }
-    ofstream ofs(moleculeName.c_str());
+    ofstream ofs(moleculeName);
+    if (!ofs.is_open())
+    {
+        cerr << "error: could not open output file '" << moleculeName << "'\n";
+        return false;
+    }
+
     ofs << "{\n";
     ofs << "\"file_graph\":[\n";
     ofs << "{\n";
@@ -278,4 +285,13 @@ void recoverPathway2(vector<edgeL> &removedEdges)
     }
     ofs << "]\n";
     ofs << "}\n";
+
+    ofs.close();
+    if (!ofs)
+    {
+        cerr << "error: could not write output file '" << moleculeName << "'\n";
+        return false;
+    }
+
+    return true;
 }

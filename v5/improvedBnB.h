@@ -13,53 +13,61 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
     vector<standardBitset> &masks = _target.masks;
     bool alive = 0;
     size_t currSize = 1;
-    int pr = 0;
-    bool exitEnum = 0;
-    vector<standardBitset> targetMask(masks.size(), 0);
-
-    vector<initialPotentialDuplicate> * matchingList1ptr = new vector<initialPotentialDuplicate>;
-    vector<initialPotentialDuplicate> &matchingList1 = *(matchingList1ptr);
+    vector<initialPotentialDuplicate> prevML;
     std::unordered_set<standardBitset> maskMap;
+
+    // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
     for (size_t i = 0; i < masks.size(); i++)
     {
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
+            if (searchShouldStop()) return false;
             if (masks[i][j] != 0)
             {
-                initialPotentialDuplicate m(j, masks[i], i);
                 pair<int, vector<standardBitset> > p; p.first = -1;
                 standardBitset b = 0; b.set(j);
+                if (!reserveInitialDagMask(maskMap, b))
+                {
+                    earlyTerminate = true;
+                    return false;
+                }
                 tempDag[0][b] = p;
-                m.generateDAG(matchingList1, i, maskMap, tempDag);
+            }
+        }
+    }
+
+    // Generate the first multi-edge frontier only after all base states exist.
+    for (size_t i = 0; i < masks.size(); i++)
+    {
+        for (size_t j = 0; j < univEdgeList.size(); j++)
+        {
+            if (searchShouldStop()) return false;
+            if (masks[i][j] == 0) continue;
+
+            initialPotentialDuplicate m(j, masks[i], i);
+            if (!m.generateDAG(prevML, i, maskMap, tempDag))
+            {
+                earlyTerminate = enumerationLimitReached;
+                return false;
             }
         }
     }
 
     bool active = 1, overweight = 0;
-    vector<initialPotentialDuplicate> *currMLptr = nullptr, *prevMLptr = matchingList1ptr;
     while (active)
     {
-        map<int, initialDuplicateSet> temp;
-        stmapVector.push_back(temp);
-        map<int, initialDuplicateSet> & stmap = stmapVector.back();
+        if (searchShouldStop()) return false;
+        stmapVector.emplace_back();
+        map<int, initialDuplicateSet> &stmap = stmapVector.back();
         active = 0;
-        currMLptr = new vector<initialPotentialDuplicate>;
-        vector<initialPotentialDuplicate> &currML = *currMLptr, &prevML = *prevMLptr;
+        vector<initialPotentialDuplicate> currML;
         for (size_t i = 0; i < prevML.size(); i++)
         {
-            if (clock() - startTime > runTimeMax)
-            {
-                interruptFlag = 1;
-                return false;
-            }
-            if (bitsetHashTable.size() > ENUM_MAX)
-            {
-                exitEnum = 1;
-                break;
-            }
+            if (searchShouldStop()) return false;
             initialPotentialDuplicate &m = prevML[i];
 
             int s = canonise(m.mask);
+            if (searchShouldStop()) return false;
             if (s <= ordinal)
             {
                 if (stmap.count(s) == 0)
@@ -75,49 +83,34 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             }
             else overweight = 1;
         }
-        if (exitEnum)
-        {
-            earlyTerminate = 1;
-            prevML.clear();
-            delete prevMLptr;
-            break;
-        }
         if (!overweight) tempDag.resize(tempDag.size() + 1);
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
-            if (clock() - startTime > runTimeMax)
-            {
-                interruptFlag = 1;
-                return false;
-            }
+            if (searchShouldStop()) return false;
             initialDuplicateSet &ss = it->second;
             if (ss.isValid())
             {
+                if (searchShouldStop()) return false;
                 active = 1;
-                if (overweight)
+                if (!overweight)
                 {
+                    alive |= ss.dagPopulator(currML, maskMap, tempDag);
                 }
-                else alive |= ss.dagPopulator(currML, maskMap, tempDag);
-                int u = ENUM_MAX - currML.size();
-                if (bitsetHashTable.size() > u)
+                if (enumerationLimitReached)
                 {
-                    exitEnum = 1;
-                    earlyTerminate = 1;
-                    break;
+                    earlyTerminate = true;
+                    return false;
                 }
+                if (searchShouldStop()) return false;
             }
         }
         if (overweight) active = 0;
         currSize++;
-        prevML.clear();
-        delete prevMLptr;
-        prevMLptr = currMLptr;
-        if (exitEnum) break;
+        prevML = std::move(currML);
     }
-    currMLptr->clear();
-    delete currMLptr;
-    if (exitEnum) return false;
+    if (searchShouldStop()) return false;
     convertDag(tempDag);
+    if (searchShouldStop()) return false;
     return alive;
 }
 
@@ -132,29 +125,31 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
 int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicateSet> > &stmapVector,
     vector<vector<standardBitset> > &targetMasks)
 {
+    if (searchShouldStop()) return 0;
     int ordinal = MAX_INT;
     if (bitsetHashTable.count(_target.masks.front())) ordinal = bitsetHashTable[_target.masks.front()].first;
     vector<standardBitset> &masks = _target.masks;
-    bool alive = 0;
     size_t currSize = 1;
-    int pr = 0;
     
     stmapVector.resize(1);
     for (size_t i = 0; i < masks.size(); i++)
     {
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
+            if (searchShouldStop()) return 0;
             if (masks[i][j] != 0)
             {
                 standardBitset b = 0; b.set(j);
                 potentialDuplicate m(b, i, j);
                 dagGenerate(m, stmapVector[0], masks[i], currSize, ordinal, masks.size());
+                if (searchShouldStop()) return 0;
             }
         }
     }
     bool active = 1, overweight = 0, last = 0;
     while (active)
     {
+        if (searchShouldStop()) return 0;
         vector<standardBitset> targetMask(masks.size(), 0);
         active = 0;
         map<int, dagDuplicateSet> temp;
@@ -162,11 +157,13 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
         map<int, dagDuplicateSet> &stmap = stmapVector[stmapVector.size() - 2];
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
-            if (interruptFlag) return false;
+            if (searchShouldStop()) return 0;
             dagDuplicateSet &ss = it->second;
             if (ss.isValid())
             {
+                if (searchShouldStop()) return 0;
                 active |= dagDuplicateGenerator(ss, stmapVector.back(), targetMask, masks, ordinal, overweight, last);
+                if (searchShouldStop()) return 0;
             }
         }
         if (overweight) last = 1;
@@ -176,6 +173,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
     if (stmapVector.back().size() == 0) stmapVector.pop_back();
     for (size_t i = 0; i < masks.size(); i++)
     {
+        if (searchShouldStop()) return 0;
         masks[i] &= targetMasks[0][i];
     }
     return currSize;
@@ -230,50 +228,54 @@ int postFragmentationCutoff(assemblyState &target, standardBitset & matchMask, s
 bool dagRecursiveAssembly(assemblyState &input, int &AI)
 {
     recursiveCount++;
-    if (clock() - startTime > runTimeMax) interruptFlag = 1;
-    if (interruptFlag) return false;
     if (input.AI() < AI)
     {
         AI = input.AI();
         minAIfound = AI;
         minAssemblyPath = input.apPtr;
-        unsigned long long time = clock() - startTime;
+        const unsigned long long time = elapsedClockTicks();
         cout << "time: " << time << " min AI found so far: " << AI << '\n';
         if (writeIntermediateMAs) intermediateMAs.push_back(pair<unsigned long long, int>(time, AI));
     }
+    if (searchShouldStop()) return false;
 
     vector<map<int, dagDuplicateSet> > stmapVector;
     vector<vector<standardBitset> > targetMasks;
     int maxFragSize = dagRecursiveEnumeration(input, stmapVector, targetMasks);
 
-    if (stmapVector.size() == 0 || interruptFlag) return false;
+    if (stmapVector.size() == 0 || searchShouldStop()) return false;
 
     /// Find the fragment-size-specific AI lower bounds
     vi fragSizeList, fragSizeListMax, sizeList(input.masks.size());
     input.maxDupBonds(fragSizeList, maxFragSize, targetMasks);
+    if (searchShouldStop()) return false;
 
     /// Establish the max duplicate cutoff based on the maximum fragment size
     fragSizeListMax.resize(fragSizeList.size());
     fragSizeListMax[0] = fragSizeList[0];
     for (int i = 1; i < fragSizeList.size(); i++)
     {
+        if (searchShouldStop()) return false;
         if (fragSizeList[i] > fragSizeListMax[i - 1])
             fragSizeListMax[i] = fragSizeList[i];
         else fragSizeListMax[i] = fragSizeListMax[i - 1];
     }
     for (size_t i = 0; i < input.masks.size(); i++)
     {
+        if (searchShouldStop()) return false;
         sizeList[i] = input.masks[i].count();
     }
 
     /// Begin iterating through the enumerated duplicatable fragments
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
+        if (searchShouldStop()) return false;
         map<int, dagDuplicateSet> &stmap = stmapVector[j];
         vector<standardBitset> stmapMaskList(input.masks.size(), 0);
         standardBitset maskM = 0;
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
+            if (searchShouldStop()) return false;
             dagDuplicateSet &ss = it->second;
             if (!ss.dead)
             {
@@ -282,6 +284,7 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
             
             for (size_t i = 0; i < ss.maskList.size(); i++)
             {
+                if (searchShouldStop()) return false;
                 maskC |= ss.maskList[i];
                 stmapMaskList[i] |= ss.maskList[i];
             }
@@ -301,21 +304,30 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
                 if (ss.list.size() > 1)
                 {
                     ss.generateMatchings(matchings);
+                    if (searchShouldStop()) return false;
                 }
                 for (int i = matchings.size() - 1; i >= 0; i--)
                 {
+                    if (searchShouldStop()) return false;
                     assemblyState as;
                     fragmentAssemblyState(input, matchings[i], as);
+                    if (searchShouldStop()) return false;
 
                     int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
                     as.sumDupBonds = sumDupBonds;
                     int temp = postFragmentationCutoff(as, maskC, maskM);
+                    if (searchShouldStop()) return false;
                     if (as.lowBoundAI(matchings[i].maxFragSize, temp) < AI)
                     {
                         apWrapper ap;
                         ap.ap = new assemblyPath;
                         ap.ap->parent = input.apPtr;
                         ap.ap->key = as.assemblyHashCalculator();
+                        if (searchShouldStop())
+                        {
+                            delete ap.ap;
+                            return false;
+                        }
 
                         if (pathAssemblyMap.count(ap) == 0)
                         {
@@ -327,6 +339,7 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
                             ap.ap->duplicate = bitsetHashTable[matchings[i].second].second;
                             pathAssemblyMap.insert(ap);
                             dagRecursiveAssembly(as, AI);
+                            if (searchShouldStop()) return false;
                         }
                         else
                         {
@@ -342,6 +355,7 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
                                 (*it2).ap->duplicate = bitsetHashTable[matchings[i].second].second;
                                 (*it2).ap->parent = input.apPtr;
                                 dagRecursiveAssembly(as, AI);
+                                if (searchShouldStop()) return false;
                             }
                         }
                     }
@@ -360,53 +374,56 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
  * 
  * @param input The input assembly state
  * @param AI The global minimum assembly index found
- * @param ofs the output file. If the subgraph enumeration limit is reached, a warning will be written to this file
  * @return true if any more duplicatable substructures are found
  * @return false otherwise
  */
-bool initialRecursiveAssembly(assemblyState &input, int &AI, ofstream &ofs)
+bool initialRecursiveAssembly(assemblyState &input, int &AI)
 {
     bool earlyTerminate = 0;
     recursiveCount++;
-    if (clock() - startTime > runTimeMax) interruptFlag = 1;
-    if (interruptFlag) return false;
     if (input.AI() < AI)
     {
         AI = input.AI();
         minAIfound = AI;
         minAssemblyPath = input.apPtr;
-        int time = clock() - startTime;
+        const unsigned long long time = elapsedClockTicks();
         cout << "time: " << time << " min AI found so far: " << AI << '\n';
-        if (writeIntermediateMAs) intermediateMAs.push_back(pii(time, AI));
+        if (writeIntermediateMAs)
+            intermediateMAs.push_back(pair<unsigned long long, int>(time, AI));
     }
+    if (searchShouldStop()) return false;
+
     vector<map<int, initialDuplicateSet> > stmapVector;
     initialRecursiveEnumeration(input, stmapVector, earlyTerminate);
-    if (earlyTerminate)
-    {
-        cout << "Subgraph enumeration limit reached\n";
-        ofs << "Subgraph enumeration limit reached\n";
-        return false;
-    }
-    if (interruptFlag) return false;
+    if (earlyTerminate || enumerationLimitReached || searchShouldStop()) return false;
 
     if (stmapVector.size() == 0) return false;
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
+        if (searchShouldStop()) return false;
         map<int, initialDuplicateSet> &stmap = stmapVector[j];
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
+            if (searchShouldStop()) return false;
             initialDuplicateSet &ss = it->second;
             vector<validMatchings> matchings;
             if (ss.list.size() > 1)
             {
                 ss.generateMatchings(matchings);
+                if (searchShouldStop()) return false;
             }
             standardBitset maskC = 0;
-            for (size_t i = 0; i < ss.maskList.size(); i++) maskC |= ss.maskList[i];
+            for (size_t i = 0; i < ss.maskList.size(); i++)
+            {
+                if (searchShouldStop()) return false;
+                maskC |= ss.maskList[i];
+            }
             for (int i = matchings.size() - 1; i >= 0; i--)
             {
+                if (searchShouldStop()) return false;
                 assemblyState as;
                 fragmentAssemblyState(input, matchings[i], as);
+                if (searchShouldStop()) return false;
                 int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
                 as.sumDupBonds = sumDupBonds;
                 if (as.lowBoundAI() < AI)
@@ -415,6 +432,11 @@ bool initialRecursiveAssembly(assemblyState &input, int &AI, ofstream &ofs)
                     ap.ap = new assemblyPath;
                     ap.ap->parent = input.apPtr;
                     ap.ap->key = as.assemblyHashCalculator();
+                    if (searchShouldStop())
+                    {
+                        delete ap.ap;
+                        return false;
+                    }
 
                     if (pathAssemblyMap.count(ap) == 0)
                     {
@@ -426,6 +448,7 @@ bool initialRecursiveAssembly(assemblyState &input, int &AI, ofstream &ofs)
                         ap.ap->duplicate = bitsetHashTable[matchings[i].second].second;
                         pathAssemblyMap.insert(ap);
                         dagRecursiveAssembly(as, AI);
+                        if (searchShouldStop()) return false;
                     }
                     else
                     {
@@ -441,6 +464,7 @@ bool initialRecursiveAssembly(assemblyState &input, int &AI, ofstream &ofs)
                             (*it2).ap->duplicate = bitsetHashTable[matchings[i].second].second;
                             (*it2).ap->parent = input.apPtr;
                             dagRecursiveAssembly(as, AI);
+                            if (searchShouldStop()) return false;
                         }
                     }
                 }
@@ -455,14 +479,20 @@ bool initialRecursiveAssembly(assemblyState &input, int &AI, ofstream &ofs)
  * 
  * @param mg The target molGraph
  * @param ofs The output file
+ * @return false only when a requested pathway could not be written.
  */
-void improvedBnB(molGraph &mg, ofstream &ofs)
+bool improvedBnB(molGraph &mg, ofstream &ofs)
 {
     startTime = clock();
+    runtimeLimitReached = false;
+    enumerationLimitReached = false;
     clearPathMap();
+    minAssemblyPath = nullptr;
     bitsetHashTable.clear();
     graphHashMap.clear();
-    vector<edgeL> removedEdges;
+    DAG.clear();
+    removedEdges.clear();
+    intermediateMAs.clear();
     totalBonds = mg.totalBonds;
     originalEdgeList = mg.writeEdgeList();
     disjointFragments = mg.disjointFragments();
@@ -480,8 +510,20 @@ void improvedBnB(molGraph &mg, ofstream &ofs)
     pathAssemblyMap.insert(ap);
     as.apPtr = ap.ap;
     int AI = MAX_INT;
-    initialRecursiveAssembly(as, AI, ofs);
-    if (isPathway) recoverPathway2(removedEdges);
-    if (disjointCompensation) ofs << AI - disjointFragments + 1 << '\n';
-    else ofs << AI << '\n';
+    initialRecursiveAssembly(as, AI);
+
+    // Keep the primary result line machine-readable even for partial searches.
+    ofs << compensateDisjointAssemblyIndex(AI) << '\n';
+    if (runtimeLimitReached)
+    {
+        cout << "status: runtime limit reached\n";
+        ofs << "status: runtime limit reached\n";
+    }
+    if (enumerationLimitReached)
+    {
+        cout << "status: enumeration limit reached\n";
+        ofs << "status: enumeration limit reached\n";
+    }
+    if (isPathway) return recoverPathway2(removedEdges);
+    return true;
 }

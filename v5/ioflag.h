@@ -43,7 +43,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "runtime",
             "TICKS",
             "unlimited",
-            "Stop after this many raw std::clock ticks.",
+            "Cooperatively stop the search after this many elapsed std::clock ticks.",
             {"runTime"}
         },
         {
@@ -51,7 +51,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "enum-max",
             "COUNT",
             "50000000",
-            "Limit the internal subgraph-enumeration state budget.",
+            "Cap unique connected masks, including one-edge masks, in the initial DAG.",
             {"enumMax"}
         },
         {
@@ -75,7 +75,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "compensate-disjoint",
             "0|1",
             "0",
-            "Compensate final and intermediate indices for disconnected components.",
+            "Subtract one per processed-graph component after the first.",
             {"compensateDisjoint", "disjointCompensation"}
         },
         {
@@ -91,7 +91,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "write-intermediate-mas",
             "0|1",
             "0",
-            "Write each improved assembly index and its std::clock tick.",
+            "Write each new best assembly index and its elapsed std::clock tick.",
             {"writeIntermediateMAs"}
         }
     };

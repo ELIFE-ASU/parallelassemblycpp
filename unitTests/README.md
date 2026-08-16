@@ -13,7 +13,9 @@ plain graph-input format.
 
 Before running molecule cases, `unitTester.py` also checks the executable's CLI:
 help text, strict option validation, compatibility names, option/input ordering,
-output toggles, `.mol` path handling, and Linux memory reporting.
+runtime and enumeration boundaries, hydrogen removal, disconnected-component
+compensation, output toggles and write failures, `.mol` path handling, and Linux
+memory reporting.
 
 Run only the pathway golden cases with:
 

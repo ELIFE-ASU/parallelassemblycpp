@@ -62,17 +62,18 @@ the same argument using `=`. Boolean values must be exactly `0` (disabled) or
 | Option | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | Print usage, input, option, output, and compatibility details, then exit. |
-| `--runtime=<TICKS>` | Non-negative integer | Unlimited | Stop after this many raw `std::clock` ticks. `CLOCKS_PER_SEC` ticks represent one second according to the platform's C++ runtime; whether `clock()` measures processor or elapsed time is implementation-specific. |
-| `--enum-max=<COUNT>` | `1`–`INT_MAX` | `50000000` | Limit the internal subgraph-enumeration state budget. Larger limits can substantially increase memory use. |
+| `--runtime=<TICKS>` | Non-negative integer | Unlimited | Cooperatively stop the search after this many elapsed `std::clock` ticks. `CLOCKS_PER_SEC` ticks represent one second according to the platform's C++ runtime; whether `clock()` measures processor or elapsed time is implementation-specific. Checks occur between search operations, so the budget can be exceeded by the duration of an in-progress operation. A value of `0` records the initial upper bound and then stops before enumeration. |
+| `--enum-max=<COUNT>` | `1`–`INT_MAX` | `50000000` | Cap the number of unique connected subgraph masks retained while building the initial enumeration DAG, including one-edge masks. The search stops before retaining a mask beyond the limit. Larger limits can substantially increase memory use. |
 | `--pathway=<0\|1>` | Boolean | `1` | Write the recovered assembly pathway to `INPUTPathway`. |
 | `--remove-hydrogens=<0\|1>` | Boolean | `1` | Remove explicit hydrogen atoms from molfile inputs before calculation. This has no effect on native graph inputs. |
-| `--compensate-disjoint=<0\|1>` | Boolean | `0` | Subtract one from final and intermediate assembly indices for every disconnected input component after the first. |
-| `--memory-report=<0\|1>` | Boolean | `0` | On Linux, write `/proc/self/status`'s peak virtual-memory value (`VmPeak`, in kB) to `memUsage` in the current working directory. The option has no output on other platforms. |
-| `--write-intermediate-mas=<0\|1>` | Boolean | `0` | Write every improved assembly index and its `std::clock` tick to `INPUTIntermediateMAs`. |
+| `--compensate-disjoint=<0\|1>` | Boolean | `0` | Subtract one from final and intermediate assembly indices for every component after the first in the processed graph. For molfiles, components are counted after optional hydrogen removal. Empty graphs receive no adjustment. |
+| `--memory-report=<0\|1>` | Boolean | `0` | After the other calculation outputs are written successfully on Linux, write `/proc/self/status`'s peak virtual-memory value (`VmPeak`, in kB) to `memUsage` in the current working directory. The option has no output on other platforms. |
+| `--write-intermediate-mas=<0\|1>` | Boolean | `0` | Write each newly found best assembly index and its elapsed `std::clock` tick to `INPUTIntermediateMAs`. |
 
-The runtime and enumeration limits can stop an exhaustive search. When that
-happens, the output may contain the best assembly index found so far rather
-than a proven minimum.
+The runtime and enumeration limits can stop an exhaustive search. `INPUTOut`
+still begins with a numeric best assembly index, followed by a status line
+naming the limit that was reached. The best value from a limited search is not
+necessarily a proven minimum.
 
 Canonical options use two leading dashes and kebab-case names. Both one and two
 leading dashes are accepted for canonical and compatibility names, so existing
@@ -98,10 +99,18 @@ graph files it is the complete input path.
 
 | File | When written | Contents |
 | --- | --- | --- |
-| `INPUTOut` | Every successful calculation | Assembly index and total `std::clock` ticks. |
+| `INPUTOut` | When the input is read and this file can be opened | Numeric assembly index, any limit or interruption status, and total elapsed `std::clock` ticks. |
 | `INPUTPathway` | `--pathway=1` | Recovered pathway as JSON. |
 | `INPUTIntermediateMAs` | `--write-intermediate-mas=1` | `std::clock` tick and improved assembly index pairs, using the selected disjoint-compensation setting. |
-| `./memUsage` | `--memory-report=1` on Linux | Peak process virtual memory (`VmPeak`) reported by the kernel. |
+| `./memUsage` | `--memory-report=1` on Linux, after other outputs succeed | Peak process virtual memory (`VmPeak`) reported by the kernel. |
+
+If an enabled output cannot be opened or fully written, AssemblyCpp reports the
+affected path and exits with a non-zero status.
+
+On a Ctrl-C handled before final output finalization, the search unwinds
+cooperatively and records an interrupted status. If all requested outputs can
+be written, they are flushed (including the Linux memory report) and the process
+exits with status `130`; an output failure still exits with status `1`.
 
 ### Examples
 
@@ -111,7 +120,7 @@ Calculate a molfile using the defaults:
 ./build/AssemblyCpp unitTests/alanine.mol
 ```
 
-Skip pathway generation and lower the enumeration budget:
+Skip pathway output and lower the enumeration budget:
 
 ```bash
 ./build/AssemblyCpp unitTests/alanine --pathway=0 --enum-max=1000000
@@ -130,10 +139,11 @@ Keep explicit hydrogen atoms and write intermediate best values:
 
 The test runner compiles the executable, checks the command-line interface, and
 runs the complete regression manifest in one command. The CLI checks cover help
-content, validation errors, compatibility names, input ordering, output flags,
-and Linux memory reporting. Each calculation runs in an isolated temporary
-directory, so test artifacts do not modify `unitTests/`. Selected cases also
-compare generated pathways with reviewed JSON golden files:
+content, validation errors, compatibility names, input ordering, resource-limit
+boundaries, hydrogen removal, disjoint compensation, output toggles and
+failures, and Linux memory reporting. Each calculation runs in an isolated
+temporary directory, so test artifacts do not modify `unitTests/`. Selected
+cases also compare generated pathways with reviewed JSON golden files:
 
 ```bash
 python unitTests/unitTester.py --build --jobs 4

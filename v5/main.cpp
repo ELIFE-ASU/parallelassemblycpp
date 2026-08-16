@@ -48,16 +48,30 @@ using standardBitset = bitset<BITSET_LENGTH>;
  * @brief Function to write out intermediate MAs before the calculation has terminated
  * 
  * @param filename output filename
+ * @return true if the complete output was written successfully.
  */
-void writeoutIntermediateMAs(const string &filename)
+bool writeoutIntermediateMAs(const string &filename)
 {
     ofstream ofs(filename);
-    const int compensation = disjointCompensation ? disjointFragments : 1;
+    if (!ofs.is_open())
+    {
+        cerr << "error: could not open output file '" << filename << "'\n";
+        return false;
+    }
+
     for (size_t i = 0; i < intermediateMAs.size(); i++)
     {
         ofs << intermediateMAs[i].first << ' '
-            << intermediateMAs[i].second - compensation + 1 << '\n';
+            << compensateDisjointAssemblyIndex(intermediateMAs[i].second) << '\n';
     }
+
+    ofs.close();
+    if (!ofs)
+    {
+        cerr << "error: could not write output file '" << filename << "'\n";
+        return false;
+    }
+    return true;
 }
 
 bool hasMolfileExtension(const string &filename)
@@ -117,21 +131,55 @@ bool assemblyCalculator(const string &input)
     }
 
     moleculeName = outputBase + "Pathway";
-    const clock_t calculationStart = clock();
     outputFile << outputBase << " has assembly index: ";
-    improvedBnB(mol_graph, outputFile);
-    outputFile << "time to completion: " << clock() - calculationStart << '\n';
-    if (writeIntermediateMAs) writeoutIntermediateMAs(outputBase + "IntermediateMAs");
-    return true;
+    // improvedBnB propagates recoverPathway2's requested-output status.
+    const bool calculationSucceeded = improvedBnB(mol_graph, outputFile);
+    bool outputsSucceeded = calculationSucceeded;
+
+    if (
+        writeIntermediateMAs &&
+        !writeoutIntermediateMAs(outputBase + "IntermediateMAs")
+    )
+    {
+        outputsSucceeded = false;
+    }
+
+    // Once all potentially long-running output generation is complete, stop
+    // accepting new interrupts and record any interrupt already observed.
+    disableInterruptHandler();
+    if (receivedUserInterrupt())
+    {
+        cout << "status: interrupted by user\n";
+        outputFile << "status: interrupted by user\n";
+    }
+    outputFile << "time elapsed: " << elapsedClockTicks() << '\n';
+
+    outputFile.close();
+    if (!outputFile)
+    {
+        cerr << "error: could not write output file '" << outputName << "'\n";
+        outputsSucceeded = false;
+    }
+    return outputsSucceeded;
 }
 
 /**
  * @brief Memory usage tracker, works for linux only
  * 
  * @param outputFilename output filename
+ * @return true if VmPeak was read and the complete report was written.
  */
-void maxMemoryUsage(const string& outputFilename) {
-    ifstream status_file("/proc/self/status");
+bool maxMemoryUsage(const string& outputFilename)
+{
+    const string statusFilename = "/proc/self/status";
+    ifstream status_file(statusFilename);
+    if (!status_file.is_open())
+    {
+        cerr << "error: could not open memory status file '"
+             << statusFilename << "'\n";
+        return false;
+    }
+
     string line, peakMemory;
 
     while (getline(status_file, line))
@@ -143,15 +191,34 @@ void maxMemoryUsage(const string& outputFilename) {
         }
     }
 
-    ofstream outFile(outputFilename);
-    if (outFile.is_open()) {
-        outFile << peakMemory << '\n';
-        outFile.close();
-    } 
-    else
+    if (status_file.bad())
     {
-        cerr << "Error: could not open output file.\n";
+        cerr << "error: could not read memory status file '"
+             << statusFilename << "'\n";
+        return false;
     }
+    if (peakMemory.empty())
+    {
+        cerr << "error: memory status file '" << statusFilename
+             << "' does not contain 'VmPeak:'\n";
+        return false;
+    }
+
+    ofstream outFile(outputFilename);
+    if (!outFile.is_open())
+    {
+        cerr << "error: could not open output file '" << outputFilename << "'\n";
+        return false;
+    }
+
+    outFile << peakMemory << '\n';
+    outFile.close();
+    if (!outFile)
+    {
+        cerr << "error: could not write output file '" << outputFilename << "'\n";
+        return false;
+    }
+    return true;
 }
 
 int main(int argc, char** argv)
@@ -180,11 +247,13 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    const bool succeeded = assemblyCalculator(arguments.input);
+    bool succeeded = assemblyCalculator(arguments.input);
 
     #ifdef __linux__
-        if (succeeded && memTest) maxMemoryUsage("memUsage");
+        if (succeeded && memTest) succeeded = maxMemoryUsage("memUsage");
     #endif
 
-    return succeeded ? 0 : 1;
+    if (!succeeded) return 1;
+    if (receivedUserInterrupt()) return 130;
+    return 0;
 }
