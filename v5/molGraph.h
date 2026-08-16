@@ -374,42 +374,69 @@ molGraph preprocessWriteback(molGraph &mg, vector<edgeL> &writeback)
 /// Global variable for the molGraph before and after preprocessing
 molGraph originalMolecule, targetMolecule;
 
+struct ufdsMaskWorkspace
+{
+    ufdsSplit sets;
+    vi uniques;
+    vector<standardBitset> components;
+
+    ufdsMaskWorkspace(size_t atomCount, size_t edgeCount): sets(0)
+    {
+        sets.elements.reserve(atomCount);
+        sets.extraVals.reserve(edgeCount);
+        uniques.reserve(atomCount);
+        components.reserve(atomCount);
+    }
+};
+
 /**
  * @brief Calls the disjoint-set data structure for the fragmentation function. See Seet et al. section 4.5 for details
  *
  * @param mask Target bitset as input
  * @param maskList List of disjoint bitsets returned
+ * @param workspace Reusable disjoint-set and component buffers. Its component
+ * buffer must not alias maskList.
  */
-void ufdsMaskConstruct(standardBitset &mask, 
-    vector<standardBitset> &maskList)
+void ufdsMaskConstructWithWorkspace(
+    standardBitset &mask,
+    vector<standardBitset> &maskList,
+    ufdsMaskWorkspace &workspace
+)
+{
+    vector<edgeL> &edgeList = univEdgeList;
+    ufdsSplit &u = workspace.sets;
+    u.reset(targetMolecule.mg.size());
+    for (size_t i = 0; i < edgeList.size(); i++)
     {
-        vector<edgeL> &edgeList = univEdgeList;
-        ufdsSplit u(targetMolecule.mg.size());
-        for (size_t i = 0; i < edgeList.size(); i++)
+        if (mask[i] != 0)
         {
-            if (mask[i] != 0)
+            int a = edgeList[i].a, b = edgeList[i].b;
+            if (u.elements[a].parent == -1 && u.elements[b].parent == -1)
             {
-                int a = edgeList[i].a, b = edgeList[i].b;
-                if (u.elements[a].parent == -1 && u.elements[b].parent == -1)
+                u.doubleInsert(b, a, i);
+            }
+            else
+            {
+                if (u.elements[a].parent == -1)
                 {
-                    u.doubleInsert(b, a, i);
+                    u.insert(a, b, i);
+                }
+                else if (u.elements[b].parent == -1)
+                {
+                    u.insert(b, a, i);
                 }
                 else
                 {
-                    if (u.elements[a].parent == -1)
-                    {
-                        u.insert(a, b, i);
-                    }
-                    else if (u.elements[b].parent == -1)
-                    {
-                        u.insert(b, a, i);
-                    }
-                    else
-                    {
-                        u.merge(a, b, i);
-                    }
+                    u.merge(a, b, i);
                 }
             }
         }
-        u.split(maskList);
     }
+    u.splitWithBuffers(maskList, workspace.uniques, workspace.components);
+}
+
+void ufdsMaskConstruct(standardBitset &mask, vector<standardBitset> &maskList)
+{
+    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
+    ufdsMaskConstructWithWorkspace(mask, maskList, workspace);
+}

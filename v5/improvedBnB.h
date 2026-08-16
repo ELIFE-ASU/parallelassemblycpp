@@ -204,7 +204,11 @@ int postFragmentationCutoff(assemblyState &target, standardBitset & matchMask, s
     return max(matchDB, maxFragDB);
 }
 
-bool dagRecursiveAssembly(assemblyState &input, int &AI);
+bool dagRecursiveAssemblyWithWorkspace(
+    assemblyState &input,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace
+);
 
 void recordImprovedAssemblyIndex(assemblyState &input, int &AI)
 {
@@ -218,12 +222,13 @@ void recordImprovedAssemblyIndex(assemblyState &input, int &AI)
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
 
-bool continueAssemblySearch(
+bool continueAssemblySearchWithWorkspace(
     assemblyState &parent,
     assemblyState &candidate,
     validMatchings &matching,
     int sumDupBonds,
-    int &AI
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace
 )
 {
     auto path = std::make_unique<assemblyPath>();
@@ -241,7 +246,11 @@ bool continueAssemblySearch(
         wrapper.ap->duplicate = bitsetHashTable[matching.second].second;
         pathAssemblyMap.insert(wrapper);
         path.release();
-        dagRecursiveAssembly(candidate, AI);
+        dagRecursiveAssemblyWithWorkspace(
+            candidate,
+            AI,
+            fragmentationWorkspace
+        );
         return !searchShouldStop();
     }
 
@@ -253,7 +262,11 @@ bool continueAssemblySearch(
     existing->ap->match = bitsetHashTable[matching.first].second;
     existing->ap->duplicate = bitsetHashTable[matching.second].second;
     existing->ap->parent = parent.apPtr;
-    dagRecursiveAssembly(candidate, AI);
+    dagRecursiveAssemblyWithWorkspace(
+        candidate,
+        AI,
+        fragmentationWorkspace
+    );
     return !searchShouldStop();
 }
 
@@ -263,10 +276,15 @@ bool continueAssemblySearch(
  * 
  * @param input The input assembly state
  * @param AI The global minimum assembly index found
+ * @param fragmentationWorkspace Buffers reused across the search
  * @return true if any more duplicatable substructures are found
  * @return false otherwise
  */
-bool dagRecursiveAssembly(assemblyState &input, int &AI)
+bool dagRecursiveAssemblyWithWorkspace(
+    assemblyState &input,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace
+)
 {
     recordImprovedAssemblyIndex(input, AI);
     if (searchShouldStop()) return false;
@@ -342,7 +360,12 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
                 {
                     if (searchShouldStop()) return false;
                     assemblyState as;
-                    fragmentAssemblyState(input, matchings[i], as);
+                    fragmentAssemblyStateWithWorkspace(
+                        input,
+                        matchings[i],
+                        as,
+                        fragmentationWorkspace
+                    );
                     if (searchShouldStop()) return false;
 
                     int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
@@ -351,12 +374,13 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
                     if (searchShouldStop()) return false;
                     if (as.lowBoundAI(matchings[i].maxFragSize, fragmentationCutoff) < AI)
                     {
-                        if (!continueAssemblySearch(
+                        if (!continueAssemblySearchWithWorkspace(
                             input,
                             as,
                             matchings[i],
                             sumDupBonds,
-                            AI
+                            AI,
+                            fragmentationWorkspace
                         )) return false;
                     }
                 }
@@ -373,10 +397,15 @@ bool dagRecursiveAssembly(assemblyState &input, int &AI)
  * 
  * @param input The input assembly state
  * @param AI The global minimum assembly index found
+ * @param fragmentationWorkspace Buffers reused across the search
  * @return true if any more duplicatable substructures are found
  * @return false otherwise
  */
-bool initialRecursiveAssembly(assemblyState &input, int &AI)
+bool initialRecursiveAssemblyWithWorkspace(
+    assemblyState &input,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace
+)
 {
     recordImprovedAssemblyIndex(input, AI);
     if (searchShouldStop()) return false;
@@ -404,24 +433,61 @@ bool initialRecursiveAssembly(assemblyState &input, int &AI)
             {
                 if (searchShouldStop()) return false;
                 assemblyState as;
-                fragmentAssemblyState(input, matchings[i], as);
+                fragmentAssemblyStateWithWorkspace(
+                    input,
+                    matchings[i],
+                    as,
+                    fragmentationWorkspace
+                );
                 if (searchShouldStop()) return false;
                 int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
                 as.sumDupBonds = sumDupBonds;
                 if (as.lowBoundAI() < AI)
                 {
-                    if (!continueAssemblySearch(
+                    if (!continueAssemblySearchWithWorkspace(
                         input,
                         as,
                         matchings[i],
                         sumDupBonds,
-                        AI
+                        AI,
+                        fragmentationWorkspace
                     )) return false;
                 }
             }
         }
     }
     return true;
+}
+
+bool dagRecursiveAssembly(assemblyState &input, int &AI)
+{
+    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
+    return dagRecursiveAssemblyWithWorkspace(input, AI, workspace);
+}
+
+bool continueAssemblySearch(
+    assemblyState &parent,
+    assemblyState &candidate,
+    validMatchings &matching,
+    int sumDupBonds,
+    int &AI
+)
+{
+    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
+    return continueAssemblySearchWithWorkspace(
+        parent,
+        candidate,
+        matching,
+        sumDupBonds,
+        AI,
+        workspace
+    );
+}
+
+bool initialRecursiveAssembly(assemblyState &input, int &AI)
+{
+    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
+    return initialRecursiveAssemblyWithWorkspace(input, AI, workspace);
 }
 
 /**
@@ -449,6 +515,10 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     vector<edgeL> removedEdges;
     targetMolecule = preprocessWriteback(mg, removedEdges);
     univEdgeList = targetMolecule.writeEdgeList();
+    ufdsMaskWorkspace fragmentationWorkspace(
+        targetMolecule.mg.size(),
+        univEdgeList.size()
+    );
     allEdges = 0;
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
     assemblyState as; as.masks.push_back(allEdges);
@@ -460,7 +530,7 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     pathAssemblyMap.insert(ap);
     as.apPtr = rootPath.release();
     int AI = std::numeric_limits<int>::max();
-    initialRecursiveAssembly(as, AI);
+    initialRecursiveAssemblyWithWorkspace(as, AI, fragmentationWorkspace);
 
     // Keep the primary result line machine-readable even for partial searches.
     ofs << compensateDisjointAssemblyIndex(AI) << '\n';

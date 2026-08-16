@@ -79,6 +79,13 @@ struct ufdsSplit
     
     ufdsSplit(size_t size){elements.resize(size);}
 
+    void reset(size_t size)
+    {
+        elements.assign(size, ufdsSplitNode{});
+        extraVals.clear();
+        maxElement = 0;
+    }
+
     /// standard disjoint set function
     size_t find(size_t idx)
     {
@@ -140,11 +147,17 @@ struct ufdsSplit
      * @brief The splitting function used during the fragmentation
      *
      * @param maskList The output
+     * @param uniques Reusable root-to-component index buffer
+     * @param tempMaskList Reusable component-mask buffer; must not alias maskList
      */
-    void split(vector<standardBitset> &maskList)
+    void splitWithBuffers(
+        vector<standardBitset> &maskList,
+        vi &uniques,
+        vector<standardBitset> &tempMaskList
+    )
     {
-        vi uniques(maxElement + 1, -1);
-        vector<standardBitset> tempMaskList;
+        uniques.assign(maxElement + 1, -1);
+        tempMaskList.clear();
         for (int i = 0; i <= maxElement; i++)
         {
             if (elements[i].parent != -1)
@@ -173,5 +186,12 @@ struct ufdsSplit
                 maskList.push_back(tempMaskList[i]);
             }
         }
+    }
+
+    void split(vector<standardBitset> &maskList)
+    {
+        vi uniques;
+        vector<standardBitset> tempMaskList;
+        splitWithBuffers(maskList, uniques, tempMaskList);
     }
 };

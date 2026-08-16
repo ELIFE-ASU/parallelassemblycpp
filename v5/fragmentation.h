@@ -4,9 +4,14 @@
  * @param _target The assembly state to be fragmented
  * @param matching The duplicate pair. matching.first is retained and matching.second is deleted
  * @param _result The resulting assembly state
+ * @param workspace Buffers reused by successive fragmentation calls
  */
-void fragmentAssemblyState(assemblyState &_target, validMatchings & matching, 
-assemblyState &_result)
+void fragmentAssemblyStateWithWorkspace(
+    assemblyState &_target,
+    validMatchings &matching,
+    assemblyState &_result,
+    ufdsMaskWorkspace &workspace
+)
 {
     vector<standardBitset> &masks = _target.masks;
     standardBitset f1 = matching.first, f2 = matching.second;
@@ -18,16 +23,16 @@ assemblyState &_result)
         standardBitset resultMask = masks[matching.frag1];
         resultMask ^= f1;
         resultMask ^= f2;
-        ufdsMaskConstruct(resultMask, _result.masks);
+        ufdsMaskConstructWithWorkspace(resultMask, _result.masks, workspace);
     }
     else
     {
         standardBitset resultMask1 = masks[matching.frag1];
         resultMask1 ^= f1;
-        ufdsMaskConstruct(resultMask1, _result.masks);
+        ufdsMaskConstructWithWorkspace(resultMask1, _result.masks, workspace);
         standardBitset resultMask2 = masks[matching.frag2];
         resultMask2 ^= f2;
-        ufdsMaskConstruct(resultMask2, _result.masks);
+        ufdsMaskConstructWithWorkspace(resultMask2, _result.masks, workspace);
     }
     for (size_t i = 0; i < _result.masks.size(); i++)
     {
@@ -41,19 +46,37 @@ assemblyState &_result)
             masks[i] != 0
         )
         {
-            vector<standardBitset> tempMasks;
             if (bitsetHashTable.count(masks[i]) == 0)
             {
-                ufdsMaskConstruct(masks[i], tempMasks);
-                for (size_t j = 0; j < tempMasks.size(); j++)
+                const size_t firstNewMask = _result.masks.size();
+                ufdsMaskConstructWithWorkspace(
+                    masks[i],
+                    _result.masks,
+                    workspace
+                );
+                for (size_t j = firstNewMask; j < _result.masks.size(); j++)
                 {
-                    canonise(tempMasks[j]);
-                    _result.masks.push_back(tempMasks[j]);
+                    canonise(_result.masks[j]);
                 }
             }
             else _result.masks.push_back(masks[i]);
         }
     }
+}
+
+void fragmentAssemblyState(
+    assemblyState &_target,
+    validMatchings &matching,
+    assemblyState &_result
+)
+{
+    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
+    fragmentAssemblyStateWithWorkspace(
+        _target,
+        matching,
+        _result,
+        workspace
+    );
 }
 
 /**
