@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_battery:
+        description: Run all 944 molecule regression cases
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Create Conda environment
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          activate-environment: assemblycpp-v5
+          environment-file: environment.yml
+          miniforge-version: latest
+          channel-priority: strict
+          conda-remove-defaults: true
+
+      - name: Run smoke regression battery
+        if: github.event_name != 'workflow_dispatch' || !inputs.full_battery
+        timeout-minutes: 30
+        run: python unitTests/unitTester.py --build --limit 20 --timeout 120
+
+      - name: Run full regression battery
+        if: github.event_name == 'workflow_dispatch' && inputs.full_battery
+        timeout-minutes: 360
+        run: python unitTests/unitTester.py --build --jobs 2
