@@ -270,24 +270,24 @@ bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, standa
     size_t size, int ordinal, size_t frags)
 {
     bool overweight = 0;
-    for (size_t i = 0; i < DAG[size - 1][d.idx].children.size(); i++)
+    const dagNode &parent = DAG[size - 1][d.idx];
+    for (const dagTransition &transition : parent.transitions)
     {
         if (searchShouldStop()) return overweight;
-        dagNode &dn = DAG[size][DAG[size - 1][d.idx].children[i]];
-        if (((dn.mask | fragment) == fragment))
+        if (fragment[transition.addedEdge])
         {
+            dagNode &dn = DAG[size][transition.childIndex];
             if (dn.ix <= ordinal)
             {
+                potentialDuplicate child = d;
+                child.mask.set(transition.addedEdge);
+                child.idx = transition.childIndex;
                 auto entry = stmap.try_emplace(
                     dn.ix,
                     size + 1,
                     frags
                 ).first;
-                entry->second.insert(potentialDuplicate(
-                    dn.mask,
-                    d.fragment,
-                    DAG[size - 1][d.idx].children[i]
-                ));
+                entry->second.insert(child);
             }
             else overweight = 1;
         }
