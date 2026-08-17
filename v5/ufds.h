@@ -4,6 +4,10 @@
 template<typename Bitset>
 unsigned long long bitsetLowWordBelow(const Bitset &mask, size_t limit)
 {
+    if constexpr (requires { mask.lowWordBelow(limit); })
+    {
+        return mask.lowWordBelow(limit);
+    }
     constexpr size_t wordBits = numeric_limits<unsigned long long>::digits;
     const Bitset lowWordMask(numeric_limits<unsigned long long>::max());
     unsigned long long word = (mask & lowWordMask).to_ullong();
@@ -26,8 +30,8 @@ void forEachSetBitWithWideLimit(
 {
     limit = min(limit, mask.size());
     if constexpr (requires(const Bitset &bits, size_t index) {
-        bits._Find_first();
-        bits._Find_next(index);
+        bits.findFirst();
+        bits.findNext(index);
     })
     {
         // A linear scan is cheaper for dense residuals and is still
@@ -41,9 +45,9 @@ void forEachSetBitWithWideLimit(
             return;
         }
         for (
-            size_t index = mask._Find_first();
+            size_t index = mask.findFirst();
             index < limit;
-            index = mask._Find_next(index)
+            index = mask.findNext(index)
         )
         {
             visitor(index);
@@ -153,7 +157,7 @@ struct ufdsSplitNode
     }
 };
 
-static_assert(BITSET_LENGTH <= numeric_limits<int16_t>::max());
+static_assert(MASK_BIT_CAPACITY <= numeric_limits<int16_t>::max());
 
 /**
  * @brief for UFDS split node - variant on textbook UFDS
@@ -162,7 +166,7 @@ struct ufdsSplit
 {
     static constexpr size_t atomWordBits = numeric_limits<uint64_t>::digits;
     static constexpr size_t atomWordCount =
-        (BITSET_LENGTH + atomWordBits - 1) / atomWordBits;
+        (MASK_BIT_CAPACITY + atomWordBits - 1) / atomWordBits;
     static_assert(atomWordCount <= numeric_limits<uint64_t>::digits);
 
     vector<ufdsSplitNode> elements;
@@ -270,8 +274,8 @@ struct ufdsSplit
      * @param tempMaskList Reusable component-mask buffer; must not alias maskList
      */
     void splitWithBuffers(
-        vector<standardBitset> &maskList,
-        vector<standardBitset> &tempMaskList
+        vector<EdgeMask> &maskList,
+        vector<EdgeMask> &tempMaskList
     )
     {
         tempMaskList.clear();
@@ -282,7 +286,7 @@ struct ufdsSplit
             if (component == -1)
             {
                 component = tempMaskList.size();
-                standardBitset b = 0; b.set(elements[index].val);
+                EdgeMask b = 0; b.set(elements[index].val);
                 tempMaskList.push_back(b);
             }
             else

@@ -552,6 +552,13 @@ def run_cli_checks(executable: Path) -> int:
                 "--runtime=0",
                 "status: runtime limit reached",
             ),
+            # Cyclosporin exercises two active words in both mask domains.
+            (
+                "wide-runtime-limit",
+                TEST_DIRECTORY / "cyclosporin.mol",
+                "--runtime=0",
+                "status: runtime limit reached",
+            ),
             (
                 "enumeration-limit",
                 TEST_DIRECTORY / "113.mol",
@@ -1000,18 +1007,53 @@ def run_cli_checks(executable: Path) -> int:
     return scenarios
 
 
-def build_executable(executable: Path, compiler: str) -> Path:
-    executable = executable.resolve()
-    executable.parent.mkdir(parents=True, exist_ok=True)
-
+def compiler_command(compiler: str) -> list[str]:
     compiler_command = shlex.split(compiler)
     if not compiler_command:
         raise TestConfigurationError("the compiler command is empty")
     if shutil.which(compiler_command[0]) is None:
         raise TestConfigurationError(f"compiler not found: {compiler_command[0]}")
+    return compiler_command
+
+
+def run_mask_unit_tests(compiler: str) -> None:
+    command_prefix = compiler_command(compiler)
+    with tempfile.TemporaryDirectory(prefix="assemblycpp-mask-tests-") as directory:
+        test_executable = Path(directory) / "activeWordMaskTester"
+        command = [
+            *command_prefix,
+            str(TEST_DIRECTORY / "activeWordMaskTester.cpp"),
+            "-std=c++23",
+            "-O2",
+            "-mpopcnt",
+            "-march=x86-64-v3",
+            "-o",
+            str(test_executable),
+        ]
+        print(f"Building mask tests: {shlex.join(command)}", flush=True)
+        completed = subprocess.run(command, check=False)
+        if completed.returncode != 0:
+            raise TestConfigurationError(
+                f"mask test build failed with exit code {completed.returncode}"
+            )
+
+        completed = subprocess.run([str(test_executable)], check=False)
+        if completed.returncode != 0:
+            raise TestConfigurationError(
+                f"mask tests failed with exit code {completed.returncode}"
+            )
+        print("Mask tests: passed", flush=True)
+
+
+def build_executable(executable: Path, compiler: str) -> Path:
+    executable = executable.resolve()
+    executable.parent.mkdir(parents=True, exist_ok=True)
+
+    run_mask_unit_tests(compiler)
+    command_prefix = compiler_command(compiler)
 
     command = [
-        *compiler_command,
+        *command_prefix,
         str(REPOSITORY_ROOT / "v5" / "main.cpp"),
         "-std=c++23",
         "-O3",

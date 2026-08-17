@@ -21,7 +21,7 @@ typedef property_map_equivalent<edge_name_map_t, edge_name_map_t> edge_comp_t;
  * @param mask The input boolean edgelist
  * @return molGraphBoost the output
  */
-molGraphBoost edgelistToBoost(molGraph &mg, vector<edgeL> &edgeList, const standardBitset &mask)
+molGraphBoost edgelistToBoost(molGraph &mg, vector<edgeL> &edgeList, const EdgeMask &mask)
 {
     molGraphBoost output;
     std::unordered_map<int, int> ht;

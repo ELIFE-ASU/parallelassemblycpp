@@ -142,9 +142,10 @@ Keep explicit hydrogen atoms and write intermediate best values:
 
 ## Tests
 
-The test runner compiles the executable, checks the command-line interface, and
-runs the complete regression manifest in one command. The CLI checks cover help
-content, validation errors, compatibility names, input ordering, resource-limit
+The test runner checks both mask domains at every 64-bit boundary, compiles the
+executable, checks the command-line interface, and runs the complete regression
+manifest in one command. The CLI checks cover help content, validation errors,
+compatibility names, input ordering, resource-limit
 boundaries, hydrogen removal, disjoint compensation, output toggles and
 failures, and Linux memory reporting. Each calculation runs in an isolated
 temporary directory, so test artifacts do not modify `unitTests/`. Selected

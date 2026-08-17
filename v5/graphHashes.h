@@ -4,7 +4,7 @@
 struct graphHash
 {
     /// graph to hash expressed as a bitset of edges
-    standardBitset mask;
+    EdgeMask mask;
     /// hashes stored as floats
     vector<float> hashes;
     /// if the graph is acyclic, the tree hash function is used, and the output stored here
@@ -66,7 +66,7 @@ struct graphHash
      * @param isCyclic Is the molecule cyclic
      * @param _mask Boolean edgelist of the molGraph
      */
-    graphHash(molGraph &mg, int depth, bool isCyclic, standardBitset &_mask)
+    graphHash(molGraph &mg, int depth, bool isCyclic, EdgeMask &_mask)
     {
         mask = _mask;
         if (isCyclic)
@@ -136,7 +136,7 @@ std::unordered_map<graphHash, pii> graphHashMap;
  * @param mask Boolean edgelist to be canonised
  * @return int canonical value
  */
-int canonise(standardBitset &mask)
+int canonise(EdgeMask &mask)
 {
     const auto cached = bitsetHashTable.find(mask);
     if (cached != bitsetHashTable.end()) return cached->second.first;

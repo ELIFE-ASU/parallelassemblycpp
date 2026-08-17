@@ -5,8 +5,8 @@
  * when doing so keeps the number of retained states at or below ENUM_MAX.
  */
 bool reserveInitialDagMask(
-    std::unordered_set<standardBitset> &maskMap,
-    const standardBitset &mask
+    std::unordered_set<EdgeMask> &maskMap,
+    const EdgeMask &mask
 )
 {
     if (maskMap.count(mask) != 0) return true;
@@ -27,12 +27,12 @@ bool reserveInitialDagMask(
 struct potentialDuplicate
 {
     /// @brief mask representing edge list of potential duplicate
-    standardBitset mask;
+    EdgeMask mask;
     /// @brief the index from the canonise function and index of the fragment
     int idx, fragment;
     potentialDuplicate() = default;
 
-    potentialDuplicate(standardBitset &_mask, int _fragment, int _idx):
+    potentialDuplicate(EdgeMask &_mask, int _fragment, int _idx):
         mask(_mask), idx(_idx), fragment(_fragment) {}
 };
 
@@ -43,9 +43,9 @@ struct potentialDuplicate
 struct initialPotentialDuplicate : potentialDuplicate
 {
     /// mask representing presence of specific atoms in the potential duplicate
-    standardBitset atomMask = 0;
+    AtomMask atomMask = 0;
     /// mask representing the edge list of the parent fragment
-    standardBitset fragMask = 0;
+    EdgeMask fragMask = 0;
 
     /**
      * @brief Construct a new potential Duplicate object
@@ -54,7 +54,7 @@ struct initialPotentialDuplicate : potentialDuplicate
      * @param _fragMask Boolean edgelist of the fragment the duplicate is part of
      * @param _fragment Index of the fragment in its assembly state
      */
-    initialPotentialDuplicate(int x, standardBitset &_fragMask, size_t _fragment)
+    initialPotentialDuplicate(int x, EdgeMask &_fragMask, size_t _fragment)
     {
         fragMask = _fragMask;
         fragment = _fragment;
@@ -70,8 +70,8 @@ struct initialPotentialDuplicate : potentialDuplicate
      * @param maskMap Hash table of boolean edgelists of all fragments taken before to avoid repetition
      * @param tempDag Temporary DAG populated with generated children
      */
-    bool generateDAG(vector<initialPotentialDuplicate> &q, std::unordered_set<standardBitset> &maskMap,
-    vector<std::unordered_map<standardBitset, pair<int, vector<standardBitset> > > > &tempDag)
+    bool generateDAG(vector<initialPotentialDuplicate> &q, std::unordered_set<EdgeMask> &maskMap,
+    vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > &tempDag)
     {
         vector<edgeL> &edgeList = univEdgeList;
         for (size_t i = 0; i < edgeList.size(); i++)
@@ -79,20 +79,21 @@ struct initialPotentialDuplicate : potentialDuplicate
             if (searchShouldStop()) return false;
             if ((mask[i] == 0) && (fragMask[i] != 0))
             {
-                standardBitset temp1, temp2; temp1.set(edgeList[i].a), 
-                temp2.set(edgeList[i].b);
-                if ((temp1 & atomMask) == temp1 || (temp2 & atomMask) == temp2)
+                const size_t atomA = edgeList[i].a;
+                const size_t atomB = edgeList[i].b;
+                if (atomMask[atomA] || atomMask[atomB])
                 {
-                    standardBitset tempMask = mask; tempMask.set(i);
+                    EdgeMask tempMask = mask; tempMask.set(i);
                     if (maskMap.count(tempMask) == 0)
                     {
                         if (!reserveInitialDagMask(maskMap, tempMask)) return false;
                         initialPotentialDuplicate g = *this;
                         g.mask.set(i);
-                        g.atomMask |= (temp1 | temp2);
+                        g.atomMask.set(atomA);
+                        g.atomMask.set(atomB);
                         q.push_back(g);
-                        vector<standardBitset> &adjList = tempDag[mask.count() - 1][mask].second;
-                        pair<int, vector<standardBitset> > p;
+                        vector<EdgeMask> &adjList = tempDag[mask.count() - 1][mask].second;
+                        pair<int, vector<EdgeMask> > p;
                         tempDag[mask.count()][g.mask] = p;
                         adjList.push_back(g.mask);
                     }
@@ -110,10 +111,10 @@ struct initialPotentialDuplicate : potentialDuplicate
 struct validMatchings
 {
     /// @brief first and second duplicate masks
-    standardBitset first, second;
+    EdgeMask first, second;
     /// @brief frag1 and frag2 index first and second; maxFragSize is their maximum size
     int frag1, frag2, maxFragSize;
-    validMatchings(standardBitset &_first, standardBitset &_second, int _frag1, int _frag2, int _maxFragSize):
+    validMatchings(EdgeMask &_first, EdgeMask &_second, int _frag1, int _frag2, int _maxFragSize):
     first(_first), second(_second), frag1(_frag1), frag2(_frag2), maxFragSize(_maxFragSize){}
 };
 
@@ -123,7 +124,7 @@ struct duplicateSet
     /// @brief bitset count of the duplicates in the duplicate set
     size_t size;
     /// @brief fragment masks from the assembly states
-    vector<standardBitset> maskList;
+    vector<EdgeMask> maskList;
     /// @brief list of potential duplicates
     vector<potentialDuplicate> list;
     duplicateSet(size_t _size, size_t fragments)
@@ -175,7 +176,7 @@ struct duplicateSet
                 if (searchShouldStop()) return;
                 if (frag == list[j].fragment)
                 {
-                    if ((list[i].mask & list[j].mask) == 0)
+                    if (list[i].mask.disjoint(list[j].mask))
                     {
                         validMatchings p(list[i].mask, list[j].mask, frag, frag, size);
                         v.push_back(p);
@@ -209,8 +210,8 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
      * @return false otherwise
      */
     bool dagPopulator(vector<initialPotentialDuplicate> &q, 
-    std::unordered_set<standardBitset> &maskMap, 
-    vector<std::unordered_map<standardBitset, pair<int, vector<standardBitset> > > > &tempDag)
+    std::unordered_set<EdgeMask> &maskMap,
+    vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > &tempDag)
     {
         bool output = 0;
         vb alive(list.size(), 0);
@@ -223,7 +224,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
                 if (searchShouldStop()) return output;
                 if (frag == list[j].fragment)
                 {
-                    if ((list[i].mask & list[j].mask) == 0)
+                    if (list[i].mask.disjoint(list[j].mask))
                     {
                         alive[i] = 1;
                         alive[j] = 1;
@@ -266,7 +267,7 @@ struct dagDuplicateSet : duplicateSet<potentialDuplicate>
  * @return true if the canonical index of any duplicate is greater than the ordinal
  * @return false otherwise
  */
-bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, standardBitset &fragment, 
+bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, EdgeMask &fragment,
     size_t size, int ordinal, size_t frags)
 {
     bool overweight = 0;
@@ -309,7 +310,7 @@ bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, standa
  * @return false 
  */
 bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap,
-    vector<standardBitset> &takenMasks, vector<standardBitset> &stateMasks, int ordinal, bool &overweight, bool last)
+    vector<EdgeMask> &takenMasks, vector<EdgeMask> &stateMasks, int ordinal, bool &overweight, bool last)
     {
         bool output = 0;
         vb alive(ds.list.size(), 0);
@@ -322,7 +323,7 @@ bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap
                 if (searchShouldStop()) return output;
                 if (frag == ds.list[j].fragment)
                 {
-                    if ((ds.list[i].mask & ds.list[j].mask) == 0)
+                    if (ds.list[i].mask.disjoint(ds.list[j].mask))
                     {
                         alive[i] = 1;
                         alive[j] = 1;

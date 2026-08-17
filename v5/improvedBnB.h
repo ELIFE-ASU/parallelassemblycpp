@@ -8,12 +8,12 @@
  */
 bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initialDuplicateSet> > &stmapVector)
 {
-    vector<std::unordered_map<standardBitset, pair<int, vector<standardBitset> > > > tempDag(2);
-    vector<standardBitset> &masks = _target.masks;
+    vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > tempDag(2);
+    vector<EdgeMask> &masks = _target.masks;
     bool alive = 0;
     size_t currSize = 1;
     vector<initialPotentialDuplicate> prevML;
-    std::unordered_set<standardBitset> maskMap;
+    std::unordered_set<EdgeMask> maskMap;
 
     // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
     for (size_t i = 0; i < masks.size(); i++)
@@ -23,8 +23,8 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             if (searchShouldStop()) return false;
             if (masks[i][j] != 0)
             {
-                pair<int, vector<standardBitset> > p; p.first = -1;
-                standardBitset b = 0; b.set(j);
+                pair<int, vector<EdgeMask> > p; p.first = -1;
+                EdgeMask b = 0; b.set(j);
                 if (!reserveInitialDagMask(maskMap, b))
                 {
                     return false;
@@ -106,13 +106,13 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
  * @return Maximum duplicate size reached
  */
 int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicateSet> > &stmapVector,
-    vector<vector<standardBitset> > &targetMasks)
+    vector<vector<EdgeMask> > &targetMasks)
 {
     if (searchShouldStop()) return 0;
     int ordinal = std::numeric_limits<int>::max();
     const auto ordinalEntry = bitsetHashTable.find(_target.masks.front());
     if (ordinalEntry != bitsetHashTable.end()) ordinal = ordinalEntry->second.first;
-    vector<standardBitset> &masks = _target.masks;
+    vector<EdgeMask> &masks = _target.masks;
     size_t currSize = 1;
     
     stmapVector.resize(1);
@@ -123,7 +123,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
             if (searchShouldStop()) return 0;
             if (masks[i][j] != 0)
             {
-                standardBitset b = 0; b.set(j);
+                EdgeMask b = 0; b.set(j);
                 potentialDuplicate m(b, i, j);
                 dagGenerate(m, stmapVector[0], masks[i], currSize, ordinal, masks.size());
                 if (searchShouldStop()) return 0;
@@ -134,7 +134,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
     while (active)
     {
         if (searchShouldStop()) return 0;
-        vector<standardBitset> targetMask(masks.size(), 0);
+        vector<EdgeMask> targetMask(masks.size(), 0);
         active = 0;
         stmapVector.emplace_back();
         map<int, dagDuplicateSet> &stmap = stmapVector[stmapVector.size() - 2];
@@ -171,7 +171,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
  * @param maxFragMask The bitset of all duplicatable subgraphs with the same bitset count as the matching
  * @return int the sum of duplicate bonds calculated by this cutoff function
  */
-int postFragmentationCutoff(assemblyState &target, standardBitset & matchMask, standardBitset &maxFragMask)
+int postFragmentationCutoff(assemblyState &target, EdgeMask & matchMask, EdgeMask &maxFragMask)
 {
     if (target.masks.size() < 2) return 0;
     int maxFragSize = target.masks[0].count();
@@ -191,8 +191,8 @@ int postFragmentationCutoff(assemblyState &target, standardBitset & matchMask, s
     for (size_t i = 1; i < target.masks.size(); i++)
     {
         mainSizeList[i] = target.masks[i].count();
-        matchSizeList[i] = (target.masks[i] & matchMask).count();
-        maxFragSizeList[i] = (target.masks[i] & maxFragMask).count();
+        matchSizeList[i] = target.masks[i].intersectionCount(matchMask);
+        maxFragSizeList[i] = target.masks[i].intersectionCount(maxFragMask);
     }
     int matchDB = target.maxDupBonds(mainSizeList, maxFragSize, matchSizeList);
     int maxFragDB = target.maxDupBonds(mainSizeList, maxFragSize, maxFragSizeList) - 1;
@@ -340,7 +340,7 @@ void dagRecursiveAssemblyWithWorkspace(
     if (searchShouldStop()) return;
 
     vector<map<int, dagDuplicateSet> > stmapVector;
-    vector<vector<standardBitset> > targetMasks;
+    vector<vector<EdgeMask> > targetMasks;
     int maxFragSize = dagRecursiveEnumeration(input, stmapVector, targetMasks);
 
     if (searchShouldStop()) return;
@@ -371,8 +371,8 @@ void dagRecursiveAssemblyWithWorkspace(
     {
         if (searchShouldStop()) return;
         map<int, dagDuplicateSet> &stmap = stmapVector[j];
-        vector<standardBitset> stmapMaskList(input.masks.size(), 0);
-        standardBitset maskM = 0;
+        vector<EdgeMask> stmapMaskList(input.masks.size(), 0);
+        EdgeMask maskM = 0;
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
             if (searchShouldStop()) return;
@@ -380,7 +380,7 @@ void dagRecursiveAssemblyWithWorkspace(
             if (!ss.dead)
             {
             vector<validMatchings> matchings;
-            standardBitset maskC = 0;
+            EdgeMask maskC = 0;
             
             for (size_t i = 0; i < ss.maskList.size(); i++)
             {
@@ -536,11 +536,13 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     vector<edgeL> removedEdges;
     targetMolecule = preprocessWriteback(mg, removedEdges);
     univEdgeList = targetMolecule.writeEdgeList();
+    EdgeMask::configure(univEdgeList.size());
+    AtomMask::configure(targetMolecule.mg.size());
     ufdsMaskWorkspace fragmentationWorkspace(
         targetMolecule.mg.size(),
         univEdgeList.size()
     );
-    allEdges = 0;
+    allEdges.reset();
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
     assemblyState as; as.masks.push_back(allEdges);
     auto rootPath = std::make_unique<assemblyPath>();

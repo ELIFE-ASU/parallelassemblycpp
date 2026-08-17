@@ -287,7 +287,7 @@ public:
  * @return molGraph
  */
 molGraph constructFromEdgeList(molGraph &mg, vector<edgeL> &edgeList, 
-    standardBitset &mask, bool &isCyclic)
+    EdgeMask &mask, bool &isCyclic)
     {
         disjointSet u(mg.mg.size());
         molGraph output;
@@ -369,11 +369,11 @@ molGraph originalMolecule, targetMolecule;
 struct cachedResidualDecomposition
 {
     bool isIdentity = false;
-    vector<standardBitset> components;
+    vector<EdgeMask> components;
 
     void appendTo(
         uint64_t maskWord,
-        vector<standardBitset> &output
+        vector<EdgeMask> &output
     ) const
     {
         if (isIdentity) output.emplace_back(maskWord);
@@ -404,7 +404,7 @@ struct ufdsMaskWorkspace
     static_assert(std::has_single_bit(decompositionSeenBitCount));
 
     ufdsSplit sets;
-    vector<standardBitset> components;
+    vector<EdgeMask> components;
     vector<lowResidualDecompositionCacheEntry> lowDecompositionCache;
     vector<uint64_t> decompositionSeenBits;
     size_t edgeCount;
@@ -486,8 +486,8 @@ struct ufdsMaskWorkspace
     }
 
     bool assignCachedComponents(
-        vector<standardBitset> &stored,
-        const vector<standardBitset> &output,
+        vector<EdgeMask> &stored,
+        const vector<EdgeMask> &output,
         size_t outputStart,
         size_t storedComponentCount
     )
@@ -518,7 +518,7 @@ struct ufdsMaskWorkspace
         {
             return false;
         }
-        vector<standardBitset> replacement(
+        vector<EdgeMask> replacement(
             output.begin() + outputStart,
             output.end()
         );
@@ -539,8 +539,8 @@ struct ufdsMaskWorkspace
  * buffer must not alias maskList.
  */
 void ufdsMaskConstructWithoutCacheWithWorkspace(
-    const standardBitset &mask,
-    vector<standardBitset> &maskList,
+    const EdgeMask &mask,
+    vector<EdgeMask> &maskList,
     ufdsMaskWorkspace &workspace,
     uint64_t lowMaskWord
 )
@@ -606,8 +606,8 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
  * meaningful only for the molecule that produced univEdgeList.
  */
 void ufdsMaskConstructWithCacheWithWorkspace(
-    const standardBitset &mask,
-    vector<standardBitset> &maskList,
+    const EdgeMask &mask,
+    vector<EdgeMask> &maskList,
     ufdsMaskWorkspace &workspace
 )
 {
@@ -689,7 +689,7 @@ void ufdsMaskConstructWithCacheWithWorkspace(
     const size_t componentCount = maskList.size() - outputStart;
     const bool isIdentity =
         componentCount == 1 &&
-        maskList[outputStart] == standardBitset(lowMaskWord);
+        maskList[outputStart] == EdgeMask(lowMaskWord);
     const size_t storedComponentCount = isIdentity ? 0 : componentCount;
 
     try
@@ -704,7 +704,7 @@ void ufdsMaskConstructWithCacheWithWorkspace(
             (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
         lowResidualDecompositionCacheEntry &entry =
             workspace.lowDecompositionCache[index];
-        vector<standardBitset> &stored = entry.decomposition.components;
+        vector<EdgeMask> &stored = entry.decomposition.components;
         if (!workspace.assignCachedComponents(
             stored,
             maskList,
@@ -742,8 +742,8 @@ void ufdsMaskConstructWithCacheWithWorkspace(
  * @brief Append a residual decomposition, using reuse only where it pays
  */
 inline void ufdsMaskConstructWithWorkspace(
-    const standardBitset &mask,
-    vector<standardBitset> &maskList,
+    const EdgeMask &mask,
+    vector<EdgeMask> &maskList,
     ufdsMaskWorkspace &workspace
 )
 {

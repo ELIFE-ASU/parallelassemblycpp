@@ -10,7 +10,7 @@ struct dagTransition
 };
 
 static_assert(
-    BITSET_LENGTH <=
+    MASK_BIT_CAPACITY <=
     static_cast<size_t>(numeric_limits<uint16_t>::max()) + 1
 );
 
@@ -27,15 +27,15 @@ struct dagNode
     vector<dagTransition> transitions;
 
     dagNode(
-        const standardBitset &parentMask,
+        const EdgeMask &parentMask,
         int _ix,
-        const vector<standardBitset> &children,
-        const std::unordered_map<standardBitset, int> &bitsetToIndex
+        const vector<EdgeMask> &children,
+        const std::unordered_map<EdgeMask, int> &bitsetToIndex
     ):
         ix(_ix)
     {
         transitions.reserve(children.size());
-        for (const standardBitset &childMask : children)
+        for (const EdgeMask &childMask : children)
         {
             const auto child = bitsetToIndex.find(childMask);
             if (child == bitsetToIndex.end())
@@ -43,14 +43,14 @@ struct dagNode
                 throw logic_error("DAG transition target is missing");
             }
 
-            const standardBitset added = childMask ^ parentMask;
-            if ((childMask & parentMask) != parentMask || added.count() != 1)
+            const EdgeMask added = childMask ^ parentMask;
+            if (!childMask.contains(parentMask) || added.count() != 1)
             {
                 throw logic_error("DAG transition must add exactly one edge");
             }
 
-            size_t addedEdge = BITSET_LENGTH;
-            forEachSetBitBelow(added, BITSET_LENGTH, [&](size_t edge) {
+            size_t addedEdge = MASK_BIT_CAPACITY;
+            forEachSetBitBelow(added, MASK_BIT_CAPACITY, [&](size_t edge) {
                 addedEdge = edge;
             });
             if (addedEdge >= univEdgeList.size())
@@ -67,7 +67,7 @@ struct dagNode
  * 
  */
 struct CompareDagMask {
-    bool operator()(const standardBitset &a, const standardBitset &b) const {
+    bool operator()(const EdgeMask &a, const EdgeMask &b) const {
         // Compare from most significant bit down to 0.
         for (size_t i = univEdgeList.size(); i-- > 0;) {
             if (a[i] ^ b[i])
@@ -85,17 +85,17 @@ vector<vector<dagNode> > DAG;
  * used on all subsequent passes of the algorithm
  * 
  */
-void convertDag(vector<std::unordered_map<standardBitset, pair<int, vector<standardBitset> > > > & tempDag)
+void convertDag(vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > & tempDag)
 {
     DAG.resize(tempDag.size());
-    vector<std::unordered_map<standardBitset, int> > bitsetToIndex(tempDag.size());
+    vector<std::unordered_map<EdgeMask, int> > bitsetToIndex(tempDag.size());
     for (size_t i = 0; i < tempDag.size() - 1; i++)
     {
         if (i > 0) bitsetToIndex[i].reserve(tempDag[i].size());
         const auto &nextMap = tempDag[i + 1];
         for (auto it = tempDag[i].begin(); it != tempDag[i].end(); ++it)
         {
-            vector<standardBitset> &list = it->second.second;
+            vector<EdgeMask> &list = it->second.second;
             size_t trueSize = list.size();
             for (size_t j = 0; j < list.size(); j++)
             {
@@ -105,7 +105,7 @@ void convertDag(vector<std::unordered_map<standardBitset, pair<int, vector<stand
                     trueSize--;
                 }
             }
-            vector<standardBitset> trueList(trueSize);
+            vector<EdgeMask> trueList(trueSize);
             size_t k = 0;
             for (size_t j = 0; j < list.size(); j++)
             {
@@ -126,7 +126,7 @@ void convertDag(vector<std::unordered_map<standardBitset, pair<int, vector<stand
     }
     if (DAG.size() > 1)
     {
-        vector<standardBitset> rootMasks;
+        vector<EdgeMask> rootMasks;
         rootMasks.reserve(tempDag[0].size());
         for (const auto &entry : tempDag[0]) rootMasks.push_back(entry.first);
         sort(rootMasks.begin(), rootMasks.end(), CompareDagMask());
@@ -142,7 +142,7 @@ void convertDag(vector<std::unordered_map<standardBitset, pair<int, vector<stand
             }
         }
         DAG[0].reserve(rootMasks.size());
-        for (const standardBitset &mask : rootMasks)
+        for (const EdgeMask &mask : rootMasks)
         {
             const auto &entry = tempDag[0].at(mask);
             DAG[0].emplace_back(mask, entry.first, entry.second, bitsetToIndex[1]);

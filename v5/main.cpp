@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <bitset>
 #include <cstdint>
 #include <csignal>
 #include <ctime>
@@ -26,9 +25,9 @@ using namespace std;
 using vi = vector<int>;
 using vb = vector<bool>;
 using pii = pair<int, int>;
-constexpr size_t BITSET_LENGTH = 512;
 constexpr int HASH_DEPTH_MAX = 7;
-using standardBitset = bitset<BITSET_LENGTH>;
+
+#include "activeWordMask.h"
 
 constexpr int ceilLog2(int value)
 {

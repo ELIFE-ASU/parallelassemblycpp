@@ -16,23 +16,23 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
     ufdsMaskWorkspace &workspace
 )
 {
-    vector<standardBitset> &masks = _target.masks;
-    standardBitset f1 = matching.first, f2 = matching.second;
+    vector<EdgeMask> &masks = _target.masks;
+    EdgeMask f1 = matching.first, f2 = matching.second;
     const bool same = matching.frag1 == matching.frag2;
     _result.masks.push_back(f1);
     if (same)
     {
-        standardBitset resultMask = masks[matching.frag1];
+        EdgeMask resultMask = masks[matching.frag1];
         resultMask ^= f1;
         resultMask ^= f2;
         ufdsMaskConstructWithWorkspace(resultMask, _result.masks, workspace);
     }
     else
     {
-        standardBitset resultMask1 = masks[matching.frag1];
+        EdgeMask resultMask1 = masks[matching.frag1];
         resultMask1 ^= f1;
         ufdsMaskConstructWithWorkspace(resultMask1, _result.masks, workspace);
-        standardBitset resultMask2 = masks[matching.frag2];
+        EdgeMask resultMask2 = masks[matching.frag2];
         resultMask2 ^= f2;
         ufdsMaskConstructWithWorkspace(resultMask2, _result.masks, workspace);
     }

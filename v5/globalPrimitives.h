@@ -13,7 +13,7 @@ int ENUM_MAX = 50000000;
 
 std::unordered_map<string, int> atypeHash;
 string moleculeName;
-standardBitset allEdges;
+EdgeMask allEdges;
 #ifdef _WIN32
     std::atomic_bool interruptFlag = false;
     std::atomic_bool userInterruptReceived = false;
@@ -31,7 +31,7 @@ unsigned int totalBonds = 0;
 vector<edgeL> originalEdgeList, univEdgeList;
 
 /// Hash table for edgelists for pathway algorithm
-std::unordered_map<standardBitset, pii> bitsetHashTable;
+std::unordered_map<EdgeMask, pii> bitsetHashTable;
 
 bool isPathway = true;
 bool removeHydrogens = true;

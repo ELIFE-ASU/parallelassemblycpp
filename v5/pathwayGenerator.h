@@ -4,7 +4,7 @@
  * @param mask Bitset representing edges to output
  * @param ofs Output file stream
  */
-void printMaskAsEdgeList(standardBitset mask, ofstream &ofs)
+void printMaskAsEdgeList(EdgeMask mask, ofstream &ofs)
 {
     ofs << "[";
     bool first = true;
@@ -69,7 +69,7 @@ void printBondColour(short type, ofstream &ofs)
  * @param maskList List of two bitsets (matching pair)
  * @param ofs Output file stream
  */
-void printMatching(vector<standardBitset> &maskList, ofstream &ofs)
+void printMatching(vector<EdgeMask> &maskList, ofstream &ofs)
 {
     ofs << "{\"Left\":";
     printMaskAsEdgeList(maskList[0], ofs);
@@ -121,9 +121,10 @@ void printOriginalGraph(ofstream &ofs)
  * @param mask Bitset representing target-graph edges to remove
  * @param ofs Output file stream
  */
-void printRemnantGraph(standardBitset mask, ofstream &ofs)
+void printRemnantGraph(EdgeMask mask, ofstream &ofs)
 {
-    standardBitset dual = allEdges ^ mask, remnantAtoms = 0;
+    EdgeMask dual = allEdges ^ mask;
+    AtomMask remnantAtoms = 0;
     for (size_t i = 0; i < univEdgeList.size(); i++)
     {
         if (dual[i])
@@ -192,7 +193,7 @@ bool recoverPathway2(vector<edgeL> &removedEdges)
         minPath.push_back(current);
     }
     reverse(minPath.begin(), minPath.end());
-    vector<vector<standardBitset> > maskList(graphHashMap.size());
+    vector<vector<EdgeMask> > maskList(graphHashMap.size());
     for (auto it = graphHashMap.begin(); it != graphHashMap.end(); ++it)
     {
         maskList[it->second.first].resize(it->second.second + 1);
@@ -201,11 +202,11 @@ bool recoverPathway2(vector<edgeL> &removedEdges)
     {
         maskList[it->second.first][it->second.second] = it->first;
     }
-    standardBitset allTakenEdges = 0;
-    vector<vector<standardBitset>> matchings;
+    EdgeMask allTakenEdges = 0;
+    vector<vector<EdgeMask>> matchings;
     for (size_t i = 1; i < minPath.size(); i++)
     {
-        standardBitset mask = maskList[minPath[i]->key[0]][minPath[i]->match], 
+        EdgeMask mask = maskList[minPath[i]->key[0]][minPath[i]->match],
         duplicate = maskList[minPath[i]->key[0]][minPath[i]->duplicate];
         allTakenEdges |= duplicate;
         matchings.push_back({mask, duplicate});

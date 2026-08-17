@@ -56,7 +56,7 @@ std::unordered_set<apWrapper> pathAssemblyMap;
 struct assemblyState
 {   
     /// @brief each mask represents a separate fragment as a boolean edge list
-    vector<standardBitset> masks;
+    vector<EdgeMask> masks;
     /// @brief number of duplicated bonds
     int sumDupBonds = 0;
     /// @brief path that was used to generate this state
@@ -102,7 +102,7 @@ struct assemblyState
      * 
      * @param targetMasks The vector of bitsets used in place of sizeList
      */
-    int maxDupBonds(vi &sizeListMain, int maxFragSize, vector<standardBitset> &targetMasks)
+    int maxDupBonds(vi &sizeListMain, int maxFragSize, vector<EdgeMask> &targetMasks)
     {
         vi sizeList(targetMasks.size());
         
@@ -119,7 +119,7 @@ struct assemblyState
      * @param fragSizeList The result vector
      * @param targetMasks The vector of vector of bitsets
      */
-    void maxDupBonds(vi &fragSizeList, int maxFragSize, vector<vector<standardBitset> > &targetMasks)
+    void maxDupBonds(vi &fragSizeList, int maxFragSize, vector<vector<EdgeMask> > &targetMasks)
     {
         int dupBonds2 = 0;
         fragSizeList.resize(maxFragSize - 1);
