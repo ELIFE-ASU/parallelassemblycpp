@@ -7,12 +7,13 @@
 void graphio(ifstream &ifs, molGraph &mg)
 {
     string s;
+    string graphName;
     int graphSize, a, b;
     vector<pii> edgeList;
-    getline(ifs, moleculeName);
-    istringstream nameLine(moleculeName);
-    nameLine >> moleculeName;
-    cout << "Name of graph is: " << moleculeName << '\n';
+    getline(ifs, graphName);
+    istringstream nameLine(graphName);
+    nameLine >> graphName;
+    cout << "Name of graph is: " << graphName << '\n';
     getline(ifs, s);
     istringstream iss1(s);
     iss1 >> graphSize;

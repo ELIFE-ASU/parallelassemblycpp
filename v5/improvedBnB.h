@@ -65,16 +65,12 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
 
             int s = canonise(m.mask);
             if (searchShouldStop()) return false;
-            if (stmap.count(s) == 0)
-            {
-                initialDuplicateSet ss(currSize + 1, masks.size());
-                ss.insert(m);
-                stmap[s] = ss;
-            }
-            else
-            {
-                stmap[s].insert(m);
-            }
+            auto entry = stmap.try_emplace(
+                s,
+                currSize + 1,
+                masks.size()
+            ).first;
+            entry->second.insert(m);
         }
         tempDag.resize(tempDag.size() + 1);
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
@@ -140,8 +136,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
         if (searchShouldStop()) return 0;
         vector<standardBitset> targetMask(masks.size(), 0);
         active = 0;
-        map<int, dagDuplicateSet> temp;
-        stmapVector.push_back(temp);
+        stmapVector.emplace_back();
         map<int, dagDuplicateSet> &stmap = stmapVector[stmapVector.size() - 2];
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
@@ -204,7 +199,7 @@ int postFragmentationCutoff(assemblyState &target, standardBitset & matchMask, s
     return max(matchDB, maxFragDB);
 }
 
-bool dagRecursiveAssemblyWithWorkspace(
+void dagRecursiveAssemblyWithWorkspace(
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace
@@ -333,55 +328,53 @@ bool continueAssemblySearchWithWorkspace(
  * @param input The input assembly state
  * @param AI The global minimum assembly index found
  * @param fragmentationWorkspace Buffers reused across the search
- * @return true if any more duplicatable substructures are found
- * @return false otherwise
  */
-bool dagRecursiveAssemblyWithWorkspace(
+void dagRecursiveAssemblyWithWorkspace(
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace
 )
 {
     recordImprovedAssemblyIndex(input, AI);
-    if (searchShouldStop()) return false;
+    if (searchShouldStop()) return;
 
     vector<map<int, dagDuplicateSet> > stmapVector;
     vector<vector<standardBitset> > targetMasks;
     int maxFragSize = dagRecursiveEnumeration(input, stmapVector, targetMasks);
 
-    if (stmapVector.size() == 0 || searchShouldStop()) return false;
+    if (searchShouldStop()) return;
 
     /// Find the fragment-size-specific AI lower bounds
     vi fragSizeList, fragSizeListMax, sizeList(input.masks.size());
     input.maxDupBonds(fragSizeList, maxFragSize, targetMasks);
-    if (searchShouldStop()) return false;
+    if (searchShouldStop()) return;
 
     /// Establish the max duplicate cutoff based on the maximum fragment size
     fragSizeListMax.resize(fragSizeList.size());
     fragSizeListMax[0] = fragSizeList[0];
     for (size_t i = 1; i < fragSizeList.size(); i++)
     {
-        if (searchShouldStop()) return false;
+        if (searchShouldStop()) return;
         if (fragSizeList[i] > fragSizeListMax[i - 1])
             fragSizeListMax[i] = fragSizeList[i];
         else fragSizeListMax[i] = fragSizeListMax[i - 1];
     }
     for (size_t i = 0; i < input.masks.size(); i++)
     {
-        if (searchShouldStop()) return false;
+        if (searchShouldStop()) return;
         sizeList[i] = input.masks[i].count();
     }
 
     /// Begin iterating through the enumerated duplicatable fragments
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
-        if (searchShouldStop()) return false;
+        if (searchShouldStop()) return;
         map<int, dagDuplicateSet> &stmap = stmapVector[j];
         vector<standardBitset> stmapMaskList(input.masks.size(), 0);
         standardBitset maskM = 0;
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
-            if (searchShouldStop()) return false;
+            if (searchShouldStop()) return;
             dagDuplicateSet &ss = it->second;
             if (!ss.dead)
             {
@@ -390,7 +383,7 @@ bool dagRecursiveAssemblyWithWorkspace(
             
             for (size_t i = 0; i < ss.maskList.size(); i++)
             {
-                if (searchShouldStop()) return false;
+                if (searchShouldStop()) return;
                 maskC |= ss.maskList[i];
                 stmapMaskList[i] |= ss.maskList[i];
             }
@@ -410,11 +403,11 @@ bool dagRecursiveAssemblyWithWorkspace(
                 if (ss.list.size() > 1)
                 {
                     ss.generateMatchings(matchings);
-                    if (searchShouldStop()) return false;
+                    if (searchShouldStop()) return;
                 }
                 for (int i = matchings.size() - 1; i >= 0; i--)
                 {
-                    if (searchShouldStop()) return false;
+                    if (searchShouldStop()) return;
                     assemblyState as;
                     fragmentAssemblyStateWithWorkspace(
                         input,
@@ -422,12 +415,12 @@ bool dagRecursiveAssemblyWithWorkspace(
                         as,
                         fragmentationWorkspace
                     );
-                    if (searchShouldStop()) return false;
+                    if (searchShouldStop()) return;
 
                     int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
                     as.sumDupBonds = sumDupBonds;
                     int fragmentationCutoff = postFragmentationCutoff(as, maskC, maskM);
-                    if (searchShouldStop()) return false;
+                    if (searchShouldStop()) return;
                     if (as.lowBoundAI(matchings[i].maxFragSize, fragmentationCutoff) < AI)
                     {
                         if (!continueAssemblySearchWithWorkspace(
@@ -437,14 +430,13 @@ bool dagRecursiveAssemblyWithWorkspace(
                             sumDupBonds,
                             AI,
                             fragmentationWorkspace
-                        )) return false;
+                        )) return;
                     }
                 }
             }
             }
         }
     }
-    return true;
 }
 
 /**
@@ -454,40 +446,38 @@ bool dagRecursiveAssemblyWithWorkspace(
  * @param input The input assembly state
  * @param AI The global minimum assembly index found
  * @param fragmentationWorkspace Buffers reused across the search
- * @return true if any more duplicatable substructures are found
- * @return false otherwise
  */
-bool initialRecursiveAssemblyWithWorkspace(
+void initialRecursiveAssemblyWithWorkspace(
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace
 )
 {
     recordImprovedAssemblyIndex(input, AI);
-    if (searchShouldStop()) return false;
+    if (searchShouldStop()) return;
 
     vector<map<int, initialDuplicateSet> > stmapVector;
-    initialRecursiveEnumeration(input, stmapVector);
-    if (enumerationLimitReached || searchShouldStop()) return false;
+    const bool hasInitialMatchings = initialRecursiveEnumeration(input, stmapVector);
+    if (enumerationLimitReached || searchShouldStop()) return;
 
-    if (stmapVector.size() == 0) return false;
+    if (!hasInitialMatchings) return;
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
-        if (searchShouldStop()) return false;
+        if (searchShouldStop()) return;
         map<int, initialDuplicateSet> &stmap = stmapVector[j];
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
-            if (searchShouldStop()) return false;
+            if (searchShouldStop()) return;
             initialDuplicateSet &ss = it->second;
             vector<validMatchings> matchings;
             if (ss.list.size() > 1)
             {
                 ss.generateMatchings(matchings);
-                if (searchShouldStop()) return false;
+                if (searchShouldStop()) return;
             }
             for (int i = matchings.size() - 1; i >= 0; i--)
             {
-                if (searchShouldStop()) return false;
+                if (searchShouldStop()) return;
                 assemblyState as;
                 fragmentAssemblyStateWithWorkspace(
                     input,
@@ -495,7 +485,7 @@ bool initialRecursiveAssemblyWithWorkspace(
                     as,
                     fragmentationWorkspace
                 );
-                if (searchShouldStop()) return false;
+                if (searchShouldStop()) return;
                 int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
                 as.sumDupBonds = sumDupBonds;
                 if (as.lowBoundAI() < AI)
@@ -507,43 +497,11 @@ bool initialRecursiveAssemblyWithWorkspace(
                         sumDupBonds,
                         AI,
                         fragmentationWorkspace
-                    )) return false;
+                    )) return;
                 }
             }
         }
     }
-    return true;
-}
-
-bool dagRecursiveAssembly(assemblyState &input, int &AI)
-{
-    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
-    return dagRecursiveAssemblyWithWorkspace(input, AI, workspace);
-}
-
-bool continueAssemblySearch(
-    assemblyState &parent,
-    assemblyState &candidate,
-    validMatchings &matching,
-    int sumDupBonds,
-    int &AI
-)
-{
-    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
-    return continueAssemblySearchWithWorkspace(
-        parent,
-        candidate,
-        matching,
-        sumDupBonds,
-        AI,
-        workspace
-    );
-}
-
-bool initialRecursiveAssembly(assemblyState &input, int &AI)
-{
-    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
-    return initialRecursiveAssemblyWithWorkspace(input, AI, workspace);
 }
 
 /**

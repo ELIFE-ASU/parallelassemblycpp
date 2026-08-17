@@ -113,7 +113,6 @@ struct validMatchings
     standardBitset first, second;
     /// @brief frag1 and frag2 index first and second; maxFragSize is their maximum size
     int frag1, frag2, maxFragSize;
-    validMatchings() = default;
     validMatchings(standardBitset &_first, standardBitset &_second, int _frag1, int _frag2, int _maxFragSize):
     first(_first), second(_second), frag1(_frag1), frag2(_frag2), maxFragSize(_maxFragSize){}
 };
@@ -127,7 +126,6 @@ struct duplicateSet
     vector<standardBitset> maskList;
     /// @brief list of potential duplicates
     vector<potentialDuplicate> list;
-    duplicateSet() = default;
     duplicateSet(size_t _size, size_t fragments)
     {
         size = _size; maskList.resize(fragments, 0);
@@ -165,41 +163,32 @@ struct duplicateSet
      * @brief Generate matchings from pairable duplicates from the maskList
      * 
      * @param v the output list of valid matchings
-     * @return true if any valid matchings exist
-     * @return false otherwise
      */
-    bool generateMatchings(vector<validMatchings> &v)
+    void generateMatchings(vector<validMatchings> &v)
     {
-        bool output = 0;
         for (size_t i = 0; i < list.size(); i++)
         {
-            if (searchShouldStop()) return output;
+            if (searchShouldStop()) return;
             int frag = list[i].fragment;
-            if (size > 0)
+            for (size_t j = i + 1; j < list.size(); j++)
             {
-                for (size_t j = i + 1; j < list.size(); j++)
+                if (searchShouldStop()) return;
+                if (frag == list[j].fragment)
                 {
-                    if (searchShouldStop()) return output;
-                    if (frag == list[j].fragment)
-                    {         
-                        if ((list[i].mask & list[j].mask) == 0)
-                        {
-                            validMatchings p(list[i].mask, list[j].mask, frag, frag, size);
-                            v.push_back(p);
-                            output = true;
-                        }
-                    }
-                    else
+                    if ((list[i].mask & list[j].mask) == 0)
                     {
-                        validMatchings p(list[i].mask, list[j].mask, 
-                        list[i].fragment, list[j].fragment, size);
+                        validMatchings p(list[i].mask, list[j].mask, frag, frag, size);
                         v.push_back(p);
-                        output = true;
                     }
+                }
+                else
+                {
+                    validMatchings p(list[i].mask, list[j].mask,
+                    list[i].fragment, list[j].fragment, size);
+                    v.push_back(p);
                 }
             }
         }
-        return output;
     }
 };
 
@@ -229,27 +218,23 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
         {
             if (searchShouldStop()) return output;
             int frag = list[i].fragment;
-            if (size > 0)
+            for (size_t j = i + 1; j < list.size(); j++)
             {
-                for (size_t j = i + 1; j < list.size(); j++)
+                if (searchShouldStop()) return output;
+                if (frag == list[j].fragment)
                 {
-                    if (searchShouldStop()) return output;
-                    if (frag == list[j].fragment)
-                    {         
-                        if ((list[i].mask & list[j].mask) == 0)
-                        {
-                            alive[i] = 1;
-                            alive[j] = 1;
-                        }
-                    }
-                    else
+                    if ((list[i].mask & list[j].mask) == 0)
                     {
                         alive[i] = 1;
                         alive[j] = 1;
                     }
                 }
+                else
+                {
+                    alive[i] = 1;
+                    alive[j] = 1;
+                }
             }
-            else alive[i] = 1;
             if (alive[i])
             {
                 if (!list[i].generateDAG(q, maskMap, tempDag)) return output;
@@ -293,17 +278,16 @@ bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, standa
         {
             if (dn.ix <= ordinal)
             {
-                auto it = stmap.find(dn.ix);
-                if (it == stmap.end())
-                {
-                    dagDuplicateSet ss(size + 1, frags);
-                    ss.insert(potentialDuplicate(dn.mask, d.fragment, DAG[size - 1][d.idx].children[i]));
-                    stmap[dn.ix] = ss;
-                }
-                else
-                {
-                    it->second.insert(potentialDuplicate(dn.mask, d.fragment, DAG[size - 1][d.idx].children[i]));
-                }
+                auto entry = stmap.try_emplace(
+                    dn.ix,
+                    size + 1,
+                    frags
+                ).first;
+                entry->second.insert(potentialDuplicate(
+                    dn.mask,
+                    d.fragment,
+                    DAG[size - 1][d.idx].children[i]
+                ));
             }
             else overweight = 1;
         }
@@ -333,27 +317,23 @@ bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap
         {
             if (searchShouldStop()) return output;
             int frag = ds.list[i].fragment;
-            if (ds.size > 0)
+            for (size_t j = i + 1; j < ds.list.size(); j++)
             {
-                for (size_t j = i + 1; j < ds.list.size(); j++)
+                if (searchShouldStop()) return output;
+                if (frag == ds.list[j].fragment)
                 {
-                    if (searchShouldStop()) return output;
-                    if (frag == ds.list[j].fragment)
-                    {         
-                        if ((ds.list[i].mask & ds.list[j].mask) == 0)
-                        {
-                            alive[i] = 1;
-                            alive[j] = 1;
-                        }
-                    }
-                    else
+                    if ((ds.list[i].mask & ds.list[j].mask) == 0)
                     {
                         alive[i] = 1;
                         alive[j] = 1;
                     }
                 }
+                else
+                {
+                    alive[i] = 1;
+                    alive[j] = 1;
+                }
             }
-            else alive[i] = 1;
             if (alive[i])
             {
                 takenMasks[frag] |= ds.list[i].mask;

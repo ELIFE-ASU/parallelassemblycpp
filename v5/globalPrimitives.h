@@ -6,7 +6,6 @@ template <typename T1, typename T2, typename T3>
 struct triple
 {
     T1 a; T2 b; T3 c;
-    triple() = default;
     triple(T1 &_a, T2 &_b, T3 &_c): a(_a), b(_b), c(_c) {}
 };
 

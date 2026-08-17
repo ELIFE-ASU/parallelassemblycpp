@@ -1,15 +1,14 @@
 /**
- * @brief Takes a molfile and turns it into a molGraph and returns the name of the molecule
+ * @brief Takes a molfile and turns it into a molGraph
  *
  * @param molfile the .mol input
  * @param mg the molGraph output of the function
- * @return string name of molecule
  */
-string molfileParser(ifstream &molfile, molGraph &mg)
+void molfileParser(ifstream &molfile, molGraph &mg)
 {
-    string name, currLine;
+    string currLine;
 
-    getline(molfile, name);
+    getline(molfile, currLine);
     for (int i = 0; i < 2; i++) {getline(molfile, currLine);}
     
     getline(molfile, currLine);
@@ -47,5 +46,4 @@ string molfileParser(ifstream &molfile, molGraph &mg)
         mg.removeAndCollapse();
     }
     mg.printToCout();
-    return name;
 }

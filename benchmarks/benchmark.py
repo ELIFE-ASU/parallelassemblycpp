@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run a small, repeatable AssemblyCpp speed benchmark."""
 
 from __future__ import annotations

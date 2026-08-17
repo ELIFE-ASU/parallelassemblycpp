@@ -232,7 +232,7 @@ bool maxMemoryUsage(const string& outputFilename)
 int main(int argc, char** argv)
 {
     #ifdef _WIN32
-        if (SetConsoleCtrlHandler((PHANDLER_ROUTINE)CtrlHandler, TRUE)) {}
+        static_cast<void>(SetConsoleCtrlHandler((PHANDLER_ROUTINE)CtrlHandler, TRUE));
     #else
         signal(SIGINT, signalHandler);
     #endif

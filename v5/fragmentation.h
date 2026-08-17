@@ -15,8 +15,7 @@ void fragmentAssemblyStateWithWorkspace(
 {
     vector<standardBitset> &masks = _target.masks;
     standardBitset f1 = matching.first, f2 = matching.second;
-    bool same = 1;
-    if (matching.frag1 != matching.frag2) same = 0;
+    const bool same = matching.frag1 == matching.frag2;
     _result.masks.push_back(f1);
     if (same)
     {
@@ -62,21 +61,6 @@ void fragmentAssemblyStateWithWorkspace(
             else _result.masks.push_back(masks[i]);
         }
     }
-}
-
-void fragmentAssemblyState(
-    assemblyState &_target,
-    validMatchings &matching,
-    assemblyState &_result
-)
-{
-    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
-    fragmentAssemblyStateWithWorkspace(
-        _target,
-        matching,
-        _result,
-        workspace
-    );
 }
 
 /**

@@ -5,7 +5,6 @@ struct disjointSetNode
 {
     int parent = -1, rank = 0;
     disjointSetNode() = default;
-    disjointSetNode(int _parent): parent(_parent){}
 };
 
 /**
@@ -77,8 +76,6 @@ struct ufdsSplit
     vector<pii> extraVals;
     int maxElement = 0;
     
-    ufdsSplit(size_t size){elements.resize(size);}
-
     void reset(size_t size)
     {
         elements.assign(size, ufdsSplitNode{});
@@ -186,12 +183,5 @@ struct ufdsSplit
                 maskList.push_back(tempMaskList[i]);
             }
         }
-    }
-
-    void split(vector<standardBitset> &maskList)
-    {
-        vi uniques;
-        vector<standardBitset> tempMaskList;
-        splitWithBuffers(maskList, uniques, tempMaskList);
     }
 };

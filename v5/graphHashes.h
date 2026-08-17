@@ -10,8 +10,6 @@ struct graphHash
     /// if the graph is acyclic, the tree hash function is used, and the output stored here
     string treeHash;
 
-    graphHash() = default;
-
     /**
      * @brief Calculate hash for subgraph unordered_map using BFS approach
      *

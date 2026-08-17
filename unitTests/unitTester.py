@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Build AssemblyCpp and run its regression manifest."""
 
 from __future__ import annotations
@@ -187,7 +186,7 @@ def parse_pathway_document(path: Path) -> dict[str, object]:
 
 def load_pathway_manifest(
     path: Path, cases: Sequence[TestCase]
-) -> tuple[Path, list[TestCase]]:
+) -> list[TestCase]:
     manifest = resolve_test_path(path)
     case_names = {case.name for case in cases}
     pathways: dict[str, Path] = {}
@@ -236,7 +235,7 @@ def load_pathway_manifest(
             f"pathway manifest contains no test cases: {manifest}"
         )
 
-    return manifest, [
+    return [
         TestCase(
             name=case.name,
             source=case.source,
@@ -1295,9 +1294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         manifest, all_cases = load_manifest(arguments.manifest)
-        _, all_cases = load_pathway_manifest(
-            arguments.pathway_manifest, all_cases
-        )
+        all_cases = load_pathway_manifest(arguments.pathway_manifest, all_cases)
         if arguments.audit:
             audit_test_data(manifest, all_cases, arguments.verbose)
             return 0

@@ -5,7 +5,6 @@ struct bond
 {
     short n;
     short type;
-    bond() = default;
     bond(short _n, short _type): n(_n), type(_type){}
 };
 
@@ -17,7 +16,6 @@ struct atom
     string type;
     vector<bond> list;
 
-    atom() = default;
     atom(string _type): type(_type){}
 
 };
@@ -171,11 +169,10 @@ public:
      * @brief For explicit hydrogen removal
      * 
      */
-    bool removeAtom(size_t i)
+    void removeAtom(size_t i)
     {
-        if (i >= mg.size()) return false;
+        if (i >= mg.size()) return;
         mg[i].type = "COLLAPSE";
-        return true;
     }
 
     /**
@@ -229,12 +226,8 @@ public:
                     short source = static_cast<short>(i);
                     short bondIndex = static_cast<short>(j);
                     edgeL t(source, k, bondIndex);
-                    if (ht.count(out) == 0)
-                    {
-                        pair<int, edgeL> p(1, t);
-                        ht[out] = p;
-                    }
-                    else ht[out].first++;
+                    auto [entry, inserted] = ht.try_emplace(out, 1, t);
+                    if (!inserted) entry->second.first++;
                 }
             }
         }
@@ -243,7 +236,7 @@ public:
     /**
      * @brief Used in preprocessing, removes edges in edgelist
      */
-    molGraph negativeEdgeCollapse(vector<edgeL> &edgeList)
+    void negativeEdgeCollapse(vector<edgeL> &edgeList)
     {
         for (size_t i = 0; i < edgeList.size(); i++)
         {
@@ -251,7 +244,6 @@ public:
             mg[el.a].list[el.c].type = 0;
         }
         collapse();
-        return *this;
     }
 
     /**
@@ -380,7 +372,7 @@ struct ufdsMaskWorkspace
     vi uniques;
     vector<standardBitset> components;
 
-    ufdsMaskWorkspace(size_t atomCount, size_t edgeCount): sets(0)
+    ufdsMaskWorkspace(size_t atomCount, size_t edgeCount)
     {
         sets.elements.reserve(atomCount);
         sets.extraVals.reserve(edgeCount);
@@ -433,10 +425,4 @@ void ufdsMaskConstructWithWorkspace(
         }
     }
     u.splitWithBuffers(maskList, workspace.uniques, workspace.components);
-}
-
-void ufdsMaskConstruct(standardBitset &mask, vector<standardBitset> &maskList)
-{
-    ufdsMaskWorkspace workspace(targetMolecule.mg.size(), univEdgeList.size());
-    ufdsMaskConstructWithWorkspace(mask, maskList, workspace);
 }
