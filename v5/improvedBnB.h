@@ -237,6 +237,7 @@ bool continueAssemblySearchWithWorkspace(
     assemblyState &parent,
     assemblyState &candidate,
     validMatchings &matching,
+    vi candidateKey,
     int sumDupBonds,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace
@@ -247,7 +248,7 @@ bool continueAssemblySearchWithWorkspace(
     assemblyPath *existingPath = nullptr;
     {
         assemblyPath probe{};
-        probe.key = candidate.assemblyHashCalculator();
+        probe.key = std::move(candidateKey);
         if (searchShouldStop()) return false;
 
         if (probe.key.size() < singleInsertMinFragments)
@@ -409,7 +410,7 @@ void dagRecursiveAssemblyWithWorkspace(
                 {
                     if (searchShouldStop()) return;
                     assemblyState as;
-                    fragmentAssemblyStateWithWorkspace(
+                    fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                         input,
                         matchings[i],
                         as,
@@ -423,10 +424,13 @@ void dagRecursiveAssemblyWithWorkspace(
                     if (searchShouldStop()) return;
                     if (as.lowBoundAI(matchings[i].maxFragSize, fragmentationCutoff) < AI)
                     {
+                        vi candidateKey;
+                        if (!canoniseAssemblyStateAndBuildKey(as, candidateKey)) return;
                         if (!continueAssemblySearchWithWorkspace(
                             input,
                             as,
                             matchings[i],
+                            std::move(candidateKey),
                             sumDupBonds,
                             AI,
                             fragmentationWorkspace
@@ -479,7 +483,7 @@ void initialRecursiveAssemblyWithWorkspace(
             {
                 if (searchShouldStop()) return;
                 assemblyState as;
-                fragmentAssemblyStateWithWorkspace(
+                fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                     input,
                     matchings[i],
                     as,
@@ -490,10 +494,13 @@ void initialRecursiveAssemblyWithWorkspace(
                 as.sumDupBonds = sumDupBonds;
                 if (as.lowBoundAI() < AI)
                 {
+                    vi candidateKey;
+                    if (!canoniseAssemblyStateAndBuildKey(as, candidateKey)) return;
                     if (!continueAssemblySearchWithWorkspace(
                         input,
                         as,
                         matchings[i],
+                        std::move(candidateKey),
                         sumDupBonds,
                         AI,
                         fragmentationWorkspace
