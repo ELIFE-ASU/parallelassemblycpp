@@ -369,14 +369,12 @@ molGraph originalMolecule, targetMolecule;
 struct ufdsMaskWorkspace
 {
     ufdsSplit sets;
-    vi uniques;
     vector<standardBitset> components;
 
     ufdsMaskWorkspace(size_t atomCount, size_t edgeCount)
     {
-        sets.elements.reserve(atomCount);
+        sets.elements.resize(atomCount);
         sets.extraVals.reserve(edgeCount);
-        uniques.reserve(atomCount);
         components.reserve(atomCount);
     }
 };
@@ -397,32 +395,43 @@ void ufdsMaskConstructWithWorkspace(
 {
     vector<edgeL> &edgeList = univEdgeList;
     ufdsSplit &u = workspace.sets;
-    u.reset(targetMolecule.mg.size());
-    for (size_t i = 0; i < edgeList.size(); i++)
-    {
-        if (mask[i] != 0)
+    auto processEdge = [&](size_t i) {
+        int a = edgeList[i].a, b = edgeList[i].b;
+        const bool containsA = u.contains(a), containsB = u.contains(b);
+        if (!containsA && !containsB)
         {
-            int a = edgeList[i].a, b = edgeList[i].b;
-            if (u.elements[a].parent == -1 && u.elements[b].parent == -1)
-            {
-                u.doubleInsert(b, a, i);
-            }
-            else
-            {
-                if (u.elements[a].parent == -1)
-                {
-                    u.insert(a, b, i);
-                }
-                else if (u.elements[b].parent == -1)
-                {
-                    u.insert(b, a, i);
-                }
-                else
-                {
-                    u.merge(a, b, i);
-                }
-            }
+            u.doubleInsert(b, a, i);
         }
-    }
-    u.splitWithBuffers(maskList, workspace.uniques, workspace.components);
+        else if (!containsA)
+        {
+            u.insert(a, b, i);
+        }
+        else if (!containsB)
+        {
+            u.insert(b, a, i);
+        }
+        else
+        {
+            u.merge(a, b, i);
+        }
+    };
+
+    size_t firstEdge = edgeList.size();
+    bool initialised = false;
+    forEachSetBitBelow(mask, edgeList.size(), [&](size_t i) {
+        if (firstEdge == edgeList.size())
+        {
+            firstEdge = i;
+            return;
+        }
+        if (!initialised)
+        {
+            u.reset();
+            processEdge(firstEdge);
+            initialised = true;
+        }
+        processEdge(i);
+    });
+    if (!initialised) return;
+    u.splitWithBuffers(maskList, workspace.components);
 }
