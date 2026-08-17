@@ -1,4 +1,6 @@
 CMakeLists.txt
+__pycache__/
+*.py[cod]
 /unitTests/*Pathway
 /unitTests/*Out
 /.vscode

@@ -31,6 +31,11 @@ jobs:
       - name: Audit test data
         run: python unitTests/unitTester.py --audit
 
+      - name: Test benchmark tooling
+        run: |
+          python -m unittest discover -s benchmarks -p 'test_*.py'
+          python benchmarks/benchmark.py --list-cases
+
       - name: Build and run regression suite
         timeout-minutes: 30
         run: python unitTests/unitTester.py --build --jobs 2 --timeout 120

@@ -1,0 +1,19 @@
+name	input	expected_assembly_index	expectation	suites	workload
+icosane	../unitTests/icosane.mol	6	reviewed	quick,full	acyclic repeated chain
+sr1001	../unitTests/sr1001.mol	22	reviewed	quick,full	automorphism-heavy graph
+5843	../unitTests/5843.mol	8	reviewed	quick,full	dense cyclic graph
+bisphenylmaleimide	../unitTests/bisphenylmaleimide.mol	10	reviewed	quick,full	symmetric cyclic graph
+ketoconazole	../unitTests/ketoconazole.mol	22	reviewed	quick,full,profile	branch-and-bound baseline
+THC	../unitTests/THC.mol	12	reviewed	full	small cyclic molecule
+sucrose	../unitTests/sucrose.mol	8	reviewed	full	oxygen-rich double-ring graph
+graphio	../unitTests/graphio_test	5	reviewed	full	native graph input
+Ceftiolene	../unitTests/Ceftiolene.mol	23	reviewed	full	larger labelled graph
+Cefquinome	../unitTests/Cefquinome.mol	25	reviewed	full	larger cyclic graph
+Cefpirome	../unitTests/Cefpirome.mol	25	reviewed	full	larger cyclic graph
+dipyridamole	../unitTests/dipyridamole.mol	15	reviewed	full	branching cyclic graph
+ceftiofur	../unitTests/ceftiofur.mol	26	reviewed	full	larger labelled graph
+dienogest	../unitTests/dienogest.mol	11	reviewed	full	fused ring system
+folic_acid	../unitTests/folic_acid.mol	20	reviewed	full	mixed cyclic graph
+phosphatidylcholine	../unitTests/phosphatidylcholine.mol	22	provisional	profile	long acyclic search
+erythromycin	../unitTests/erythromycin.mol	20	provisional	profile	macrocycle search
+clarithromycin	../unitTests/clarithromycin.mol	21	provisional	profile	fragmentation and pruning stress

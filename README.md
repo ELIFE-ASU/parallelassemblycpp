@@ -175,18 +175,67 @@ for every push and pull request.
 
 ## Benchmark
 
-The benchmark runner performs one warm-up followed by five measured, serial
-calculations of `unitTests/ketoconazole.mol`. It disables pathway generation,
-checks the expected assembly index on every run, and reports wall-clock and
-algorithm clock-tick summaries. Build the optimized executable and run the
-benchmark with:
+The benchmark runner supports both the original single-input benchmark and
+manifest-driven workload suites. It disables pathway generation, validates
+configured assembly-index expectations on every calculation, and reports
+wall-clock and algorithm clock-tick statistics. The no-argument default remains
+five measured `ketoconazole` runs after one warm-up:
 
 ```bash
 python benchmarks/benchmark.py --build
 ```
 
+Run the reviewed quick corpus for routine development, or the larger reviewed
+corpus before merging an optimization:
+
+```bash
+python benchmarks/benchmark.py --suite quick
+python benchmarks/benchmark.py --suite full
+```
+
+Suite cases are run serially in rounds, with the starting case rotated each
+round to reduce order and temperature bias. Summaries include the median,
+median absolute deviation (MAD), and 95th percentile. List the available cases
+and their expectation status with:
+
+```bash
+python benchmarks/benchmark.py --list-cases
+python benchmarks/benchmark.py --suite profile --list-cases
+```
+
+The `profile` suite contains deliberately long inputs for profiling search hot
+paths. Its non-ketoconazole expectations are marked provisional because those
+fixtures are not part of the reviewed regression manifest. A one-pass profile
+smoke run is:
+
+```bash
+python benchmarks/benchmark.py --suite profile --runs 1 --warmup 0
+```
+
+For a paired before/after comparison, keep the old executable and pass it as
+the baseline. Baseline and candidate calculations run adjacently, alternating
+AB/BA order between rounds. Paired mode defaults to six measured rounds so both
+executables occupy each position equally often. Reported speedups are paired
+ratios; values greater than one mean the candidate is faster.
+
+```bash
+python benchmarks/benchmark.py \
+  --suite quick \
+  --baseline-executable build/AssemblyCpp-before \
+  --executable build/AssemblyCpp
+```
+
+Raw samples, executable SHA-256 fingerprints, platform details, and summaries
+can be retained for later comparison:
+
+```bash
+python benchmarks/benchmark.py \
+  --suite quick \
+  --json-output benchmark-results.json
+```
+
 To reuse an existing build, increase the number of measured runs, or select a
-different input:
+single different input:
 
 ```bash
 python benchmarks/benchmark.py --runs 10
@@ -195,6 +244,7 @@ python benchmarks/benchmark.py \
   --expected 8
 ```
 
-Use `python benchmarks/benchmark.py --help` for the remaining options. Run
-comparisons on the same machine and under similar load; the runner intentionally
-does not impose a pass/fail timing threshold.
+The corpus format and measurement methodology are documented in
+`benchmarks/README.md`. Use `python benchmarks/benchmark.py --help` for the
+remaining options. Run comparisons on the same machine and under similar load;
+the runner intentionally does not impose a pass/fail timing threshold.
