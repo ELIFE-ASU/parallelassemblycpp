@@ -222,6 +222,22 @@ void recordImprovedAssemblyIndex(assemblyState &input, int &AI)
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
 
+static std::unique_ptr<assemblyPath> createAssemblyPath(
+    vi key,
+    assemblyPath *parent,
+    validMatchings &matching,
+    int sumDupBonds
+)
+{
+    auto path = std::make_unique<assemblyPath>();
+    path->key = std::move(key);
+    path->parent = parent;
+    path->sumDupBonds = sumDupBonds;
+    path->match = bitsetHashTable[matching.first].second;
+    path->duplicate = bitsetHashTable[matching.second].second;
+    return path;
+}
+
 bool continueAssemblySearchWithWorkspace(
     assemblyState &parent,
     assemblyState &candidate,
@@ -231,37 +247,77 @@ bool continueAssemblySearchWithWorkspace(
     ufdsMaskWorkspace &fragmentationWorkspace
 )
 {
-    auto path = std::make_unique<assemblyPath>();
-    apWrapper wrapper{path.get()};
-    wrapper.ap->parent = parent.apPtr;
-    wrapper.ap->key = candidate.assemblyHashCalculator();
-    if (searchShouldStop()) return false;
-
-    auto existing = pathAssemblyMap.find(wrapper);
-    if (existing == pathAssemblyMap.end())
+    // For larger keys, one lookup plus a miss-only copy beats hashing twice.
+    constexpr size_t singleInsertMinFragments = 5;
+    assemblyPath *existingPath = nullptr;
     {
-        candidate.apPtr = wrapper.ap;
-        wrapper.ap->sumDupBonds = sumDupBonds;
-        wrapper.ap->match = bitsetHashTable[matching.first].second;
-        wrapper.ap->duplicate = bitsetHashTable[matching.second].second;
-        pathAssemblyMap.insert(wrapper);
-        path.release();
-        dagRecursiveAssemblyWithWorkspace(
-            candidate,
-            AI,
-            fragmentationWorkspace
-        );
-        return !searchShouldStop();
+        assemblyPath probe{};
+        probe.key = candidate.assemblyHashCalculator();
+        if (searchShouldStop()) return false;
+
+        if (probe.key.size() < singleInsertMinFragments)
+        {
+            auto entry = pathAssemblyMap.find(apWrapper{&probe});
+            if (entry == pathAssemblyMap.end())
+            {
+                auto path = createAssemblyPath(
+                    std::move(probe.key),
+                    parent.apPtr,
+                    matching,
+                    sumDupBonds
+                );
+                auto [position, inserted] =
+                    pathAssemblyMap.insert(apWrapper{path.get()});
+                if (inserted)
+                {
+                    candidate.apPtr = path.get();
+                    path.release();
+                }
+                else existingPath = position->ap;
+            }
+            else existingPath = entry->ap;
+        }
+        else
+        {
+            auto [entry, inserted] = pathAssemblyMap.insert(apWrapper{&probe});
+            if (inserted)
+            {
+                std::unique_ptr<assemblyPath> path;
+                try
+                {
+                    path = createAssemblyPath(
+                        probe.key,
+                        parent.apPtr,
+                        matching,
+                        sumDupBonds
+                    );
+                }
+                catch (...)
+                {
+                    pathAssemblyMap.erase(entry);
+                    throw;
+                }
+
+                // The copied key keeps the set's hash and equality unchanged.
+                entry->ap = path.get();
+                candidate.apPtr = path.get();
+                path.release();
+            }
+            else existingPath = entry->ap;
+        }
+
+        if (existingPath != nullptr)
+        {
+            if (sumDupBonds <= existingPath->sumDupBonds) return true;
+
+            candidate.apPtr = existingPath;
+            existingPath->sumDupBonds = sumDupBonds;
+            existingPath->match = bitsetHashTable[matching.first].second;
+            existingPath->duplicate = bitsetHashTable[matching.second].second;
+            existingPath->parent = parent.apPtr;
+        }
     }
 
-    if (sumDupBonds <= existing->ap->sumDupBonds) return true;
-    path.reset();
-
-    candidate.apPtr = existing->ap;
-    existing->ap->sumDupBonds = sumDupBonds;
-    existing->ap->match = bitsetHashTable[matching.first].second;
-    existing->ap->duplicate = bitsetHashTable[matching.second].second;
-    existing->ap->parent = parent.apPtr;
     dagRecursiveAssemblyWithWorkspace(
         candidate,
         AI,

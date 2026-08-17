@@ -22,7 +22,7 @@ assemblyPath * minAssemblyPath = nullptr;
  */
 struct apWrapper
 {
-    assemblyPath * ap;
+    mutable assemblyPath * ap;
 
     bool operator == (const apWrapper&ap2) const
     {
@@ -215,7 +215,7 @@ struct assemblyState
 
     /**
      * @brief Build the canonical fragment key used by apWrapper's hash
-     * 
+     *
      * @return vi The vector<int> to be hashed
      */
     vi assemblyHashCalculator()
