@@ -8,12 +8,12 @@
  */
 bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initialDuplicateSet> > &stmapVector)
 {
-    vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > tempDag(2);
+    vector<initialDagLevel> tempDag(2);
     vector<EdgeMask> &masks = _target.masks;
     bool alive = 0;
     size_t currSize = 1;
     vector<initialPotentialDuplicate> prevML;
-    std::unordered_set<EdgeMask> maskMap;
+    size_t retainedStateCount = 0;
 
     // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
     for (size_t i = 0; i < masks.size(); i++)
@@ -23,13 +23,16 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             if (searchShouldStop()) return false;
             if (masks[i][j] != 0)
             {
-                pair<int, vector<EdgeMask> > p; p.first = -1;
                 EdgeMask b = 0; b.set(j);
-                if (!reserveInitialDagMask(maskMap, b))
-                {
+                const initialDagInsertionResult insertion =
+                    tryRetainInitialDagMask(
+                        tempDag[0],
+                        b,
+                        retainedStateCount,
+                        -1
+                    );
+                if (insertion == initialDagInsertionResult::limitReached)
                     return false;
-                }
-                tempDag[0][b] = p;
             }
         }
     }
@@ -43,7 +46,7 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             if (masks[i][j] == 0) continue;
 
             initialPotentialDuplicate m(j, masks[i], i);
-            if (!m.generateDAG(prevML, maskMap, tempDag))
+            if (!m.generateDAG(prevML, retainedStateCount, tempDag))
             {
                 return false;
             }
@@ -81,7 +84,11 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             {
                 if (searchShouldStop()) return false;
                 active = 1;
-                alive |= ss.dagPopulator(currML, maskMap, tempDag);
+                alive |= ss.dagPopulator(
+                    currML,
+                    retainedStateCount,
+                    tempDag
+                );
                 if (enumerationLimitReached)
                 {
                     return false;

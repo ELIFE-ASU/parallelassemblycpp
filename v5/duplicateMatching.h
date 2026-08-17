@@ -1,24 +1,39 @@
+using initialDagLevel =
+    std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > >;
+
+enum class initialDagInsertionResult
+{
+    existing,
+    retained,
+    limitReached
+};
+
 /**
- * @brief Reserve one unique state in the initial enumeration DAG.
+ * @brief Insert one initial-DAG state if it is new and fits the budget.
  *
- * Existing masks do not consume the budget twice. A new mask is added only
- * when doing so keeps the number of retained states at or below ENUM_MAX.
+ * The level map is both the state store and the uniqueness index. A rejected
+ * insertion is erased by iterator so its mask is not hashed a second time.
  */
-bool reserveInitialDagMask(
-    std::unordered_set<EdgeMask> &maskMap,
-    const EdgeMask &mask
+initialDagInsertionResult tryRetainInitialDagMask(
+    initialDagLevel &level,
+    const EdgeMask &mask,
+    size_t &retainedStateCount,
+    int canonicalIndex = 0
 )
 {
-    if (maskMap.count(mask) != 0) return true;
+    auto [insertion, inserted] = level.try_emplace(mask);
+    if (!inserted) return initialDagInsertionResult::existing;
 
     const size_t limit = ENUM_MAX > 0 ? static_cast<size_t>(ENUM_MAX) : 0;
-    if (maskMap.size() >= limit)
+    if (retainedStateCount >= limit)
     {
+        level.erase(insertion);
         enumerationLimitReached = true;
-        return false;
+        return initialDagInsertionResult::limitReached;
     }
-    maskMap.insert(mask);
-    return true;
+    ++retainedStateCount;
+    insertion->second.first = canonicalIndex;
+    return initialDagInsertionResult::retained;
 }
 
 /**
@@ -67,13 +82,16 @@ struct initialPotentialDuplicate : potentialDuplicate
      * @brief Generate potential matches originating from this fragment and update the DAG
      *
      * @param q Potential duplicates which are isomorphic to this.mask
-     * @param maskMap Hash table of boolean edgelists of all fragments taken before to avoid repetition
+     * @param retainedStateCount Number of unique masks currently held in tempDag
      * @param tempDag Temporary DAG populated with generated children
      */
-    bool generateDAG(vector<initialPotentialDuplicate> &q, std::unordered_set<EdgeMask> &maskMap,
-    vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > &tempDag)
+    bool generateDAG(vector<initialPotentialDuplicate> &q, size_t &retainedStateCount,
+    vector<initialDagLevel> &tempDag)
     {
         vector<edgeL> &edgeList = univEdgeList;
+        const size_t childLevelIndex = mask.count();
+        initialDagLevel &childLevel = tempDag[childLevelIndex];
+        vector<EdgeMask> *adjList = nullptr;
         for (size_t i = 0; i < edgeList.size(); i++)
         {
             if (searchShouldStop()) return false;
@@ -84,19 +102,29 @@ struct initialPotentialDuplicate : potentialDuplicate
                 if (atomMask[atomA] || atomMask[atomB])
                 {
                     EdgeMask tempMask = mask; tempMask.set(i);
-                    if (maskMap.count(tempMask) == 0)
+                    const initialDagInsertionResult insertion =
+                        tryRetainInitialDagMask(
+                            childLevel,
+                            tempMask,
+                            retainedStateCount
+                        );
+                    if (insertion == initialDagInsertionResult::existing)
+                        continue;
+                    if (insertion == initialDagInsertionResult::limitReached)
+                        return false;
+
+                    initialPotentialDuplicate g = *this;
+                    g.mask.set(i);
+                    g.atomMask.set(atomA);
+                    g.atomMask.set(atomB);
+                    q.push_back(g);
+                    if (adjList == nullptr)
                     {
-                        if (!reserveInitialDagMask(maskMap, tempMask)) return false;
-                        initialPotentialDuplicate g = *this;
-                        g.mask.set(i);
-                        g.atomMask.set(atomA);
-                        g.atomMask.set(atomB);
-                        q.push_back(g);
-                        vector<EdgeMask> &adjList = tempDag[mask.count() - 1][mask].second;
-                        pair<int, vector<EdgeMask> > p;
-                        tempDag[mask.count()][g.mask] = p;
-                        adjList.push_back(g.mask);
+                        adjList = &tempDag[childLevelIndex - 1]
+                            .at(mask)
+                            .second;
                     }
+                    adjList->push_back(g.mask);
                 }
             }
         }
@@ -204,14 +232,14 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
      * @brief Generate size + 1 matchings from the current set and populate the DAG during the initial enumeration
      * 
      * @param q list of potential duplicates
-     * @param maskMap hash map to prevent bitsets from being added to the DAG more than once
+     * @param retainedStateCount Number of unique masks currently held in tempDag
      * @param tempDag the temporary DAG
      * @return true if any valid matchings exist
      * @return false otherwise
      */
     bool dagPopulator(vector<initialPotentialDuplicate> &q, 
-    std::unordered_set<EdgeMask> &maskMap,
-    vector<std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > > > &tempDag)
+    size_t &retainedStateCount,
+    vector<initialDagLevel> &tempDag)
     {
         bool output = 0;
         vb alive(list.size(), 0);
@@ -238,7 +266,8 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
             }
             if (alive[i])
             {
-                if (!list[i].generateDAG(q, maskMap, tempDag)) return output;
+                if (!list[i].generateDAG(q, retainedStateCount, tempDag))
+                    return output;
                 output = 1;
             }
         }

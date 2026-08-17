@@ -886,6 +886,45 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
+        connected_graph = "\n".join(
+            (
+                "connected",
+                "3",
+                "1 2 2 3",
+                "C C C",
+                "1 1",
+                "",
+            )
+        )
+        for enum_limit, expect_limit_status in ((2, True), (3, False)):
+            case_directory = (
+                working_directory / f"enum-connected-boundary-{enum_limit}"
+            )
+            case_directory.mkdir()
+            (case_directory / "input").write_text(connected_graph)
+            completed = run_cli_command(
+                executable,
+                ["input", "--pathway=0", f"--enum-max={enum_limit}"],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"connected enum boundary {enum_limit} should return a best result",
+                completed,
+            )
+            output_path = case_directory / "inputOut"
+            status_present = (
+                output_path.is_file()
+                and "status: enumeration limit reached"
+                in output_path.read_text().splitlines()
+            )
+            require_cli(
+                status_present == expect_limit_status,
+                f"connected enum boundary {enum_limit} enforced the wrong state cap",
+                completed,
+            )
+            scenarios += 1
+
         output_failure_cases = [
             (
                 "pathway-output-failure",
