@@ -36,7 +36,7 @@ MANIFEST_HEADER = (
     "suites",
     "workload",
 )
-KNOWN_SUITES = ("quick", "full", "profile")
+KNOWN_SUITES = ("quick", "full", "profile", "scaling")
 KNOWN_EXPECTATIONS = ("reviewed", "provisional")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")

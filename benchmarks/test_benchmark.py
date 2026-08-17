@@ -349,6 +349,77 @@ class BenchmarkTests(unittest.TestCase):
             len(benchmark.select_cases(cases, "profile", [])),
             4,
         )
+        scaling = benchmark.select_cases(cases, "scaling", [])
+        self.assertEqual(len(scaling), 7)
+        self.assertTrue(all(case.expectation == "provisional" for case in scaling))
+        self.assertEqual(
+            [case.expected_assembly_index for case in scaling],
+            [10, 13, 15, 17, 19, 21, 23],
+        )
+        self.assertEqual(
+            [case.workload for case in scaling],
+            [
+                "18 atoms / 16 bonds / 2 comps",
+                "27 atoms / 24 bonds / 3 comps",
+                "36 atoms / 32 bonds / 4 comps",
+                "43 atoms / 38 bonds / 5 comps",
+                "53 atoms / 47 bonds / 6 comps",
+                "63 atoms / 56 bonds / 7 comps",
+                "68 atoms / 60 bonds / 8 comps",
+            ],
+        )
+
+    def test_scaling_corpus_is_a_cumulative_size_series(self) -> None:
+        _, cases = benchmark.load_manifest(benchmark.DEFAULT_MANIFEST)
+        scaling = benchmark.select_cases(cases, "scaling", [])
+        expected_sizes = [
+            (18, 16, 2),
+            (27, 24, 3),
+            (36, 32, 4),
+            (43, 38, 5),
+            (53, 47, 6),
+            (63, 56, 7),
+            (68, 60, 8),
+        ]
+        blocks: list[tuple[list[str], list[str]]] = []
+
+        for case, (expected_atoms, expected_bonds, expected_components) in zip(
+            scaling, expected_sizes, strict=True
+        ):
+            lines = case.source.read_text(encoding="utf-8-sig").splitlines()
+            atom_count = int(lines[3][0:3])
+            bond_count = int(lines[3][3:6])
+            atom_lines = lines[4 : 4 + atom_count]
+            bond_lines = lines[4 + atom_count : 4 + atom_count + bond_count]
+            parents = list(range(atom_count))
+
+            def root(atom: int) -> int:
+                while parents[atom] != atom:
+                    parents[atom] = parents[parents[atom]]
+                    atom = parents[atom]
+                return atom
+
+            for line in bond_lines:
+                first = root(int(line[0:3]) - 1)
+                second = root(int(line[3:6]) - 1)
+                parents[first] = second
+            component_count = len({root(atom) for atom in range(atom_count)})
+
+            self.assertEqual(
+                (atom_count, bond_count, component_count),
+                (expected_atoms, expected_bonds, expected_components),
+                case.name,
+            )
+            self.assertEqual(bond_count, atom_count - component_count, case.name)
+            self.assertNotIn("H", {line[31:34].strip() for line in atom_lines})
+            self.assertEqual(lines[4 + atom_count + bond_count], "M  END")
+            blocks.append((atom_lines, bond_lines))
+
+        for previous, current in zip(blocks, blocks[1:]):
+            previous_atoms, previous_bonds = previous
+            current_atoms, current_bonds = current
+            self.assertEqual(current_atoms[: len(previous_atoms)], previous_atoms)
+            self.assertEqual(current_bonds[: len(previous_bonds)], previous_bonds)
 
     def test_corpus_run_and_json_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

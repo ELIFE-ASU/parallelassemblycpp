@@ -9,7 +9,7 @@ are:
 | `input` | Molfile or native graph path, relative to this directory unless absolute. |
 | `expected_assembly_index` | Result required from every warm-up and measured calculation. |
 | `expectation` | `reviewed` for regression-manifest values or `provisional` for profiling-only guards. |
-| `suites` | Comma-separated membership in `quick`, `full`, or `profile`. |
+| `suites` | Comma-separated membership in `quick`, `full`, `profile`, or `scaling`. |
 | `workload` | Short description printed in the summary. |
 
 The loader rejects malformed rows, duplicate names, unknown suites or
@@ -25,6 +25,23 @@ expectation statuses, missing inputs, and non-integer expected results.
 - `profile` contains a second-scale tree search and multi-second macrocycle
   searches. Except for ketoconazole, their expectations are provisional
   benchmark guards rather than reviewed regression expectations.
+- `scaling` is a cumulative series of two through eight disconnected amino-acid
+  components. It grows from 18 atoms and 16 bonds to 68 atoms and 60 bonds;
+  every larger input contains the preceding graph and one additional component.
+  The expectations are provisional benchmark guards.
+
+Run the scaling series with:
+
+```bash
+python benchmarks/benchmark.py --suite scaling
+```
+
+The workload column puts atoms, bonds, and component counts next to the timing
+statistics. Algorithm clock ticks are the clearest cost signal for the smaller
+inputs because wall time also includes fixed process-startup and parsing costs.
+The series measures this cumulative, changing-composition workload; it should
+not be interpreted as an asymptotic complexity measurement for arbitrary
+molecules.
 
 ## Measurement method
 
