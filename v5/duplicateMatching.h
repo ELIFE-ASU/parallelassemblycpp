@@ -189,35 +189,63 @@ struct duplicateSet
     }
     
     /**
-     * @brief Generate matchings from pairable duplicates from the maskList
-     * 
-     * @param v the output list of valid matchings
+     * @brief Visit pairable duplicates in reverse lexicographic order
+     *
+     * This is the order previously produced by generating every matching and
+     * then consuming that vector backwards. Only the matching currently being
+     * visited is materialised.
+     *
+     * @param visitor Called for each valid matching; false stops iteration
+     * @return true if every matching was visited
+     * @return false if the visitor stopped iteration or the search should stop
      */
-    void generateMatchings(vector<validMatchings> &v)
+    template<typename Visitor>
+    bool visitMatchingsInReverse(Visitor &&visitor)
     {
-        for (size_t i = 0; i < list.size(); i++)
+        if (list.size() < 2) return true;
+
+        for (size_t firstIndex = list.size() - 1; firstIndex > 0;)
         {
-            if (searchShouldStop()) return;
-            int frag = list[i].fragment;
-            for (size_t j = i + 1; j < list.size(); j++)
+            --firstIndex;
+            if (searchShouldStop()) return false;
+            int frag = list[firstIndex].fragment;
+            for (size_t secondIndex = list.size();
+                 secondIndex > firstIndex + 1;)
             {
-                if (searchShouldStop()) return;
-                if (frag == list[j].fragment)
-                {
-                    if (list[i].mask.disjoint(list[j].mask))
-                    {
-                        validMatchings p(list[i].mask, list[j].mask, frag, frag, size);
-                        v.push_back(p);
-                    }
-                }
-                else
-                {
-                    validMatchings p(list[i].mask, list[j].mask,
-                    list[i].fragment, list[j].fragment, size);
-                    v.push_back(p);
-                }
+                --secondIndex;
+                if (searchShouldStop()) return false;
+                if (
+                    frag == list[secondIndex].fragment &&
+                    !list[firstIndex].mask.disjoint(list[secondIndex].mask)
+                ) continue;
+
+                validMatchings matching(
+                    list[firstIndex].mask,
+                    list[secondIndex].mask,
+                    frag,
+                    list[secondIndex].fragment,
+                    size
+                );
+                if (!visitor(matching)) return false;
             }
         }
+        return true;
+    }
+
+    /**
+     * @brief Check whether occurrences belong to more than one fragment
+     */
+    bool occurrencesSpanMultipleFragments()
+    {
+        bool foundFragment = false;
+        for (const EdgeMask &mask : maskList)
+        {
+            if (searchShouldStop()) return false;
+            if (mask == 0) continue;
+            if (foundFragment) return true;
+            foundFragment = true;
+        }
+        return false;
     }
 };
 
@@ -242,6 +270,26 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
     vector<initialDagLevel> &tempDag)
     {
         bool output = 0;
+        const bool allAlive = occurrencesSpanMultipleFragments();
+        if (searchShouldStop()) return output;
+
+        auto populateDAG = [&](initialPotentialDuplicate &duplicate)
+        {
+            if (!duplicate.generateDAG(q, retainedStateCount, tempDag))
+                return false;
+            output = 1;
+            return true;
+        };
+        if (allAlive)
+        {
+            for (initialPotentialDuplicate &duplicate : list)
+            {
+                if (searchShouldStop()) return output;
+                if (!populateDAG(duplicate)) return output;
+            }
+            return output;
+        }
+
         vb alive(list.size(), 0);
         for (size_t i = 0; i < list.size(); i++)
         {
@@ -266,9 +314,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
             }
             if (alive[i])
             {
-                if (!list[i].generateDAG(q, retainedStateCount, tempDag))
-                    return output;
-                output = 1;
+                if (!populateDAG(list[i])) return output;
             }
         }
         return output;
@@ -342,6 +388,39 @@ bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap
     vector<EdgeMask> &takenMasks, vector<EdgeMask> &stateMasks, int ordinal, bool &overweight, bool last)
     {
         bool output = 0;
+        const bool allAlive = ds.occurrencesSpanMultipleFragments();
+        if (searchShouldStop()) return output;
+
+        auto generateFromDuplicate = [&](potentialDuplicate &duplicate)
+        {
+            const int frag = duplicate.fragment;
+            takenMasks[frag] |= duplicate.mask;
+            ds.dead = 0;
+            if (!last)
+            {
+                overweight |= dagGenerate(
+                    duplicate,
+                    stmap,
+                    stateMasks[frag],
+                    ds.size,
+                    ordinal,
+                    ds.maskList.size()
+                );
+                if (searchShouldStop()) return false;
+                output = 1;
+            }
+            return true;
+        };
+        if (allAlive)
+        {
+            for (potentialDuplicate &duplicate : ds.list)
+            {
+                if (searchShouldStop()) return output;
+                if (!generateFromDuplicate(duplicate)) return output;
+            }
+            return output;
+        }
+
         vb alive(ds.list.size(), 0);
         for (size_t i = 0; i < ds.list.size(); i++)
         {
@@ -366,15 +445,7 @@ bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap
             }
             if (alive[i])
             {
-                takenMasks[frag] |= ds.list[i].mask;
-                ds.dead = 0;
-                if (!last)
-                {
-                    overweight |= dagGenerate(ds.list[i], stmap, stateMasks[frag], ds.size,
-                         ordinal, ds.maskList.size());
-                    if (searchShouldStop()) return output;
-                    output = 1;
-                }
+                if (!generateFromDuplicate(ds.list[i])) return output;
             }
         }
         return output;

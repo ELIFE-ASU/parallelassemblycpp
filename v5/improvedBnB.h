@@ -386,7 +386,6 @@ void dagRecursiveAssemblyWithWorkspace(
             dagDuplicateSet &ss = it->second;
             if (!ss.dead)
             {
-            vector<validMatchings> matchings;
             EdgeMask maskC = 0;
             
             for (size_t i = 0; i < ss.maskList.size(); i++)
@@ -408,42 +407,40 @@ void dagRecursiveAssemblyWithWorkspace(
             int earlyAIBound = totalBonds - input.sumDupBonds - 1 - earlySDP;
             if (earlyAIBound < AI)
             {
-                if (ss.list.size() > 1)
+                const bool completed = ss.visitMatchingsInReverse(
+                [&](validMatchings &matching)
                 {
-                    ss.generateMatchings(matchings);
-                    if (searchShouldStop()) return;
-                }
-                for (int i = matchings.size() - 1; i >= 0; i--)
-                {
-                    if (searchShouldStop()) return;
                     assemblyState as;
                     fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                         input,
-                        matchings[i],
+                        matching,
                         as,
                         fragmentationWorkspace
                     );
-                    if (searchShouldStop()) return;
+                    if (searchShouldStop()) return false;
 
-                    int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
+                    int sumDupBonds = input.sumDupBonds + matching.maxFragSize - 1;
                     as.sumDupBonds = sumDupBonds;
                     int fragmentationCutoff = postFragmentationCutoff(as, maskC, maskM);
-                    if (searchShouldStop()) return;
-                    if (as.lowBoundAI(matchings[i].maxFragSize, fragmentationCutoff) < AI)
+                    if (searchShouldStop()) return false;
+                    if (as.lowBoundAI(matching.maxFragSize, fragmentationCutoff) < AI)
                     {
                         vi candidateKey;
-                        if (!canoniseAssemblyStateAndBuildKey(as, candidateKey)) return;
+                        if (!canoniseAssemblyStateAndBuildKey(as, candidateKey))
+                            return false;
                         if (!continueAssemblySearchWithWorkspace(
                             input,
                             as,
-                            matchings[i],
+                            matching,
                             std::move(candidateKey),
                             sumDupBonds,
                             AI,
                             fragmentationWorkspace
-                        )) return;
+                        )) return false;
                     }
-                }
+                    return true;
+                });
+                if (!completed) return;
             }
             }
         }
@@ -480,40 +477,37 @@ void initialRecursiveAssemblyWithWorkspace(
         {
             if (searchShouldStop()) return;
             initialDuplicateSet &ss = it->second;
-            vector<validMatchings> matchings;
-            if (ss.list.size() > 1)
+            const bool completed = ss.visitMatchingsInReverse(
+            [&](validMatchings &matching)
             {
-                ss.generateMatchings(matchings);
-                if (searchShouldStop()) return;
-            }
-            for (int i = matchings.size() - 1; i >= 0; i--)
-            {
-                if (searchShouldStop()) return;
                 assemblyState as;
                 fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                     input,
-                    matchings[i],
+                    matching,
                     as,
                     fragmentationWorkspace
                 );
-                if (searchShouldStop()) return;
-                int sumDupBonds = input.sumDupBonds + matchings[i].maxFragSize - 1;
+                if (searchShouldStop()) return false;
+                int sumDupBonds = input.sumDupBonds + matching.maxFragSize - 1;
                 as.sumDupBonds = sumDupBonds;
                 if (as.lowBoundAI() < AI)
                 {
                     vi candidateKey;
-                    if (!canoniseAssemblyStateAndBuildKey(as, candidateKey)) return;
+                    if (!canoniseAssemblyStateAndBuildKey(as, candidateKey))
+                        return false;
                     if (!continueAssemblySearchWithWorkspace(
                         input,
                         as,
-                        matchings[i],
+                        matching,
                         std::move(candidateKey),
                         sumDupBonds,
                         AI,
                         fragmentationWorkspace
-                    )) return;
+                    )) return false;
                 }
-            }
+                return true;
+            });
+            if (!completed) return;
         }
     }
 }
