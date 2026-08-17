@@ -165,45 +165,188 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
     {
         if (searchShouldStop()) return 0;
         masks[i] &= targetMasks[0][i];
+        _target.edgeCounts[i] = static_cast<int>(masks[i].count());
     }
     return currSize;
 }
 
 
 /**
- * @brief This function returns the minimum possible sum of duplicate bonds that can be found if only fragments equal
- * to the size of the largest duplicatable subgraph are considered. Used to tighten the bound after fragmentation
+ * @brief Compute the targeted and unrestricted post-fragment bounds together
+ * in one pass over the child fragments.
  * @param target The target assembly state
  * @param matchMask The bitset of all graphs isomorphic to the matching
  * @param maxFragMask The bitset of all duplicatable subgraphs with the same bitset count as the matching
- * @return int the sum of duplicate bonds calculated by this cutoff function
+ * @param boundTotals Reusable scratch for each unrestricted duplicate size
+ * @return int the largest remaining duplicate-bond estimate
  */
-int postFragmentationCutoff(assemblyState &target, EdgeMask & matchMask, EdgeMask &maxFragMask)
+int postFragmentationCutoff(
+    const assemblyState &target,
+    const EdgeMask &matchMask,
+    const EdgeMask &maxFragMask,
+    vi &boundTotals
+)
 {
-    if (target.masks.size() < 2) return 0;
-    int maxFragSize = target.masks[0].count();
+    const int maxFragSize = target.edgeCounts[0];
+    const bool useTargetedBounds = target.masks.size() >= 2;
+    int matchDB = 0;
+    int maxFragDB = 0;
+    boundTotals.assign(max(maxFragSize - 2, 0), 0);
 
-    /// mainSizeList is the vector of integers corresponding to the sizes of each fragment
-    /// matchSizeList is the vector of integers corresponding to the sizes of each matching fragment bitset
-    /// maxFragSizeList is the vector of integers corrsponding to the sizes of each maximal size fragment bitset
-    vi mainSizeList, matchSizeList, maxFragSizeList;
-
-    mainSizeList.resize(target.masks.size());
-    matchSizeList.resize(target.masks.size());
-    maxFragSizeList.resize(target.masks.size());
-
-    mainSizeList[0] = maxFragSize;
-    matchSizeList[0] = maxFragSize;
-    maxFragSizeList[0] = maxFragSize;
-    for (size_t i = 1; i < target.masks.size(); i++)
+    for (size_t i = 0; i < target.masks.size(); i++)
     {
-        mainSizeList[i] = target.masks[i].count();
-        matchSizeList[i] = target.masks[i].intersectionCount(matchMask);
-        maxFragSizeList[i] = target.masks[i].intersectionCount(maxFragMask);
+        const int edgeCount = target.edgeCounts[i];
+        if (useTargetedBounds)
+        {
+            const int matchingEdges = i == 0
+                ? maxFragSize
+                : static_cast<int>(
+                    target.masks[i].intersectionCount(matchMask)
+                );
+            const int maximalEdges = i == 0
+                ? maxFragSize
+                : static_cast<int>(
+                    target.masks[i].intersectionCount(maxFragMask)
+                );
+            matchDB += assemblyState::fixedSizeDupBondsForFragment(
+                edgeCount,
+                maxFragSize,
+                matchingEdges
+            );
+            maxFragDB += assemblyState::fixedSizeDupBondsForFragment(
+                edgeCount,
+                maxFragSize,
+                maximalEdges
+            );
+        }
+
+        if (!boundTotals.empty()) boundTotals[0] += edgeCount / 2;
+        for (int duplicateSize = 3;
+             duplicateSize < maxFragSize;
+             duplicateSize++)
+        {
+            boundTotals[duplicateSize - 2] +=
+                assemblyState::unrestrictedDupBondsForFragment(
+                    edgeCount,
+                    duplicateSize
+                );
+        }
     }
-    int matchDB = target.maxDupBonds(mainSizeList, maxFragSize, matchSizeList);
-    int maxFragDB = target.maxDupBonds(mainSizeList, maxFragSize, maxFragSizeList) - 1;
-    return max(matchDB, maxFragDB);
+
+    int result = 0;
+    if (useTargetedBounds)
+    {
+        matchDB -= ceilLog2(maxFragSize);
+        maxFragDB -= ceilLog2(maxFragSize) + 1;
+        result = max(matchDB, maxFragDB);
+    }
+    if (!boundTotals.empty())
+    {
+        boundTotals[0]--;
+        result = max(result, boundTotals[0]);
+        for (int duplicateSize = 3;
+             duplicateSize < maxFragSize;
+             duplicateSize++)
+        {
+            const size_t index = duplicateSize - 2;
+            boundTotals[index] -= ceilLog2(duplicateSize);
+            result = max(result, boundTotals[index]);
+        }
+    }
+    return result;
+}
+
+void buildUnrestrictedDupBondTotals(
+    const assemblyState &target,
+    int maxDuplicateSize,
+    vi &totals
+)
+{
+    totals.assign(max(maxDuplicateSize - 1, 0), 0);
+    for (const int edgeCount : target.edgeCounts)
+    {
+        if (!totals.empty()) totals[0] += edgeCount / 2;
+        for (int duplicateSize = 3;
+             duplicateSize <= maxDuplicateSize;
+             duplicateSize++)
+        {
+            totals[duplicateSize - 2] +=
+                assemblyState::unrestrictedDupBondsForFragment(
+                    edgeCount,
+                    duplicateSize
+                );
+        }
+    }
+}
+
+int pairSpecificGenericBound(
+    const assemblyState &target,
+    const validMatchings &matching,
+    const vi &parentTotals
+)
+{
+    // Evaluate the generic bound on a virtual child whose selected copies have
+    // been removed but whose residual parents remain unsplit. Since
+    // n - ceil(n / k) is superadditive, later component splitting can only
+    // lower this duplicate-bond estimate, so it is safe before union-find.
+    const int selectedSize = matching.maxFragSize;
+    int total = parentTotals[0] + selectedSize / 2;
+    if (matching.frag1 == matching.frag2)
+    {
+        const int parentEdges = target.edgeCounts[matching.frag1];
+        total += (parentEdges - 2 * selectedSize) / 2 - parentEdges / 2;
+    }
+    else
+    {
+        const int firstParentEdges = target.edgeCounts[matching.frag1];
+        const int secondParentEdges = target.edgeCounts[matching.frag2];
+        total += (firstParentEdges - selectedSize) / 2 - firstParentEdges / 2;
+        total += (secondParentEdges - selectedSize) / 2 - secondParentEdges / 2;
+    }
+    int result = total - 1;
+
+    for (int duplicateSize = 3;
+         duplicateSize < selectedSize;
+         duplicateSize++)
+    {
+        total = parentTotals[duplicateSize - 2] +
+            assemblyState::unrestrictedDupBondsForFragment(
+                selectedSize,
+                duplicateSize
+            );
+        if (matching.frag1 == matching.frag2)
+        {
+            const int parentEdges = target.edgeCounts[matching.frag1];
+            total += assemblyState::unrestrictedDupBondsForFragment(
+                parentEdges - 2 * selectedSize,
+                duplicateSize
+            ) - assemblyState::unrestrictedDupBondsForFragment(
+                parentEdges,
+                duplicateSize
+            );
+        }
+        else
+        {
+            const int firstParentEdges = target.edgeCounts[matching.frag1];
+            const int secondParentEdges = target.edgeCounts[matching.frag2];
+            total += assemblyState::unrestrictedDupBondsForFragment(
+                firstParentEdges - selectedSize,
+                duplicateSize
+            ) - assemblyState::unrestrictedDupBondsForFragment(
+                firstParentEdges,
+                duplicateSize
+            );
+            total += assemblyState::unrestrictedDupBondsForFragment(
+                secondParentEdges - selectedSize,
+                duplicateSize
+            ) - assemblyState::unrestrictedDupBondsForFragment(
+                secondParentEdges,
+                duplicateSize
+            );
+        }
+        result = max(result, total - ceilLog2(duplicateSize));
+    }
+    return result;
 }
 
 void dagRecursiveAssemblyWithWorkspace(
@@ -343,6 +486,11 @@ void dagRecursiveAssemblyWithWorkspace(
     ufdsMaskWorkspace &fragmentationWorkspace
 )
 {
+    // Count-only pair pruning pays for itself once residual splitting is no
+    // longer dominated by the fixed cost of the bound lookup.
+    constexpr size_t pairBoundMinimumMoleculeEdges = 27;
+    const bool usePairBound =
+        fragmentationWorkspace.edgeCount >= pairBoundMinimumMoleculeEdges;
     recordImprovedAssemblyIndex(input, AI);
     if (searchShouldStop()) return;
 
@@ -353,32 +501,20 @@ void dagRecursiveAssemblyWithWorkspace(
     if (searchShouldStop()) return;
 
     /// Find the fragment-size-specific AI lower bounds
-    vi fragSizeList, fragSizeListMax, sizeList(input.masks.size());
-    input.maxDupBonds(fragSizeList, maxFragSize, targetMasks);
+    vi fragSizeListMax;
+    input.maxDupBondsPrefix(fragSizeListMax, maxFragSize, targetMasks);
     if (searchShouldStop()) return;
 
-    /// Establish the max duplicate cutoff based on the maximum fragment size
-    fragSizeListMax.resize(fragSizeList.size());
-    fragSizeListMax[0] = fragSizeList[0];
-    for (size_t i = 1; i < fragSizeList.size(); i++)
-    {
-        if (searchShouldStop()) return;
-        if (fragSizeList[i] > fragSizeListMax[i - 1])
-            fragSizeListMax[i] = fragSizeList[i];
-        else fragSizeListMax[i] = fragSizeListMax[i - 1];
-    }
-    for (size_t i = 0; i < input.masks.size(); i++)
-    {
-        if (searchShouldStop()) return;
-        sizeList[i] = input.masks[i].count();
-    }
-
     /// Begin iterating through the enumerated duplicatable fragments
+    assemblyState candidate;
+    candidate.reserveFragments(input.masks.size() + 2);
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
         map<int, dagDuplicateSet> &stmap = stmapVector[j];
         vector<EdgeMask> stmapMaskList(input.masks.size(), 0);
+        vi unrestrictedParentTotals;
+        vi pairGenericBoundCache;
         EdgeMask maskM = 0;
         for (auto it = stmap.begin(); it != stmap.end(); ++it)
         {
@@ -395,7 +531,7 @@ void dagRecursiveAssemblyWithWorkspace(
                 stmapMaskList[i] |= ss.maskList[i];
             }
             maskM |= maskC;
-            int dupBondsMaxFrag = input.maxDupBonds(sizeList, ss.size, stmapMaskList);
+            int dupBondsMaxFrag = input.maxDupBonds(ss.size, stmapMaskList);
 
             int temp = fragSizeListMax[ss.size - 2] - 1;
 
@@ -404,33 +540,118 @@ void dagRecursiveAssemblyWithWorkspace(
             /// Initial branch-and-bound before the fragmentation step
             int earlySDP = max(dupBondsMaxFrag, temp);
 
-            int earlyAIBound = totalBonds - input.sumDupBonds - 1 - earlySDP;
+            int earlyAIBound = static_cast<int>(totalBonds) -
+                input.sumDupBonds - 1 - earlySDP;
             if (earlyAIBound < AI)
             {
+                int matchingClassBound = numeric_limits<int>::min();
                 const bool completed = ss.visitMatchingsInReverse(
                 [&](validMatchings &matching)
                 {
-                    assemblyState as;
+                    if (usePairBound)
+                    {
+                        const int pairBoundLimit = static_cast<int>(totalBonds) -
+                            input.sumDupBonds - 1 - AI;
+                        if (dupBondsMaxFrag - 1 <= pairBoundLimit)
+                        {
+                            bool targetedBoundsFit =
+                                dupBondsMaxFrag <= pairBoundLimit;
+                            if (!targetedBoundsFit)
+                            {
+                                if (
+                                    matchingClassBound ==
+                                    numeric_limits<int>::min()
+                                )
+                                {
+                                    matchingClassBound = input.maxDupBonds(
+                                        ss.size,
+                                        ss.maskList
+                                    );
+                                }
+                                targetedBoundsFit =
+                                    matchingClassBound <= pairBoundLimit;
+                            }
+
+                            if (targetedBoundsFit)
+                            {
+                                bool genericBoundFits =
+                                    matching.maxFragSize == 2;
+                                if (!genericBoundFits)
+                                {
+                                    if (unrestrictedParentTotals.empty())
+                                    {
+                                        buildUnrestrictedDupBondTotals(
+                                            input,
+                                            matching.maxFragSize - 1,
+                                            unrestrictedParentTotals
+                                        );
+                                        pairGenericBoundCache.assign(
+                                            input.masks.size() * input.masks.size(),
+                                            numeric_limits<int>::min()
+                                        );
+                                    }
+                                    const size_t firstFragment = min(
+                                        matching.frag1,
+                                        matching.frag2
+                                    );
+                                    const size_t secondFragment = max(
+                                        matching.frag1,
+                                        matching.frag2
+                                    );
+                                    int &genericRouteBound = pairGenericBoundCache[
+                                        firstFragment * input.masks.size() +
+                                        secondFragment
+                                    ];
+                                    if (
+                                        genericRouteBound ==
+                                        numeric_limits<int>::min()
+                                    )
+                                    {
+                                        genericRouteBound =
+                                            matching.maxFragSize - 1 +
+                                            pairSpecificGenericBound(
+                                                input,
+                                                matching,
+                                                unrestrictedParentTotals
+                                            );
+                                    }
+                                    genericBoundFits =
+                                        genericRouteBound <= pairBoundLimit;
+                                }
+                                if (genericBoundFits) return true;
+                            }
+                        }
+                    }
+
+                    candidate.clearFragments();
                     fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                         input,
                         matching,
-                        as,
+                        candidate,
                         fragmentationWorkspace
                     );
                     if (searchShouldStop()) return false;
 
                     int sumDupBonds = input.sumDupBonds + matching.maxFragSize - 1;
-                    as.sumDupBonds = sumDupBonds;
-                    int fragmentationCutoff = postFragmentationCutoff(as, maskC, maskM);
+                    candidate.sumDupBonds = sumDupBonds;
+                    int fragmentationCutoff = postFragmentationCutoff(
+                        candidate,
+                        maskC,
+                        maskM,
+                        fragmentationWorkspace.boundTotals
+                    );
                     if (searchShouldStop()) return false;
-                    if (as.lowBoundAI(matching.maxFragSize, fragmentationCutoff) < AI)
+                    const int candidateAIBound =
+                        static_cast<int>(totalBonds) - sumDupBonds - 1 -
+                        fragmentationCutoff;
+                    if (candidateAIBound < AI)
                     {
                         vi candidateKey;
-                        if (!canoniseAssemblyStateAndBuildKey(as, candidateKey))
+                        if (!canoniseAssemblyStateAndBuildKey(candidate, candidateKey))
                             return false;
                         if (!continueAssemblySearchWithWorkspace(
                             input,
-                            as,
+                            candidate,
                             matching,
                             std::move(candidateKey),
                             sumDupBonds,
@@ -469,6 +690,8 @@ void initialRecursiveAssemblyWithWorkspace(
     if (enumerationLimitReached || searchShouldStop()) return;
 
     if (!hasInitialMatchings) return;
+    assemblyState candidate;
+    candidate.reserveFragments(input.masks.size() + 2);
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
@@ -480,24 +703,24 @@ void initialRecursiveAssemblyWithWorkspace(
             const bool completed = ss.visitMatchingsInReverse(
             [&](validMatchings &matching)
             {
-                assemblyState as;
+                candidate.clearFragments();
                 fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                     input,
                     matching,
-                    as,
+                    candidate,
                     fragmentationWorkspace
                 );
                 if (searchShouldStop()) return false;
                 int sumDupBonds = input.sumDupBonds + matching.maxFragSize - 1;
-                as.sumDupBonds = sumDupBonds;
-                if (as.lowBoundAI() < AI)
+                candidate.sumDupBonds = sumDupBonds;
+                if (candidate.lowBoundAI() < AI)
                 {
                     vi candidateKey;
-                    if (!canoniseAssemblyStateAndBuildKey(as, candidateKey))
+                    if (!canoniseAssemblyStateAndBuildKey(candidate, candidateKey))
                         return false;
                     if (!continueAssemblySearchWithWorkspace(
                         input,
-                        as,
+                        candidate,
                         matching,
                         std::move(candidateKey),
                         sumDupBonds,
@@ -545,7 +768,8 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     );
     allEdges.reset();
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
-    assemblyState as; as.masks.push_back(allEdges);
+    assemblyState as;
+    as.appendFragment(allEdges, static_cast<int>(univEdgeList.size()));
     auto rootPath = std::make_unique<assemblyPath>();
     apWrapper ap{rootPath.get()};
     ap.ap->parent = nullptr;

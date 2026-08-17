@@ -19,22 +19,37 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
     vector<EdgeMask> &masks = _target.masks;
     EdgeMask f1 = matching.first, f2 = matching.second;
     const bool same = matching.frag1 == matching.frag2;
-    _result.masks.push_back(f1);
+    _result.appendFragment(f1, matching.maxFragSize);
     if (same)
     {
         EdgeMask resultMask = masks[matching.frag1];
         resultMask ^= f1;
         resultMask ^= f2;
-        ufdsMaskConstructWithWorkspace(resultMask, _result.masks, workspace);
+        ufdsMaskConstructWithWorkspace(
+            resultMask,
+            _result.masks,
+            _result.edgeCounts,
+            workspace
+        );
     }
     else
     {
         EdgeMask resultMask1 = masks[matching.frag1];
         resultMask1 ^= f1;
-        ufdsMaskConstructWithWorkspace(resultMask1, _result.masks, workspace);
+        ufdsMaskConstructWithWorkspace(
+            resultMask1,
+            _result.masks,
+            _result.edgeCounts,
+            workspace
+        );
         EdgeMask resultMask2 = masks[matching.frag2];
         resultMask2 ^= f2;
-        ufdsMaskConstructWithWorkspace(resultMask2, _result.masks, workspace);
+        ufdsMaskConstructWithWorkspace(
+            resultMask2,
+            _result.masks,
+            _result.edgeCounts,
+            workspace
+        );
     }
     for (size_t i = 0; i < masks.size(); i++)
     {
@@ -51,10 +66,11 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                 ufdsMaskConstructWithWorkspace(
                     masks[i],
                     _result.masks,
+                    _result.edgeCounts,
                     workspace
                 );
             }
-            else _result.masks.push_back(masks[i]);
+            else _result.appendFragment(masks[i], _target.edgeCounts[i]);
         }
     }
 }

@@ -370,14 +370,29 @@ struct cachedResidualDecomposition
 {
     bool isIdentity = false;
     vector<EdgeMask> components;
+    vi edgeCounts;
 
     void appendTo(
         uint64_t maskWord,
-        vector<EdgeMask> &output
+        int activeEdgeCount,
+        vector<EdgeMask> &output,
+        vi &outputEdgeCounts
     ) const
     {
-        if (isIdentity) output.emplace_back(maskWord);
-        else output.insert(output.end(), components.begin(), components.end());
+        if (isIdentity)
+        {
+            output.emplace_back(maskWord);
+            outputEdgeCounts.push_back(activeEdgeCount);
+        }
+        else
+        {
+            output.insert(output.end(), components.begin(), components.end());
+            outputEdgeCounts.insert(
+                outputEdgeCounts.end(),
+                edgeCounts.begin(),
+                edgeCounts.end()
+            );
+        }
     }
 };
 
@@ -405,6 +420,7 @@ struct ufdsMaskWorkspace
 
     ufdsSplit sets;
     vector<EdgeMask> components;
+    vi boundTotals;
     vector<lowResidualDecompositionCacheEntry> lowDecompositionCache;
     vector<uint64_t> decompositionSeenBits;
     size_t edgeCount;
@@ -428,6 +444,7 @@ struct ufdsMaskWorkspace
         sets.elements.resize(atomCount);
         sets.extraVals.reserve(_edgeCount);
         components.reserve(atomCount);
+        boundTotals.reserve(_edgeCount);
         if (reuseResidualDecompositions)
         {
             decompositionSeenBits.resize(decompositionSeenWordCount);
@@ -541,6 +558,7 @@ struct ufdsMaskWorkspace
 void ufdsMaskConstructWithoutCacheWithWorkspace(
     const EdgeMask &mask,
     vector<EdgeMask> &maskList,
+    vi &edgeCounts,
     ufdsMaskWorkspace &workspace,
     uint64_t lowMaskWord
 )
@@ -596,7 +614,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
     }
     else forEachSetBitWithWideLimit(mask, edgeList.size(), visitEdge);
     if (!initialised) return;
-    u.splitWithBuffers(maskList, workspace.components);
+    u.splitWithBuffers(maskList, edgeCounts, workspace.components);
 }
 
 /**
@@ -608,6 +626,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
 void ufdsMaskConstructWithCacheWithWorkspace(
     const EdgeMask &mask,
     vector<EdgeMask> &maskList,
+    vi &edgeCounts,
     ufdsMaskWorkspace &workspace
 )
 {
@@ -617,6 +636,7 @@ void ufdsMaskConstructWithCacheWithWorkspace(
         ufdsMaskConstructWithoutCacheWithWorkspace(
             mask,
             maskList,
+            edgeCounts,
             workspace,
             lowMaskWord
         );
@@ -668,7 +688,12 @@ void ufdsMaskConstructWithCacheWithWorkspace(
 #ifdef FRAGMENT_CACHE_STATS
             workspace.decompositionCacheHits++;
 #endif
-            cachedDecomposition->appendTo(lowMaskWord, maskList);
+            cachedDecomposition->appendTo(
+                lowMaskWord,
+                static_cast<int>(activeEdgeCount),
+                maskList,
+                edgeCounts
+            );
             return;
         }
 #ifdef FRAGMENT_CACHE_STATS
@@ -714,6 +739,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
         {
             return;
         }
+        entry.decomposition.edgeCounts.assign(
+            edgeCounts.begin() + outputStart,
+            edgeCounts.end()
+        );
         entry.decomposition.isIdentity = isIdentity;
         entry.key = lowMaskWord;
         if (!entry.occupied)
@@ -744,17 +773,24 @@ void ufdsMaskConstructWithCacheWithWorkspace(
 inline void ufdsMaskConstructWithWorkspace(
     const EdgeMask &mask,
     vector<EdgeMask> &maskList,
+    vi &edgeCounts,
     ufdsMaskWorkspace &workspace
 )
 {
     if (workspace.reuseResidualDecompositions)
     {
-        ufdsMaskConstructWithCacheWithWorkspace(mask, maskList, workspace);
+        ufdsMaskConstructWithCacheWithWorkspace(
+            mask,
+            maskList,
+            edgeCounts,
+            workspace
+        );
         return;
     }
     ufdsMaskConstructWithoutCacheWithWorkspace(
         mask,
         maskList,
+        edgeCounts,
         workspace,
         workspace.edgeCount <= numeric_limits<uint64_t>::digits
             ? bitsetLowWordBelow(mask, workspace.edgeCount)
