@@ -366,16 +366,167 @@ molGraph preprocessWriteback(molGraph &mg, vector<edgeL> &writeback)
 /// Global variable for the molGraph before and after preprocessing
 molGraph originalMolecule, targetMolecule;
 
-struct ufdsMaskWorkspace
+struct cachedResidualDecomposition
 {
-    ufdsSplit sets;
+    bool isIdentity = false;
     vector<standardBitset> components;
 
-    ufdsMaskWorkspace(size_t atomCount, size_t edgeCount)
+    void appendTo(
+        uint64_t maskWord,
+        vector<standardBitset> &output
+    ) const
+    {
+        if (isIdentity) output.emplace_back(maskWord);
+        else output.insert(output.end(), components.begin(), components.end());
+    }
+};
+
+struct lowResidualDecompositionCacheEntry
+{
+    uint64_t key = 0;
+    bool occupied = false;
+    cachedResidualDecomposition decomposition;
+};
+
+struct ufdsMaskWorkspace
+{
+    // Cache only low-word molecules large enough to amortize the lookup.
+    // Smaller and wider masks retain the direct residual-proportional path.
+    static constexpr size_t decompositionCacheEntryLimit = 4096;
+    static constexpr size_t decompositionCacheComponentLimit = 16384;
+    static constexpr size_t decompositionCacheMinimumMoleculeEdges = 31;
+    static constexpr size_t decompositionCacheMaximumMoleculeEdges =
+        numeric_limits<uint64_t>::digits;
+    static constexpr size_t decompositionSeenBitCount = 1 << 18;
+    static constexpr size_t decompositionSeenWordCount =
+        decompositionSeenBitCount / numeric_limits<uint64_t>::digits;
+    static_assert(std::has_single_bit(decompositionCacheEntryLimit));
+    static_assert(std::has_single_bit(decompositionSeenBitCount));
+
+    ufdsSplit sets;
+    vector<standardBitset> components;
+    vector<lowResidualDecompositionCacheEntry> lowDecompositionCache;
+    vector<uint64_t> decompositionSeenBits;
+    size_t edgeCount;
+    bool reuseResidualDecompositions;
+    size_t lowDecompositionCacheEntries = 0;
+    size_t decompositionCacheComponentUnits = 0;
+    bool decompositionCacheDisabled = false;
+#ifdef FRAGMENT_CACHE_STATS
+    size_t decompositionCacheHits = 0;
+    size_t decompositionCacheMisses = 0;
+    size_t decompositionCacheAdmissions = 0;
+    size_t decompositionCacheFirstOccurrences = 0;
+    size_t decompositionCacheIdentityAdmissions = 0;
+    size_t decompositionCacheEmptyAdmissions = 0;
+#endif
+
+    ufdsMaskWorkspace(size_t atomCount, size_t _edgeCount):
+        edgeCount(_edgeCount),
+        reuseResidualDecompositions(decompositionCacheEligible(_edgeCount))
     {
         sets.elements.resize(atomCount);
-        sets.extraVals.reserve(edgeCount);
+        sets.extraVals.reserve(_edgeCount);
         components.reserve(atomCount);
+        if (reuseResidualDecompositions)
+        {
+            decompositionSeenBits.resize(decompositionSeenWordCount);
+        }
+    }
+
+    static bool decompositionCacheEligible(size_t moleculeEdgeCount)
+    {
+        return
+            moleculeEdgeCount >= decompositionCacheMinimumMoleculeEdges &&
+            moleculeEdgeCount <= decompositionCacheMaximumMoleculeEdges;
+    }
+
+#ifdef FRAGMENT_CACHE_STATS
+    ~ufdsMaskWorkspace()
+    {
+        cerr
+            << "fragment-cache hits=" << decompositionCacheHits
+            << " misses=" << decompositionCacheMisses
+            << " admissions=" << decompositionCacheAdmissions
+            << " first=" << decompositionCacheFirstOccurrences
+            << " identity=" << decompositionCacheIdentityAdmissions
+            << " empty=" << decompositionCacheEmptyAdmissions
+            << " entries=" << lowDecompositionCacheEntries
+            << " units=" << decompositionCacheComponentUnits
+            << '\n';
+    }
+#endif
+
+    static uint64_t mixDecompositionFingerprint(uint64_t fingerprint)
+    {
+        fingerprint ^= fingerprint >> 30;
+        fingerprint *= 0xbf58476d1ce4e5b9ULL;
+        fingerprint ^= fingerprint >> 27;
+        fingerprint *= 0x94d049bb133111ebULL;
+        fingerprint ^= fingerprint >> 31;
+        return fingerprint;
+    }
+
+    bool decompositionSeenBefore(uint64_t fingerprint)
+    {
+        constexpr size_t bitMask = decompositionSeenBitCount - 1;
+        constexpr size_t wordShift = 6;
+        const size_t firstBit = fingerprint & bitMask;
+        const size_t secondBit = (fingerprint >> 32) & bitMask;
+        const uint64_t firstMask = uint64_t{1} << (firstBit & 63);
+        const uint64_t secondMask = uint64_t{1} << (secondBit & 63);
+        uint64_t &firstWord = decompositionSeenBits[firstBit >> wordShift];
+        uint64_t &secondWord = decompositionSeenBits[secondBit >> wordShift];
+        const bool seen =
+            (firstWord & firstMask) != 0 &&
+            (secondWord & secondMask) != 0;
+        firstWord |= firstMask;
+        secondWord |= secondMask;
+        return seen;
+    }
+
+    bool assignCachedComponents(
+        vector<standardBitset> &stored,
+        const vector<standardBitset> &output,
+        size_t outputStart,
+        size_t storedComponentCount
+    )
+    {
+        const size_t oldCapacity = stored.capacity();
+        if (storedComponentCount == 0)
+        {
+            stored.clear();
+            return true;
+        }
+        if (storedComponentCount <= oldCapacity)
+        {
+            stored.resize(storedComponentCount);
+            copy(
+                output.begin() + outputStart,
+                output.end(),
+                stored.begin()
+            );
+            return true;
+        }
+
+        const size_t unitsWithoutStored =
+            decompositionCacheComponentUnits - oldCapacity;
+        if (
+            storedComponentCount >
+            decompositionCacheComponentLimit - unitsWithoutStored
+        )
+        {
+            return false;
+        }
+        vector<standardBitset> replacement(
+            output.begin() + outputStart,
+            output.end()
+        );
+        const size_t newUnits = unitsWithoutStored + replacement.capacity();
+        if (newUnits > decompositionCacheComponentLimit) return false;
+        stored.swap(replacement);
+        decompositionCacheComponentUnits = newUnits;
+        return true;
     }
 };
 
@@ -387,10 +538,11 @@ struct ufdsMaskWorkspace
  * @param workspace Reusable disjoint-set and component buffers. Its component
  * buffer must not alias maskList.
  */
-void ufdsMaskConstructWithWorkspace(
-    standardBitset &mask,
+void ufdsMaskConstructWithoutCacheWithWorkspace(
+    const standardBitset &mask,
     vector<standardBitset> &maskList,
-    ufdsMaskWorkspace &workspace
+    ufdsMaskWorkspace &workspace,
+    uint64_t lowMaskWord
 )
 {
     vector<edgeL> &edgeList = univEdgeList;
@@ -418,7 +570,7 @@ void ufdsMaskConstructWithWorkspace(
 
     size_t firstEdge = edgeList.size();
     bool initialised = false;
-    forEachSetBitBelow(mask, edgeList.size(), [&](size_t i) {
+    auto visitEdge = [&](size_t i) {
         if (firstEdge == edgeList.size())
         {
             firstEdge = i;
@@ -431,7 +583,181 @@ void ufdsMaskConstructWithWorkspace(
             initialised = true;
         }
         processEdge(i);
-    });
+    };
+    if (edgeList.size() <= numeric_limits<uint64_t>::digits)
+    {
+        uint64_t word = lowMaskWord;
+        while (word != 0)
+        {
+            const size_t index = std::countr_zero(word);
+            visitEdge(index);
+            word &= word - 1;
+        }
+    }
+    else forEachSetBitWithWideLimit(mask, edgeList.size(), visitEdge);
     if (!initialised) return;
     u.splitWithBuffers(maskList, workspace.components);
+}
+
+/**
+ * @brief Append a residual mask's connected components, reusing prior results
+ *
+ * The cache belongs to the per-calculation workspace because an edge mask is
+ * meaningful only for the molecule that produced univEdgeList.
+ */
+void ufdsMaskConstructWithCacheWithWorkspace(
+    const standardBitset &mask,
+    vector<standardBitset> &maskList,
+    ufdsMaskWorkspace &workspace
+)
+{
+    const uint64_t lowMaskWord =
+        bitsetLowWordBelow(mask, workspace.edgeCount);
+    auto constructWithoutCache = [&]() {
+        ufdsMaskConstructWithoutCacheWithWorkspace(
+            mask,
+            maskList,
+            workspace,
+            lowMaskWord
+        );
+    };
+    const size_t activeEdgeCount = std::popcount(lowMaskWord);
+    if (activeEdgeCount < 2)
+    {
+        return;
+    }
+
+    if (
+        workspace.decompositionCacheDisabled ||
+        activeEdgeCount < 4
+    )
+    {
+        constructWithoutCache();
+        return;
+    }
+
+    const uint64_t fingerprint =
+        ufdsMaskWorkspace::mixDecompositionFingerprint(
+            lowMaskWord
+        );
+    if (!workspace.decompositionSeenBefore(fingerprint))
+    {
+#ifdef FRAGMENT_CACHE_STATS
+        workspace.decompositionCacheFirstOccurrences++;
+#endif
+        constructWithoutCache();
+        return;
+    }
+
+    const cachedResidualDecomposition *cachedDecomposition = nullptr;
+    if (!workspace.decompositionCacheDisabled)
+    {
+        if (!workspace.lowDecompositionCache.empty())
+        {
+            const size_t index = fingerprint &
+                (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
+            const lowResidualDecompositionCacheEntry &cached =
+                workspace.lowDecompositionCache[index];
+            if (cached.occupied && cached.key == lowMaskWord)
+            {
+                cachedDecomposition = &cached.decomposition;
+            }
+        }
+        if (cachedDecomposition != nullptr)
+        {
+#ifdef FRAGMENT_CACHE_STATS
+            workspace.decompositionCacheHits++;
+#endif
+            cachedDecomposition->appendTo(lowMaskWord, maskList);
+            return;
+        }
+#ifdef FRAGMENT_CACHE_STATS
+        workspace.decompositionCacheMisses++;
+#endif
+    }
+
+    const size_t outputStart = maskList.size();
+    constructWithoutCache();
+
+    if (
+        workspace.decompositionCacheDisabled
+    )
+    {
+        return;
+    }
+
+    const size_t componentCount = maskList.size() - outputStart;
+    const bool isIdentity =
+        componentCount == 1 &&
+        maskList[outputStart] == standardBitset(lowMaskWord);
+    const size_t storedComponentCount = isIdentity ? 0 : componentCount;
+
+    try
+    {
+        if (workspace.lowDecompositionCache.empty())
+        {
+            workspace.lowDecompositionCache.resize(
+                ufdsMaskWorkspace::decompositionCacheEntryLimit
+            );
+        }
+        const size_t index = fingerprint &
+            (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
+        lowResidualDecompositionCacheEntry &entry =
+            workspace.lowDecompositionCache[index];
+        vector<standardBitset> &stored = entry.decomposition.components;
+        if (!workspace.assignCachedComponents(
+            stored,
+            maskList,
+            outputStart,
+            storedComponentCount
+        ))
+        {
+            return;
+        }
+        entry.decomposition.isIdentity = isIdentity;
+        entry.key = lowMaskWord;
+        if (!entry.occupied)
+        {
+            entry.occupied = true;
+            workspace.lowDecompositionCacheEntries++;
+        }
+#ifdef FRAGMENT_CACHE_STATS
+        workspace.decompositionCacheAdmissions++;
+        workspace.decompositionCacheIdentityAdmissions += isIdentity;
+        workspace.decompositionCacheEmptyAdmissions += componentCount == 0;
+#endif
+    }
+    catch (const bad_alloc &)
+    {
+        vector<lowResidualDecompositionCacheEntry>().swap(
+            workspace.lowDecompositionCache
+        );
+        workspace.lowDecompositionCacheEntries = 0;
+        workspace.decompositionCacheComponentUnits = 0;
+        workspace.decompositionCacheDisabled = true;
+    }
+}
+
+/**
+ * @brief Append a residual decomposition, using reuse only where it pays
+ */
+inline void ufdsMaskConstructWithWorkspace(
+    const standardBitset &mask,
+    vector<standardBitset> &maskList,
+    ufdsMaskWorkspace &workspace
+)
+{
+    if (workspace.reuseResidualDecompositions)
+    {
+        ufdsMaskConstructWithCacheWithWorkspace(mask, maskList, workspace);
+        return;
+    }
+    ufdsMaskConstructWithoutCacheWithWorkspace(
+        mask,
+        maskList,
+        workspace,
+        workspace.edgeCount <= numeric_limits<uint64_t>::digits
+            ? bitsetLowWordBelow(mask, workspace.edgeCount)
+            : 0
+    );
 }

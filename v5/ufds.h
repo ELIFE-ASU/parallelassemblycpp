@@ -1,27 +1,30 @@
 /**
+ * @brief Return the low machine word of a bitset, masked below a limit
+ */
+template<typename Bitset>
+unsigned long long bitsetLowWordBelow(const Bitset &mask, size_t limit)
+{
+    constexpr size_t wordBits = numeric_limits<unsigned long long>::digits;
+    const Bitset lowWordMask(numeric_limits<unsigned long long>::max());
+    unsigned long long word = (mask & lowWordMask).to_ullong();
+    if (limit < wordBits) word &= (1ULL << limit) - 1;
+    return word;
+}
+
+/**
  * @brief Visit set bit indices below a limit in ascending order
  *
  * Sparse implementations visit only set bits; dense masks and the portable
  * fallback use a bounded linear scan.
  */
 template<typename Bitset, typename Visitor>
-void forEachSetBitBelow(const Bitset &mask, size_t limit, Visitor &&visitor)
+void forEachSetBitWithWideLimit(
+    const Bitset &mask,
+    size_t limit,
+    Visitor &&visitor
+)
 {
     limit = min(limit, mask.size());
-    constexpr size_t wordBits = numeric_limits<unsigned long long>::digits;
-    if (limit <= wordBits)
-    {
-        const Bitset lowWordMask(numeric_limits<unsigned long long>::max());
-        unsigned long long word = (mask & lowWordMask).to_ullong();
-        if (limit < wordBits) word &= (1ULL << limit) - 1;
-        while (word != 0)
-        {
-            const size_t index = std::countr_zero(word);
-            visitor(index);
-            word &= word - 1;
-        }
-        return;
-    }
     if constexpr (requires(const Bitset &bits, size_t index) {
         bits._Find_first();
         bits._Find_next(index);
@@ -52,6 +55,29 @@ void forEachSetBitBelow(const Bitset &mask, size_t limit, Visitor &&visitor)
         {
             if (mask[index]) visitor(index);
         }
+    }
+}
+
+template<typename Bitset, typename Visitor>
+void forEachSetBitBelow(const Bitset &mask, size_t limit, Visitor &&visitor)
+{
+    limit = min(limit, mask.size());
+    constexpr size_t wordBits = numeric_limits<unsigned long long>::digits;
+    if (limit > wordBits)
+    {
+        forEachSetBitWithWideLimit(
+            mask,
+            limit,
+            std::forward<Visitor>(visitor)
+        );
+        return;
+    }
+    unsigned long long word = bitsetLowWordBelow(mask, limit);
+    while (word != 0)
+    {
+        const size_t index = std::countr_zero(word);
+        visitor(index);
+        word &= word - 1;
     }
 }
 
