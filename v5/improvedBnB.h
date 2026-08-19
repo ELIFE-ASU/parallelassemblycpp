@@ -803,6 +803,7 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     minAssemblyPath = nullptr;
     bitsetHashTable.clear();
     graphHashMap.clear();
+    clearTreeCanonInterner();
     DAG.clear();
     intermediateMAs.clear();
     totalBonds = mg.totalBonds;

@@ -1318,11 +1318,50 @@ def run_mask_unit_tests(compiler: str) -> None:
         print("Mask tests: passed", flush=True)
 
 
+def run_tree_canon_unit_tests(compiler: str) -> None:
+    command_prefix = compiler_command(compiler)
+    with tempfile.TemporaryDirectory(prefix="assemblycpp-tree-canon-tests-") as directory:
+        test_executable = Path(directory) / "treeCanonTester"
+        command = [
+            *command_prefix,
+            str(TEST_DIRECTORY / "treeCanonTester.cpp"),
+            "-std=c++23",
+            "-O2",
+            "-mpopcnt",
+            "-march=x86-64-v3",
+            "-o",
+            str(test_executable),
+        ]
+        print(f"Building tree canon tests: {shlex.join(command)}", flush=True)
+        completed = subprocess.run(command, check=False)
+        if completed.returncode != 0:
+            raise TestConfigurationError(
+                f"tree canon test build failed with exit code {completed.returncode}"
+            )
+
+        run_options: dict[str, object] = {"check": False}
+        if sys.platform.startswith("linux"):
+            import resource
+
+            def limit_stack() -> None:
+                stack_limit = 64 * 1024
+                resource.setrlimit(resource.RLIMIT_STACK, (stack_limit, stack_limit))
+
+            run_options["preexec_fn"] = limit_stack
+        completed = subprocess.run([str(test_executable)], **run_options)
+        if completed.returncode != 0:
+            raise TestConfigurationError(
+                f"tree canon tests failed with exit code {completed.returncode}"
+            )
+        print("Tree canon tests: passed", flush=True)
+
+
 def build_executable(executable: Path, compiler: str) -> Path:
     executable = executable.resolve()
     executable.parent.mkdir(parents=True, exist_ok=True)
 
     run_mask_unit_tests(compiler)
+    run_tree_canon_unit_tests(compiler)
     command_prefix = compiler_command(compiler)
 
     command = [

@@ -30,6 +30,11 @@ the ordinary CLI and regression checks; telemetry-only checks are detected and
 skipped. Use a separately compiled portable executable on older x86-64 or
 non-x86 systems.
 
+The build path also runs focused active-word mask and iterative tree-
+canonicalisation tests. On Linux the tree tests use a 64 KiB stack and include
+32,766- and 32,767-node labelled paths, preventing recursive traversal from
+returning unnoticed for either centroid shape.
+
 Run the manifest and fixture integrity audit with:
 
 ```bash

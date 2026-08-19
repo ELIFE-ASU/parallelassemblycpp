@@ -7,8 +7,8 @@ struct graphHash
     EdgeMask mask;
     /// hashes stored as floats
     vector<float> hashes;
-    /// if the graph is acyclic, the tree hash function is used, and the output stored here
-    string treeHash;
+    /// Exact interned tree identity; empty selects VF2 for cyclic/unsupported graphs.
+    treeCanonForm treeHash;
 
     /**
      * @brief Calculate hash for subgraph unordered_map using BFS approach
@@ -86,8 +86,8 @@ struct graphHash
      */
     bool operator==(const graphHash &g2) const
     {
-        if (treeHash.length() != g2.treeHash.length()) return false;
-        if (treeHash.length() == 0)
+        if (treeHash.empty() != g2.treeHash.empty()) return false;
+        if (treeHash.empty())
         {
             molGraphBoost g1mg = edgelistToBoost(targetMolecule, univEdgeList, this->mask), 
             g2mg = edgelistToBoost(targetMolecule, univEdgeList, g2.mask);
@@ -108,7 +108,7 @@ struct std::hash<graphHash>
 {
     size_t operator()(const graphHash &gh) const
     {
-        if (gh.treeHash.length() == 0)
+        if (gh.treeHash.empty())
         {
             vector<float> sortedHashes = gh.hashes;
             sort(sortedHashes.begin(), sortedHashes.end());
@@ -122,8 +122,16 @@ struct std::hash<graphHash>
         }
         else
         {
-            hash<string> hasher;
-            return hasher(gh.treeHash);
+            size_t result = std::hash<treeCanonNodeId>{}(gh.treeHash.first);
+            treeCanonSignatureHash::combine(
+                result,
+                std::hash<treeCanonNodeId>{}(gh.treeHash.second)
+            );
+            treeCanonSignatureHash::combine(
+                result,
+                std::hash<unsigned char>{}(gh.treeHash.centralBond)
+            );
+            return result;
         }
     }
 };
