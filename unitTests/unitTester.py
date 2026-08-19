@@ -373,6 +373,7 @@ def run_cli_checks(executable: Path) -> int:
         "Outputs:",
         "Compatibility:",
     )
+    telemetry_supported: bool | None = None
 
     with tempfile.TemporaryDirectory(prefix="assemblycpp-cli-") as directory:
         working_directory = Path(directory)
@@ -386,8 +387,21 @@ def run_cli_checks(executable: Path) -> int:
                 f"{help_option} should exit successfully",
                 completed,
             )
+            help_has_telemetry = "--telemetry=<0|1>" in completed.stdout
+            if telemetry_supported is None:
+                telemetry_supported = help_has_telemetry
+            require_cli(
+                help_has_telemetry == telemetry_supported,
+                "help aliases disagree about telemetry support",
+                completed,
+            )
+            expected_help_tokens = help_tokens + (
+                ("--telemetry=<0|1>",) if telemetry_supported else ()
+            )
             missing_tokens = [
-                token for token in help_tokens if token not in completed.stdout
+                token
+                for token in expected_help_tokens
+                if token not in completed.stdout
             ]
             require_cli(
                 not missing_tokens,
@@ -452,7 +466,7 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
-        invalid_cases = (
+        invalid_cases = [
             (["input", "--does-not-exist=1"], "unknown option"),
             (["input", "--pathway"], "requires"),
             (["input", "--pathway="], "expects 0 or 1"),
@@ -467,7 +481,15 @@ def run_cli_checks(executable: Path) -> int:
                 "specified more than once",
             ),
             (["first-input", "second-input"], "expected one INPUT"),
-        )
+        ]
+        if telemetry_supported:
+            invalid_cases.append(
+                (["input", "--telemetry=2"], "expects 0 or 1")
+            )
+        else:
+            invalid_cases.append(
+                (["input", "--telemetry=1"], "unknown option")
+            )
         for arguments, error_text in invalid_cases:
             completed = run_cli_command(executable, arguments, working_directory)
             require_cli(
@@ -485,18 +507,20 @@ def run_cli_checks(executable: Path) -> int:
         source = TEST_DIRECTORY / "butane.mol"
         input_path = working_directory / "input.mol"
         shutil.copy2(source, input_path)
+        canonical_options = [
+            "--runtime=1000000000",
+            "--enum-max=1000000",
+            "--pathway=0",
+            "--remove-hydrogens=0",
+            "--compensate-disjoint=1",
+            "--memory-report=0",
+            "--write-intermediate-mas=1",
+        ]
+        if telemetry_supported:
+            canonical_options.append("--telemetry=0")
         completed = run_cli_command(
             executable,
-            [
-                "--runtime=1000000000",
-                "--enum-max=1000000",
-                "--pathway=0",
-                "--remove-hydrogens=0",
-                "--compensate-disjoint=1",
-                "--memory-report=0",
-                "--write-intermediate-mas=1",
-                input_path.name,
-            ],
+            [*canonical_options, input_path.name],
             working_directory,
         )
         require_cli(
@@ -522,6 +546,11 @@ def run_cli_checks(executable: Path) -> int:
         require_cli(
             not (working_directory / "memUsage").exists(),
             "--memory-report=0 should suppress memory output",
+            completed,
+        )
+        require_cli(
+            not (working_directory / "inputTelemetry.json").exists(),
+            "--telemetry=0 should suppress telemetry output",
             completed,
         )
         scenarios += 1
@@ -937,9 +966,16 @@ def run_cli_checks(executable: Path) -> int:
                 TEST_DIRECTORY / "113.mol",
                 case_directory / "input.mol",
             )
+            deep_options = [
+                "input.mol",
+                "--pathway=0",
+                f"--enum-max={enum_limit}",
+            ]
+            if telemetry_supported:
+                deep_options.append("--telemetry=1")
             completed = run_cli_command(
                 executable,
-                ["input.mol", "--pathway=0", f"--enum-max={enum_limit}"],
+                deep_options,
                 case_directory,
             )
             require_cli(
@@ -960,42 +996,156 @@ def run_cli_checks(executable: Path) -> int:
                 f"deep enum boundary {enum_limit} enforced the wrong state cap",
                 completed,
             )
+            if telemetry_supported:
+                phases = json.loads(
+                    (case_directory / "inputTelemetry.json").read_text()
+                )["memory"]["phases"]
+                expected_later_activations = 0 if expect_limit_status else 1
+                require_cli(
+                    phases["dag_conversion"]["activations"]
+                    == expected_later_activations
+                    and phases["assembly_search"]["activations"]
+                    == expected_later_activations,
+                    f"deep enum boundary {enum_limit} reported incorrect phase activity",
+                    completed,
+                )
             scenarios += 1
 
-        # Construct and consume a DAG that crosses the first 64-bit mask word.
-        wide_edge_count = 65
-        wide_graph = "\n".join(
-            (
-                "wide-path",
-                str(wide_edge_count + 1),
-                " ".join(
-                    f"{vertex} {vertex + 1}"
-                    for vertex in range(1, wide_edge_count + 1)
-                ),
-                " ".join("C" for _ in range(wide_edge_count + 1)),
-                " ".join("1" for _ in range(wide_edge_count)),
-                "",
+        # Exercise both sides of the residual-cache and first-word boundary.
+        for edge_count, expected_index, cache_eligible, active_words in (
+            (64, 6, True, 1),
+            (65, 7, False, 2),
+        ):
+            wide_graph = "\n".join(
+                (
+                    "wide-path",
+                    str(edge_count + 1),
+                    " ".join(
+                        f"{vertex} {vertex + 1}"
+                        for vertex in range(1, edge_count + 1)
+                    ),
+                    " ".join("C" for _ in range(edge_count + 1)),
+                    " ".join("1" for _ in range(edge_count)),
+                    "",
+                )
             )
-        )
-        wide_directory = working_directory / "wide-initial-dag"
-        wide_directory.mkdir()
-        (wide_directory / "input").write_text(wide_graph)
-        completed = run_cli_command(
-            executable,
-            ["input", "--pathway=0"],
-            wide_directory,
-        )
-        require_cli(
-            completed.returncode == 0,
-            "the 65-edge initial DAG scenario should succeed",
-            completed,
-        )
-        require_cli(
-            read_first_line_assembly_index(wide_directory / "inputOut") == 7,
-            "the 65-edge initial DAG scenario returned the wrong index",
-            completed,
-        )
-        scenarios += 1
+            wide_directory = working_directory / f"wide-initial-dag-{edge_count}"
+            wide_directory.mkdir()
+            (wide_directory / "input").write_text(wide_graph)
+            wide_options = ["input", "--pathway=0"]
+            if telemetry_supported:
+                wide_options.append("--telemetry=1")
+            completed = run_cli_command(
+                executable,
+                wide_options,
+                wide_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"the {edge_count}-edge initial DAG scenario should succeed",
+                completed,
+            )
+            require_cli(
+                read_first_line_assembly_index(wide_directory / "inputOut")
+                == expected_index,
+                f"the {edge_count}-edge initial DAG scenario returned the wrong index",
+                completed,
+            )
+            if not telemetry_supported:
+                scenarios += 1
+                continue
+            telemetry = json.loads(
+                (wide_directory / "inputTelemetry.json").read_text()
+            )
+            counters = telemetry["counters"]
+            graph = telemetry["processed_graph"]
+            residual = telemetry["caches"]["residual_decomposition"]
+            canonical = telemetry["caches"]["canonical_mask"]
+            require_cli(
+                graph["edges"] == edge_count
+                and graph["active_mask_words"] == active_words,
+                f"the {edge_count}-edge telemetry reported the wrong mask width",
+                completed,
+            )
+            require_cli(
+                residual["eligible_for_processed_graph"] is cache_eligible,
+                f"the {edge_count}-edge telemetry reported the wrong cache eligibility",
+                completed,
+            )
+            require_cli(
+                counters["retained_mask_attempts"]
+                == counters["retained_masks"]
+                + counters["duplicate_mask_attempts"]
+                + counters["rejected_masks"],
+                f"the {edge_count}-edge retained-mask counters are inconsistent",
+                completed,
+            )
+            require_cli(
+                counters["canonicalisation_calls"]
+                == canonical["hits"] + canonical["misses"],
+                f"the {edge_count}-edge canonical counters are inconsistent",
+                completed,
+            )
+            require_cli(
+                residual["lookups"]
+                == residual["hits"] + residual["misses"],
+                f"the {edge_count}-edge residual-cache counters are inconsistent",
+                completed,
+            )
+            require_cli(
+                counters["retained_masks"] > 0
+                and counters["matching_visits"] > 0
+                and counters["canonicalisation_calls"] > 0,
+                f"the {edge_count}-edge telemetry did not exercise search counters",
+                completed,
+            )
+            if cache_eligible:
+                require_cli(
+                    residual["eligible_requests"] == residual["requests"]
+                    and residual["lookups"] > 0
+                    and residual["admissions"] > 0
+                    and residual["small_molecule_bypasses"] == 0
+                    and residual["wide_molecule_bypasses"] == 0,
+                    f"the {edge_count}-edge case did not exercise the cache path",
+                    completed,
+                )
+            else:
+                require_cli(
+                    residual["requests"] > 0
+                    and residual["eligible_requests"] == 0
+                    and residual["lookups"] == 0
+                    and residual["wide_molecule_bypasses"]
+                    == residual["requests"],
+                    f"the {edge_count}-edge case did not exercise the wide bypass",
+                    completed,
+                )
+            phases = telemetry["memory"]["phases"]
+            require_cli(
+                set(phases)
+                == {
+                    "input_setup",
+                    "initial_enumeration",
+                    "dag_conversion",
+                    "assembly_search",
+                    "output",
+                },
+                f"the {edge_count}-edge telemetry omitted a search phase",
+                completed,
+            )
+            if sys.platform.startswith("linux"):
+                require_cli(
+                    all(
+                        phase["peak_rss_kib"] is None
+                        or (
+                            phase["peak_rss_kib"] >= phase["start_rss_kib"]
+                            and phase["peak_rss_kib"] >= phase["end_rss_kib"]
+                        )
+                        for phase in phases.values()
+                    ),
+                    f"the {edge_count}-edge phase RSS peaks are inconsistent",
+                    completed,
+                )
+            scenarios += 1
 
         output_failure_cases = [
             (
@@ -1009,6 +1159,14 @@ def run_cli_checks(executable: Path) -> int:
                 ["--pathway=0", "--write-intermediate-mas=1", "--memory-report=0"],
             ),
         ]
+        if telemetry_supported:
+            output_failure_cases.append(
+                (
+                    "telemetry-output-failure",
+                    "inputTelemetry.json",
+                    ["--pathway=0", "--telemetry=1", "--memory-report=0"],
+                )
+            )
         if sys.platform.startswith("linux"):
             output_failure_cases.append(
                 (
@@ -1051,17 +1209,21 @@ def run_cli_checks(executable: Path) -> int:
             "inputPathway": "existing pathway sentinel\n",
             "inputIntermediateMAs": "existing intermediate sentinel\n",
             "memUsage": "existing memory sentinel\n",
+            "inputTelemetry.json": "existing telemetry sentinel\n",
         }
         for filename, content in sentinels.items():
             (disabled_output_directory / filename).write_text(content)
+        disabled_options = [
+            "input.mol",
+            "--pathway=0",
+            "--write-intermediate-mas=0",
+            "--memory-report=0",
+        ]
+        if telemetry_supported:
+            disabled_options.append("--telemetry=0")
         completed = run_cli_command(
             executable,
-            [
-                "input.mol",
-                "--pathway=0",
-                "--write-intermediate-mas=0",
-                "--memory-report=0",
-            ],
+            disabled_options,
             disabled_output_directory,
         )
         require_cli(
@@ -1170,6 +1332,7 @@ def build_executable(executable: Path, compiler: str) -> Path:
         "-O3",
         "-mpopcnt",
         "-march=x86-64-v3",
+        "-DASSEMBLY_ENABLE_TELEMETRY",
     ]
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:

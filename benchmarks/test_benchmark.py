@@ -42,6 +42,7 @@ class BenchmarkTests(unittest.TestCase):
             textwrap.dedent(
                 f"""\
                 #!/usr/bin/env python3
+                import json
                 import pathlib
                 import sys
 
@@ -52,6 +53,95 @@ class BenchmarkTests(unittest.TestCase):
                     "time elapsed: {clock_ticks}\\n",
                     encoding="utf-8",
                 )
+                if "--telemetry=1" in sys.argv:
+                    phase = {{
+                        "clock_ticks": 1,
+                        "activations": 1,
+                        "start_rss_kib": 10,
+                        "peak_rss_kib": 12,
+                        "end_rss_kib": 11,
+                        "start_virtual_kib": 20,
+                        "end_virtual_kib": 21,
+                    }}
+                    telemetry = {{
+                        "schema_version": 1,
+                        "processed_graph": {{
+                            "atoms": 65,
+                            "edges": 64,
+                            "active_mask_words": 1,
+                        }},
+                        "counters": {{
+                            "retained_mask_attempts": 3,
+                            "retained_masks": 2,
+                            "duplicate_mask_attempts": 1,
+                            "rejected_masks": 0,
+                            "matching_visits": 4,
+                            "canonicalisation_calls": 5,
+                            "vf2_calls": 1,
+                            "vf2_matches": 1,
+                        }},
+                        "caches": {{
+                            "canonical_mask": {{
+                                "hits": 4, "misses": 1, "hit_rate": 0.8
+                            }},
+                            "canonical_class": {{
+                                "insertions": 1, "reuses": 0, "reuse_rate": 0.0
+                            }},
+                            "residual_decomposition": {{
+                                "eligible_for_processed_graph": True,
+                                "requests": 5,
+                                "eligible_requests": 5,
+                                "small_molecule_bypasses": 0,
+                                "wide_molecule_bypasses": 0,
+                                "small_residual_bypasses": 1,
+                                "first_occurrence_bypasses": 2,
+                                "runtime_disabled_bypasses": 0,
+                                "lookups": 2,
+                                "hits": 1,
+                                "misses": 1,
+                                "admissions": 1,
+                                "lookup_hit_rate": 0.5,
+                                "request_hit_rate": 0.2,
+                            }},
+                            "assembly_state": {{
+                                "lookups": 0,
+                                "hits": 0,
+                                "misses": 0,
+                                "pruned_hits": 0,
+                                "updated_hits": 0,
+                                "hit_rate": None,
+                            }},
+                            "pair_bound": {{
+                                "lookups": 0,
+                                "hits": 0,
+                                "misses": 0,
+                                "hit_rate": None,
+                            }},
+                        }},
+                        "memory": {{
+                            "method": "linux_proc_vmhwm_reset",
+                            "phase_peaks_are_absolute_not_additive": True,
+                            "phase_peaks_complete": True,
+                            "overall_peak_resident_kib": 12,
+                            "process_peak_virtual_kib": 21,
+                            "phases": {{
+                                name: phase
+                                for name in (
+                                    "input_setup",
+                                    "initial_enumeration",
+                                    "dag_conversion",
+                                    "assembly_search",
+                                    "output",
+                                )
+                            }},
+                        }},
+                    }}
+                    telemetry_name = (
+                        input_name.removesuffix(".mol") + "Telemetry.json"
+                    )
+                    pathlib.Path(telemetry_name).write_text(
+                        json.dumps(telemetry), encoding="utf-8"
+                    )
                 """
             ),
             encoding="utf-8",
@@ -350,11 +440,11 @@ class BenchmarkTests(unittest.TestCase):
             4,
         )
         scaling = benchmark.select_cases(cases, "scaling", [])
-        self.assertEqual(len(scaling), 7)
+        self.assertEqual(len(scaling), 13)
         self.assertTrue(all(case.expectation == "provisional" for case in scaling))
         self.assertEqual(
             [case.expected_assembly_index for case in scaling],
-            [10, 13, 15, 17, 19, 21, 23],
+            [10, 13, 15, 17, 19, 21, 23, 8, 6, 7, 10, 7, 8],
         )
         self.assertEqual(
             [case.workload for case in scaling],
@@ -366,12 +456,22 @@ class BenchmarkTests(unittest.TestCase):
                 "53 atoms / 47 bonds / 6 comps",
                 "63 atoms / 56 bonds / 7 comps",
                 "68 atoms / 60 bonds / 8 comps",
+                "64 atoms / 63 bonds / cache on / 1 word",
+                "65 atoms / 64 bonds / cache on / 1 word",
+                "66 atoms / 65 bonds / cache off / 2 words",
+                "128 atoms / 127 bonds / cache off / 2 words",
+                "129 atoms / 128 bonds / cache off / 2 words",
+                "130 atoms / 129 bonds / cache off / 3 words",
             ],
         )
 
     def test_scaling_corpus_is_a_cumulative_size_series(self) -> None:
         _, cases = benchmark.load_manifest(benchmark.DEFAULT_MANIFEST)
-        scaling = benchmark.select_cases(cases, "scaling", [])
+        scaling = [
+            case
+            for case in benchmark.select_cases(cases, "scaling", [])
+            if case.name.startswith("amino-acid-scale-")
+        ]
         expected_sizes = [
             (18, 16, 2),
             (27, 24, 3),
@@ -421,6 +521,44 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(current_atoms[: len(previous_atoms)], previous_atoms)
             self.assertEqual(current_bonds[: len(previous_bonds)], previous_bonds)
 
+    def test_scaling_corpus_covers_cache_and_word_boundaries(self) -> None:
+        _, cases = benchmark.load_manifest(benchmark.DEFAULT_MANIFEST)
+        boundary_cases = [
+            case
+            for case in benchmark.select_cases(cases, "scaling", [])
+            if case.name.startswith("mask-boundary-path-")
+        ]
+        expected_bonds = [63, 64, 65, 127, 128, 129]
+
+        self.assertEqual(
+            [case.name for case in boundary_cases],
+            [f"mask-boundary-path-{bonds:03d}b" for bonds in expected_bonds],
+        )
+        for case, bond_count in zip(boundary_cases, expected_bonds, strict=True):
+            lines = case.source.read_text(encoding="utf-8").splitlines()
+            atom_count = int(lines[1])
+            edge_values = [int(value) for value in lines[2].split()]
+            edges = list(zip(edge_values[::2], edge_values[1::2], strict=True))
+
+            self.assertEqual(atom_count, bond_count + 1, case.name)
+            self.assertEqual(len(edges), bond_count, case.name)
+            self.assertEqual(
+                edges,
+                [(atom, atom + 1) for atom in range(1, atom_count)],
+                case.name,
+            )
+            self.assertEqual(lines[3].split(), ["C"] * atom_count, case.name)
+            self.assertEqual(lines[4].split(), ["1"] * bond_count, case.name)
+
+        self.assertEqual(
+            [(bonds + 63) // 64 for bonds in expected_bonds],
+            [1, 1, 2, 2, 2, 3],
+        )
+        self.assertEqual(
+            [31 <= bonds <= 64 for bonds in expected_bonds],
+            [True, True, False, False, False, False],
+        )
+
     def test_corpus_run_and_json_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
@@ -444,6 +582,9 @@ class BenchmarkTests(unittest.TestCase):
             baseline = self.create_fake_executable(
                 directory, "baseline", assembly_index=7, clock_ticks=200
             )
+            telemetry_executable = self.create_fake_executable(
+                directory, "telemetry", assembly_index=7, clock_ticks=100
+            )
             report_path = directory / "report.json"
 
             output = io.StringIO()
@@ -462,25 +603,67 @@ class BenchmarkTests(unittest.TestCase):
                         "1",
                         "--json-output",
                         str(report_path),
+                        "--telemetry",
+                        "--telemetry-executable",
+                        str(telemetry_executable),
                     ]
                 )
 
             self.assertEqual(status, 0)
             self.assertIn("Comparison summary", output.getvalue())
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["schema_version"], 2)
             self.assertEqual(len(report["cases"]), 1)
             case = report["cases"][0]
             self.assertEqual(len(case["candidate"]["measurements"]), 6)
             self.assertEqual(len(case["baseline"]["measurements"]), 6)
             self.assertEqual(case["comparison"]["paired_clock_speedup"]["median"], 2.0)
             self.assertIn("sha256", report["executables"]["candidate"])
+            self.assertIn("sha256", report["executables"]["telemetry"])
             self.assertTrue(report["platform"]["cpu_model"])
             self.assertEqual(report["runs"], 6)
             self.assertEqual(
                 report["comparison"]["primary_metric"],
                 "paired_round_wall_speedup",
             )
+            self.assertTrue(report["telemetry"]["enabled"])
+            telemetry = case["candidate"]["telemetry"]
+            self.assertEqual(telemetry["counters"]["retained_masks"], 2)
+            self.assertEqual(
+                telemetry["caches"]["residual_decomposition"]["lookup_hit_rate"],
+                0.5,
+            )
+            malformed = json.loads(json.dumps(telemetry))
+            malformed["caches"]["canonical_mask"]["hit_rate"] = 0.999
+            malformed_path = directory / "malformed-rate.json"
+            malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "invalid cache rate"):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed = json.loads(json.dumps(telemetry))
+            malformed["processed_graph"]["edges"] = 65
+            malformed["processed_graph"]["active_mask_words"] = 2
+            malformed_path = directory / "malformed-cache-cutoff.json"
+            malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent residual cache eligibility",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+    def test_search_telemetry_parser_rejects_malformed_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            path = Path(temp_directory) / "telemetry.json"
+            path.write_text("not json", encoding="utf-8")
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "could not parse"):
+                benchmark.parse_search_telemetry(path)
+
+            path.write_text(
+                json.dumps({"schema_version": 1, "counters": {}}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "missing search"):
+                benchmark.parse_search_telemetry(path)
 
     def test_unchecked_ab_run_rejects_index_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -533,6 +716,40 @@ class BenchmarkTests(unittest.TestCase):
                         str(executable),
                         "--baseline-executable",
                         str(executable),
+                        "--build",
+                    ]
+                )
+
+            self.assertEqual(status, 1)
+            build.assert_not_called()
+            self.assertIn("same file", stderr.getvalue())
+
+    def test_build_rejects_telemetry_hardlink_before_compiling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            candidate = self.create_fake_executable(
+                directory, "candidate", assembly_index=22, clock_ticks=100
+            )
+            baseline = self.create_fake_executable(
+                directory, "baseline", assembly_index=22, clock_ticks=100
+            )
+            telemetry = directory / "telemetry"
+            telemetry.hardlink_to(baseline)
+
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(benchmark, "build_executable") as build,
+                contextlib.redirect_stderr(stderr),
+            ):
+                status = benchmark.main(
+                    [
+                        "--executable",
+                        str(candidate),
+                        "--baseline-executable",
+                        str(baseline),
+                        "--telemetry",
+                        "--telemetry-executable",
+                        str(telemetry),
                         "--build",
                     ]
                 )

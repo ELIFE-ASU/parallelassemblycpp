@@ -24,3 +24,9 @@ amino-acid-scale-05c	inputs/scaling/amino_acid_scaling_05c_043a.mol	17	provision
 amino-acid-scale-06c	inputs/scaling/amino_acid_scaling_06c_053a.mol	19	provisional	scaling	53 atoms / 47 bonds / 6 comps
 amino-acid-scale-07c	inputs/scaling/amino_acid_scaling_07c_063a.mol	21	provisional	scaling	63 atoms / 56 bonds / 7 comps
 amino-acid-scale-08c	inputs/scaling/amino_acid_scaling_08c_068a.mol	23	provisional	scaling	68 atoms / 60 bonds / 8 comps
+mask-boundary-path-063b	inputs/scaling/homogeneous_path_063b	8	provisional	scaling	64 atoms / 63 bonds / cache on / 1 word
+mask-boundary-path-064b	inputs/scaling/homogeneous_path_064b	6	provisional	scaling	65 atoms / 64 bonds / cache on / 1 word
+mask-boundary-path-065b	inputs/scaling/homogeneous_path_065b	7	provisional	scaling	66 atoms / 65 bonds / cache off / 2 words
+mask-boundary-path-127b	inputs/scaling/homogeneous_path_127b	10	provisional	scaling	128 atoms / 127 bonds / cache off / 2 words
+mask-boundary-path-128b	inputs/scaling/homogeneous_path_128b	7	provisional	scaling	129 atoms / 128 bonds / cache off / 2 words
+mask-boundary-path-129b	inputs/scaling/homogeneous_path_129b	8	provisional	scaling	130 atoms / 129 bonds / cache off / 3 words

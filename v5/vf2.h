@@ -72,10 +72,25 @@ struct halting_callback {
  */
 bool vf2GraphIso(molGraphBoost &mmg, molGraphBoost &tmg)
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.vf2Calls;
+#endif
     vertex_comp_t vc =
     make_property_map_equivalent(get(vertex_name, mmg), get(vertex_name, tmg));
     edge_comp_t ec =
     make_property_map_equivalent(get(edge_name, mmg), get(edge_name, tmg));
     halting_callback callback;
-    return vf2_graph_iso(mmg, tmg, callback, vertex_order_by_mult(mmg), edges_equivalent(ec).vertices_equivalent(vc));
+    const bool isomorphic = vf2_graph_iso(
+        mmg,
+        tmg,
+        callback,
+        vertex_order_by_mult(mmg),
+        edges_equivalent(ec).vertices_equivalent(vc)
+    );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled && isomorphic) [[unlikely]]
+        ++searchTelemetry.counters.vf2Matches;
+#endif
+    return isomorphic;
 }

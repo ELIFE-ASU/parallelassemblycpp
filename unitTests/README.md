@@ -23,9 +23,12 @@ Run only the pathway golden cases with:
 python unitTests/unitTester.py --build --pathways-only --verbose
 ```
 
-`--build` targets x86-64-v3 with POPCNT, matching the repository's documented
-optimized build. Use a separately compiled portable executable on older x86-64
-or non-x86 systems.
+`--build` targets x86-64-v3 with POPCNT and enables search telemetry so the CLI
+and JSON schema checks can run. Aside from that diagnostic feature it matches
+the repository's documented optimized build. A standard executable still runs
+the ordinary CLI and regression checks; telemetry-only checks are detected and
+skipped. Use a separately compiled portable executable on older x86-64 or
+non-x86 systems.
 
 Run the manifest and fixture integrity audit with:
 

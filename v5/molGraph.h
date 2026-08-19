@@ -644,6 +644,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
     const size_t activeEdgeCount = std::popcount(lowMaskWord);
     if (activeEdgeCount < 2)
     {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.residualCacheSmallResidualBypasses;
+#endif
         return;
     }
 
@@ -652,6 +656,21 @@ void ufdsMaskConstructWithCacheWithWorkspace(
         activeEdgeCount < 4
     )
     {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+        {
+            if (workspace.decompositionCacheDisabled)
+            {
+                ++searchTelemetry.counters
+                    .residualCacheRuntimeDisabledBypasses;
+            }
+            else
+            {
+                ++searchTelemetry.counters
+                    .residualCacheSmallResidualBypasses;
+            }
+        }
+#endif
         constructWithoutCache();
         return;
     }
@@ -662,6 +681,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
         );
     if (!workspace.decompositionSeenBefore(fingerprint))
     {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.residualCacheFirstOccurrenceBypasses;
+#endif
 #ifdef FRAGMENT_CACHE_STATS
         workspace.decompositionCacheFirstOccurrences++;
 #endif
@@ -672,6 +695,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
     const cachedResidualDecomposition *cachedDecomposition = nullptr;
     if (!workspace.decompositionCacheDisabled)
     {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.residualCacheLookups;
+#endif
         if (!workspace.lowDecompositionCache.empty())
         {
             const size_t index = fingerprint &
@@ -685,6 +712,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
         }
         if (cachedDecomposition != nullptr)
         {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            if (searchTelemetryEnabled) [[unlikely]]
+                ++searchTelemetry.counters.residualCacheHits;
+#endif
 #ifdef FRAGMENT_CACHE_STATS
             workspace.decompositionCacheHits++;
 #endif
@@ -698,6 +729,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
         }
 #ifdef FRAGMENT_CACHE_STATS
         workspace.decompositionCacheMisses++;
+#endif
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.residualCacheMisses;
 #endif
     }
 
@@ -750,6 +785,10 @@ void ufdsMaskConstructWithCacheWithWorkspace(
             entry.occupied = true;
             workspace.lowDecompositionCacheEntries++;
         }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.residualCacheAdmissions;
+#endif
 #ifdef FRAGMENT_CACHE_STATS
         workspace.decompositionCacheAdmissions++;
         workspace.decompositionCacheIdentityAdmissions += isIdentity;
@@ -777,8 +816,16 @@ inline void ufdsMaskConstructWithWorkspace(
     ufdsMaskWorkspace &workspace
 )
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.residualDecompositionRequests;
+#endif
     if (workspace.reuseResidualDecompositions)
     {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.residualCacheEligibleRequests;
+#endif
         ufdsMaskConstructWithCacheWithWorkspace(
             mask,
             maskList,
@@ -787,6 +834,22 @@ inline void ufdsMaskConstructWithWorkspace(
         );
         return;
     }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+    {
+        if (
+            workspace.edgeCount <
+            ufdsMaskWorkspace::decompositionCacheMinimumMoleculeEdges
+        )
+        {
+            ++searchTelemetry.counters.residualCacheSmallMoleculeBypasses;
+        }
+        else
+        {
+            ++searchTelemetry.counters.residualCacheWideMoleculeBypasses;
+        }
+    }
+#endif
     ufdsMaskConstructWithoutCacheWithWorkspace(
         mask,
         maskList,

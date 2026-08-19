@@ -62,6 +62,7 @@ class PreparedCase:
     case: BenchmarkCase
     input_name: str
     output_path: Path
+    telemetry_path: Path
     working_directory: Path
 
 
@@ -86,6 +87,7 @@ class CaseResult:
     case: BenchmarkCase
     measurements: tuple[Measurement, ...]
     baseline_measurements: tuple[Measurement, ...] = ()
+    telemetry: dict[str, object] | None = None
 
 
 def positive_int(value: str) -> int:
@@ -320,7 +322,12 @@ def select_cases(
     return selected
 
 
-def build_executable(executable: Path, compiler: str) -> Path:
+def build_executable(
+    executable: Path,
+    compiler: str,
+    *,
+    telemetry: bool = False,
+) -> Path:
     executable = executable.resolve()
     executable.parent.mkdir(parents=True, exist_ok=True)
 
@@ -338,6 +345,8 @@ def build_executable(executable: Path, compiler: str) -> Path:
         "-mpopcnt",
         "-march=x86-64-v3",
     ]
+    if telemetry:
+        command.append("-DASSEMBLY_ENABLE_TELEMETRY")
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
         command.append(f"-I{Path(conda_prefix) / 'include'}")
@@ -410,11 +419,15 @@ def prepare_cases(
         input_path = working_directory / case.source.name
         shutil.copy2(case.source, input_path)
         output_name = f"{input_path.name.removesuffix('.mol')}Out"
+        telemetry_name = (
+            f"{input_path.name.removesuffix('.mol')}Telemetry.json"
+        )
         prepared.append(
             PreparedCase(
                 case=case,
                 input_name=input_path.name,
                 output_path=working_directory / output_name,
+                telemetry_path=working_directory / telemetry_name,
                 working_directory=working_directory,
             )
         )
@@ -466,6 +479,372 @@ def run_once(
         raise BenchmarkError(f"{prepared.case.name}: {error}") from error
 
 
+def parse_search_telemetry(path: Path) -> dict[str, object]:
+    def is_nonnegative_integer(value: object) -> bool:
+        return type(value) is int and value >= 0
+
+    def validate_rate(
+        container: dict[str, object],
+        name: str,
+        numerator: int,
+        denominator: int,
+    ) -> None:
+        value = container.get(name)
+        if denominator == 0:
+            if value is not None:
+                raise BenchmarkError(f"invalid cache rate in {path.name}")
+            return
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            or value > 1
+            or not math.isclose(
+                float(value),
+                numerator / denominator,
+                rel_tol=5e-6,
+                abs_tol=1e-12,
+            )
+        ):
+            raise BenchmarkError(f"invalid cache rate in {path.name}")
+
+    if not path.is_file():
+        raise BenchmarkError(f"AssemblyCpp did not create {path.name}")
+    try:
+        telemetry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BenchmarkError(f"could not parse {path.name}: {error}") from error
+    if (
+        not isinstance(telemetry, dict)
+        or type(telemetry.get("schema_version")) is not int
+        or telemetry["schema_version"] != 1
+    ):
+        raise BenchmarkError(f"unsupported search telemetry schema in {path.name}")
+
+    required_counters = {
+        "retained_mask_attempts",
+        "retained_masks",
+        "duplicate_mask_attempts",
+        "rejected_masks",
+        "matching_visits",
+        "canonicalisation_calls",
+        "vf2_calls",
+        "vf2_matches",
+    }
+    counters = telemetry.get("counters")
+    if not isinstance(counters, dict) or not required_counters <= counters.keys():
+        raise BenchmarkError(f"missing search counters in {path.name}")
+    if any(
+        not is_nonnegative_integer(counters[name])
+        for name in required_counters
+    ):
+        raise BenchmarkError(f"invalid search counter in {path.name}")
+    if counters["retained_mask_attempts"] != sum(
+        counters[name]
+        for name in (
+            "retained_masks",
+            "duplicate_mask_attempts",
+            "rejected_masks",
+        )
+    ):
+        raise BenchmarkError(f"inconsistent retained-mask counters in {path.name}")
+    if counters["vf2_matches"] > counters["vf2_calls"]:
+        raise BenchmarkError(f"inconsistent VF2 counters in {path.name}")
+
+    processed_graph = telemetry.get("processed_graph")
+    if not isinstance(processed_graph, dict):
+        raise BenchmarkError(f"missing processed graph telemetry in {path.name}")
+    for name in ("atoms", "edges", "active_mask_words"):
+        value = processed_graph.get(name)
+        if not is_nonnegative_integer(value):
+            raise BenchmarkError(f"invalid processed graph telemetry in {path.name}")
+    expected_active_words = (processed_graph["edges"] + 63) // 64
+    if processed_graph["active_mask_words"] != expected_active_words:
+        raise BenchmarkError(f"inconsistent processed mask width in {path.name}")
+
+    caches = telemetry.get("caches")
+    required_caches = {
+        "canonical_mask",
+        "canonical_class",
+        "residual_decomposition",
+        "assembly_state",
+        "pair_bound",
+    }
+    if not isinstance(caches, dict) or not required_caches <= caches.keys():
+        raise BenchmarkError(f"missing cache telemetry in {path.name}")
+    canonical = caches["canonical_mask"]
+    canonical_class = caches["canonical_class"]
+    residual = caches["residual_decomposition"]
+    assembly_cache = caches["assembly_state"]
+    pair_bound_cache = caches["pair_bound"]
+    if not all(
+        isinstance(cache, dict)
+        for cache in (
+            canonical,
+            canonical_class,
+            residual,
+            assembly_cache,
+            pair_bound_cache,
+        )
+    ):
+        raise BenchmarkError(f"invalid cache telemetry in {path.name}")
+    residual_counter_names = (
+        "requests",
+        "eligible_requests",
+        "small_molecule_bypasses",
+        "wide_molecule_bypasses",
+        "small_residual_bypasses",
+        "first_occurrence_bypasses",
+        "runtime_disabled_bypasses",
+        "lookups",
+        "hits",
+        "misses",
+        "admissions",
+    )
+    for cache, names in (
+        (canonical, ("hits", "misses")),
+        (canonical_class, ("insertions", "reuses")),
+        (residual, residual_counter_names),
+        (
+            assembly_cache,
+            ("lookups", "hits", "misses", "pruned_hits", "updated_hits"),
+        ),
+        (pair_bound_cache, ("lookups", "hits", "misses")),
+    ):
+        if any(
+            not is_nonnegative_integer(cache.get(name))
+            for name in names
+        ):
+            raise BenchmarkError(f"invalid cache counter in {path.name}")
+    if counters["canonicalisation_calls"] != (
+        canonical["hits"] + canonical["misses"]
+    ):
+        raise BenchmarkError(f"inconsistent canonical cache counters in {path.name}")
+    if residual["lookups"] != (
+        residual["hits"] + residual["misses"]
+    ):
+        raise BenchmarkError(f"inconsistent residual cache counters in {path.name}")
+    if type(residual.get("eligible_for_processed_graph")) is not bool:
+        raise BenchmarkError(f"invalid residual cache eligibility in {path.name}")
+    expected_residual_cache_eligibility = 31 <= processed_graph["edges"] <= 64
+    if (
+        residual["eligible_for_processed_graph"]
+        != expected_residual_cache_eligibility
+    ):
+        raise BenchmarkError(
+            f"inconsistent residual cache eligibility in {path.name}"
+        )
+    if residual["requests"] != (
+        residual["eligible_requests"]
+        + residual["small_molecule_bypasses"]
+        + residual["wide_molecule_bypasses"]
+    ):
+        raise BenchmarkError(f"inconsistent residual request counters in {path.name}")
+    if residual["eligible_for_processed_graph"]:
+        if (
+            residual["eligible_requests"] != residual["requests"]
+            or residual["small_molecule_bypasses"] != 0
+            or residual["wide_molecule_bypasses"] != 0
+        ):
+            raise BenchmarkError(f"inconsistent residual eligibility in {path.name}")
+    elif (
+        residual["eligible_requests"] != 0
+        or residual["small_molecule_bypasses"]
+        + residual["wide_molecule_bypasses"]
+        != residual["requests"]
+    ):
+        raise BenchmarkError(f"inconsistent residual bypasses in {path.name}")
+    if residual["eligible_requests"] != (
+        residual["small_residual_bypasses"]
+        + residual["first_occurrence_bypasses"]
+        + residual["runtime_disabled_bypasses"]
+        + residual["lookups"]
+    ):
+        raise BenchmarkError(f"inconsistent residual path counters in {path.name}")
+    if residual["admissions"] > residual["misses"]:
+        raise BenchmarkError(f"inconsistent residual admissions in {path.name}")
+    if canonical["misses"] != (
+        canonical_class["insertions"] + canonical_class["reuses"]
+    ):
+        raise BenchmarkError(f"inconsistent canonical class counters in {path.name}")
+    for label, cache in (
+        ("assembly", assembly_cache),
+        ("pair-bound", pair_bound_cache),
+    ):
+        if cache["lookups"] != cache["hits"] + cache["misses"]:
+            raise BenchmarkError(
+                f"inconsistent {label} cache counters in {path.name}"
+            )
+    if (
+        assembly_cache["pruned_hits"] + assembly_cache["updated_hits"]
+        != assembly_cache["hits"]
+    ):
+        raise BenchmarkError(f"inconsistent assembly hit counters in {path.name}")
+
+    validate_rate(
+        canonical,
+        "hit_rate",
+        canonical["hits"],
+        canonical["hits"] + canonical["misses"],
+    )
+    validate_rate(
+        canonical_class,
+        "reuse_rate",
+        canonical_class["reuses"],
+        canonical_class["insertions"] + canonical_class["reuses"],
+    )
+    validate_rate(
+        residual,
+        "lookup_hit_rate",
+        residual["hits"],
+        residual["hits"] + residual["misses"],
+    )
+    validate_rate(
+        residual,
+        "request_hit_rate",
+        residual["hits"],
+        residual["requests"],
+    )
+    validate_rate(
+        assembly_cache,
+        "hit_rate",
+        assembly_cache["hits"],
+        assembly_cache["hits"] + assembly_cache["misses"],
+    )
+    validate_rate(
+        pair_bound_cache,
+        "hit_rate",
+        pair_bound_cache["hits"],
+        pair_bound_cache["hits"] + pair_bound_cache["misses"],
+    )
+
+    memory = telemetry.get("memory")
+    if not isinstance(memory, dict):
+        raise BenchmarkError(f"missing phase memory telemetry in {path.name}")
+    phases = memory.get("phases")
+    required_phases = {
+        "input_setup",
+        "initial_enumeration",
+        "dag_conversion",
+        "assembly_search",
+        "output",
+    }
+    if not isinstance(phases, dict) or set(phases) != required_phases:
+        raise BenchmarkError(f"missing phase memory telemetry in {path.name}")
+    if (
+        not isinstance(memory.get("method"), str)
+        or type(memory.get("phase_peaks_are_absolute_not_additive")) is not bool
+        or not memory["phase_peaks_are_absolute_not_additive"]
+        or type(memory.get("phase_peaks_complete")) is not bool
+    ):
+        raise BenchmarkError(f"invalid phase memory metadata in {path.name}")
+
+    memory_value_names = (
+        "start_rss_kib",
+        "peak_rss_kib",
+        "end_rss_kib",
+        "start_virtual_kib",
+        "end_virtual_kib",
+    )
+    for phase_name in required_phases:
+        phase = phases[phase_name]
+        if not isinstance(phase, dict):
+            raise BenchmarkError(f"invalid phase telemetry in {path.name}")
+        if not is_nonnegative_integer(phase.get("clock_ticks")) or not (
+            is_nonnegative_integer(phase.get("activations"))
+        ):
+            raise BenchmarkError(f"invalid phase counter in {path.name}")
+        if any(
+            value is not None and not is_nonnegative_integer(value)
+            for value in (phase.get(name) for name in memory_value_names)
+        ):
+            raise BenchmarkError(f"invalid phase memory value in {path.name}")
+        start = phase.get("start_rss_kib")
+        peak = phase.get("peak_rss_kib")
+        end = phase.get("end_rss_kib")
+        if peak is not None and (
+            not is_nonnegative_integer(start)
+            or not is_nonnegative_integer(end)
+            or peak < start
+            or peak < end
+        ):
+            raise BenchmarkError(f"invalid phase RSS peak in {path.name}")
+        if phase["activations"] == 0 and any(
+            phase.get(name) is not None for name in memory_value_names
+        ):
+            raise BenchmarkError(f"inactive phase has memory data in {path.name}")
+
+    overall_peak = memory.get("overall_peak_resident_kib")
+    process_virtual_peak = memory.get("process_peak_virtual_kib")
+    if process_virtual_peak is not None and not is_nonnegative_integer(
+        process_virtual_peak
+    ):
+        raise BenchmarkError(f"invalid process memory telemetry in {path.name}")
+    if memory["phase_peaks_complete"]:
+        activated_peaks = [
+            phase["peak_rss_kib"]
+            for phase in phases.values()
+            if phase["activations"] > 0
+        ]
+        if (
+            not activated_peaks
+            or any(not is_nonnegative_integer(peak) for peak in activated_peaks)
+            or not is_nonnegative_integer(overall_peak)
+            or overall_peak != max(activated_peaks)
+        ):
+            raise BenchmarkError(f"invalid overall RSS peak in {path.name}")
+    elif overall_peak is not None:
+        raise BenchmarkError(f"partial phase memory has an overall peak in {path.name}")
+    return telemetry
+
+
+def run_telemetry_once(
+    executable: Path,
+    prepared: PreparedCase,
+    timeout: float,
+) -> dict[str, object]:
+    command = [
+        str(executable),
+        "--pathway=0",
+        "--memory-report=0",
+        "--write-intermediate-mas=0",
+        "--telemetry=1",
+        "--",
+        prepared.input_name,
+    ]
+    prepared.output_path.unlink(missing_ok=True)
+    prepared.telemetry_path.unlink(missing_ok=True)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=prepared.working_directory,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise BenchmarkError(
+            f"{prepared.case.name} telemetry run timed out after "
+            f"{error.timeout:g} seconds"
+        ) from error
+    except OSError as error:
+        raise BenchmarkError(
+            f"could not run AssemblyCpp telemetry for {prepared.case.name}: {error}"
+        ) from error
+    try:
+        parse_measurement(
+            prepared.output_path,
+            completed,
+            0.0,
+            prepared.case.expected_assembly_index,
+        )
+        return parse_search_telemetry(prepared.telemetry_path)
+    except BenchmarkError as error:
+        raise BenchmarkError(f"{prepared.case.name}: {error}") from error
+
+
 def rotate_cases(cases: Sequence[PreparedCase], round_index: int) -> list[PreparedCase]:
     if not cases:
         return []
@@ -480,12 +859,16 @@ def run_benchmarks(
     runs: int,
     warmup: int,
     timeout: float,
+    telemetry_executable: Path | None = None,
 ) -> list[CaseResult]:
     with tempfile.TemporaryDirectory(prefix="assemblycpp-benchmark-") as directory:
         prepared_cases = prepare_cases(cases, Path(directory))
         measurements: dict[str, list[Measurement]] = {case.name: [] for case in cases}
         baseline_measurements: dict[str, list[Measurement]] = {
             case.name: [] for case in cases
+        }
+        telemetry: dict[str, dict[str, object] | None] = {
+            case.name: None for case in cases
         }
         case_count = len(prepared_cases)
 
@@ -573,11 +956,24 @@ def run_benchmarks(
 
                 validate_unchecked_pair(prepared, paired_measurements)
 
+        if telemetry_executable is not None:
+            for index, prepared in enumerate(prepared_cases, start=1):
+                print(
+                    f"Telemetry [{index}/{case_count}] {prepared.case.name}...",
+                    flush=True,
+                )
+                telemetry[prepared.case.name] = run_telemetry_once(
+                    telemetry_executable,
+                    prepared,
+                    timeout,
+                )
+
     return [
         CaseResult(
             case=case,
             measurements=tuple(measurements[case.name]),
             baseline_measurements=tuple(baseline_measurements[case.name]),
+            telemetry=telemetry[case.name],
         )
         for case in cases
     ]
@@ -717,7 +1113,7 @@ def print_summary(results: Sequence[CaseResult]) -> None:
 
     name_width = max(12, min(24, max(len(result.case.name) for result in results)))
     workload_width = max(
-        20, min(32, max(len(result.case.workload) for result in results))
+        20, min(44, max(len(result.case.workload) for result in results))
     )
     print(
         f"  {'Case':<{name_width}} {'Workload':<{workload_width}} "
@@ -801,10 +1197,54 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
         )
 
 
+def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
+    if not any(result.telemetry is not None for result in results):
+        return
+    print("\nUntimed search telemetry")
+    name_width = max(12, min(24, max(len(result.case.name) for result in results)))
+    print(
+        f"  {'Case':<{name_width}} {'Masks':>10} {'Matches':>12} "
+        f"{'Canon':>12} {'VF2':>8} {'Canon hit':>10} "
+        f"{'Residual hit':>13} {'Peak RSS':>11}"
+    )
+    print("  " + "-" * (name_width + 82))
+    for result in results:
+        telemetry = result.telemetry
+        if telemetry is None:
+            continue
+        counters = telemetry["counters"]
+        caches = telemetry["caches"]
+        memory = telemetry["memory"]
+        assert isinstance(counters, dict)
+        assert isinstance(caches, dict)
+        assert isinstance(memory, dict)
+        canonical = caches["canonical_mask"]
+        residual = caches["residual_decomposition"]
+        assert isinstance(canonical, dict)
+        assert isinstance(residual, dict)
+
+        def rate_text(value: object) -> str:
+            return "n/a" if value is None else f"{float(value):.1%}"
+
+        peak = memory.get("overall_peak_resident_kib")
+        peak_text = "n/a" if peak is None else f"{int(peak):,} KiB"
+        print(
+            f"  {result.case.name:<{name_width}.{name_width}} "
+            f"{int(counters['retained_masks']):>10,} "
+            f"{int(counters['matching_visits']):>12,} "
+            f"{int(counters['canonicalisation_calls']):>12,} "
+            f"{int(counters['vf2_calls']):>8,} "
+            f"{rate_text(canonical['hit_rate']):>10} "
+            f"{rate_text(residual['lookup_hit_rate']):>13} "
+            f"{peak_text:>11}"
+        )
+
+
 def write_json_report(
     path: Path,
     candidate_metadata: dict[str, object],
     baseline_metadata: dict[str, object] | None,
+    telemetry_metadata: dict[str, object] | None,
     manifest: Path | None,
     suite: str | None,
     runs: int,
@@ -839,6 +1279,8 @@ def write_json_report(
             "baseline": None,
             "comparison": None,
         }
+        assert isinstance(case_report["candidate"], dict)
+        case_report["candidate"]["telemetry"] = result.telemetry
         if result.baseline_measurements:
             wall_speedup = paired_speedup_summary(
                 result.measurements,
@@ -896,7 +1338,7 @@ def write_json_report(
             ),
         }
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "platform": {
             "description": platform.platform(),
@@ -908,12 +1350,22 @@ def write_json_report(
         "executables": {
             "candidate": candidate_metadata,
             "baseline": baseline_metadata,
+            "telemetry": telemetry_metadata,
         },
         "manifest": None if manifest is None else str(manifest),
         "suite": suite,
         "runs": runs,
         "warmup": warmup,
         "timeout_seconds": timeout,
+        "telemetry": {
+            "enabled": any(result.telemetry is not None for result in results),
+            "collection": (
+                "one untimed separate-instrumented-executable run per case"
+                if any(result.telemetry is not None for result in results)
+                else None
+            ),
+            "excluded_from_timing_aggregates": True,
+        },
         "schedule": {
             "case_order": "rotated by one position after each round",
             "comparison_order": (
@@ -1031,6 +1483,22 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help="write measurements and summaries to this JSON file",
     )
     parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help=(
+            "collect one additional untimed telemetry run per case using a "
+            "separate instrumented executable"
+        ),
+    )
+    parser.add_argument(
+        "--telemetry-executable",
+        type=Path,
+        help=(
+            "separate ASSEMBLY_ENABLE_TELEMETRY executable used only for the "
+            "untimed diagnostic run; required with --telemetry unless --build"
+        ),
+    )
+    parser.add_argument(
         "--build",
         action="store_true",
         help="compile v5/main.cpp for x86-64-v3 before benchmarking",
@@ -1102,14 +1570,65 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.baseline_executable is not None:
             baseline_executable = resolve_executable(arguments.baseline_executable)
 
+        if arguments.telemetry_executable is not None and not arguments.telemetry:
+            raise BenchmarkError(
+                "--telemetry-executable requires --telemetry"
+            )
+
+        telemetry_path = None
+        if arguments.telemetry:
+            telemetry_path = arguments.telemetry_executable
+            if telemetry_path is None:
+                if not arguments.build:
+                    raise BenchmarkError(
+                        "--telemetry requires --telemetry-executable unless "
+                        "--build is used"
+                    )
+                telemetry_path = arguments.executable.resolve().with_name(
+                    arguments.executable.resolve().name + "Telemetry"
+                )
+            if telemetry_path.resolve() == arguments.executable.resolve():
+                raise BenchmarkError(
+                    "telemetry and timed candidate executables must be distinct"
+                )
+            ensure_distinct_executables(
+                telemetry_path.resolve(),
+                arguments.executable.resolve(),
+            )
+            if (
+                baseline_executable is not None
+                and telemetry_path.resolve() == baseline_executable.resolve()
+            ):
+                raise BenchmarkError(
+                    "telemetry and baseline executables must be distinct"
+                )
+            if baseline_executable is not None:
+                ensure_distinct_executables(
+                    telemetry_path.resolve(),
+                    baseline_executable,
+                )
+
         executable_path = arguments.executable
         if arguments.build:
             if baseline_executable is not None:
                 ensure_distinct_executables(
                     executable_path.resolve(), baseline_executable
                 )
-            executable_path = build_executable(executable_path, arguments.compiler)
+            executable_path = build_executable(
+                executable_path,
+                arguments.compiler,
+            )
         executable = resolve_executable(executable_path)
+        telemetry_executable = None
+        if arguments.telemetry:
+            assert telemetry_path is not None
+            if arguments.build:
+                telemetry_path = build_executable(
+                    telemetry_path,
+                    arguments.compiler,
+                    telemetry=True,
+                )
+            telemetry_executable = resolve_executable(telemetry_path)
         if baseline_executable is not None:
             ensure_distinct_executables(executable, baseline_executable)
             if runs % 2 != 0:
@@ -1118,11 +1637,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "executable more first-run positions",
                     file=sys.stderr,
                 )
+        if telemetry_executable is not None:
+            ensure_distinct_executables(executable, telemetry_executable)
+            if baseline_executable is not None:
+                ensure_distinct_executables(
+                    baseline_executable,
+                    telemetry_executable,
+                )
         candidate_metadata = executable_metadata(executable)
         baseline_metadata = (
             None
             if baseline_executable is None
             else executable_metadata(baseline_executable)
+        )
+        telemetry_metadata = (
+            None
+            if telemetry_executable is None
+            else executable_metadata(telemetry_executable)
         )
 
         if baseline_executable is None:
@@ -1130,6 +1661,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(f"Candidate executable: {executable}")
             print(f"Baseline executable: {baseline_executable}")
+        if telemetry_executable is not None:
+            print(f"Telemetry executable: {telemetry_executable}")
         if manifest is None:
             print(f"Input: {cases[0].source}")
             if cases[0].expected_assembly_index is None:
@@ -1155,10 +1688,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"Rounds: {runs} measured, {arguments.warmup} warm-up per case",
                 flush=True,
             )
+        if arguments.telemetry:
+            print(
+                "Telemetry: one untimed separate-instrumented run per case",
+                flush=True,
+            )
 
         results = run_benchmarks(
             executable=executable,
             baseline_executable=baseline_executable,
+            telemetry_executable=telemetry_executable,
             cases=cases,
             runs=runs,
             warmup=arguments.warmup,
@@ -1170,12 +1709,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             verify_executable_unchanged(
                 baseline_executable, baseline_metadata, "baseline"
             )
+        if telemetry_executable is not None:
+            assert telemetry_metadata is not None
+            verify_executable_unchanged(
+                telemetry_executable,
+                telemetry_metadata,
+                "telemetry",
+            )
         print_summary(results)
+        print_telemetry_summary(results)
         if arguments.json_output is not None:
             write_json_report(
                 path=arguments.json_output,
                 candidate_metadata=candidate_metadata,
                 baseline_metadata=baseline_metadata,
+                telemetry_metadata=telemetry_metadata,
                 manifest=manifest,
                 suite=arguments.suite,
                 runs=runs,

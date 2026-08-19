@@ -99,6 +99,9 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
         prevML = std::move(currML);
     }
     if (searchShouldStop()) return false;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    setSearchTelemetryPhase(SearchTelemetryPhase::dagConversion);
+#endif
     convertDag(tempDag);
     if (searchShouldStop()) return false;
     return alive;
@@ -399,6 +402,10 @@ bool continueAssemblySearchWithWorkspace(
         assemblyPath probe{};
         probe.key = std::move(candidateKey);
         if (searchShouldStop()) return false;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.assemblyCacheLookups;
+#endif
 
         if (probe.key.size() < singleInsertMinFragments)
         {
@@ -451,10 +458,30 @@ bool continueAssemblySearchWithWorkspace(
             else existingPath = entry->ap;
         }
 
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+        {
+            if (existingPath != nullptr)
+                ++searchTelemetry.counters.assemblyCacheHits;
+            else
+                ++searchTelemetry.counters.assemblyCacheMisses;
+        }
+#endif
         if (existingPath != nullptr)
         {
-            if (sumDupBonds <= existingPath->sumDupBonds) return true;
+            if (sumDupBonds <= existingPath->sumDupBonds)
+            {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                if (searchTelemetryEnabled) [[unlikely]]
+                    ++searchTelemetry.counters.assemblyCachePrunedHits;
+#endif
+                return true;
+            }
 
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            if (searchTelemetryEnabled) [[unlikely]]
+                ++searchTelemetry.counters.assemblyCacheUpdatedHits;
+#endif
             candidate.apPtr = existingPath;
             existingPath->sumDupBonds = sumDupBonds;
             existingPath->match = bitsetHashTable[matching.first].second;
@@ -601,6 +628,26 @@ void dagRecursiveAssemblyWithWorkspace(
                                         firstFragment * input.masks.size() +
                                         secondFragment
                                     ];
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                    if (searchTelemetryEnabled) [[unlikely]]
+                                    {
+                                        ++searchTelemetry.counters
+                                            .pairBoundCacheLookups;
+                                        if (
+                                            genericRouteBound ==
+                                            numeric_limits<int>::min()
+                                        )
+                                        {
+                                            ++searchTelemetry.counters
+                                                .pairBoundCacheMisses;
+                                        }
+                                        else
+                                        {
+                                            ++searchTelemetry.counters
+                                                .pairBoundCacheHits;
+                                        }
+                                    }
+#endif
                                     if (
                                         genericRouteBound ==
                                         numeric_limits<int>::min()
@@ -685,10 +732,16 @@ void initialRecursiveAssemblyWithWorkspace(
     if (searchShouldStop()) return;
 
     vector<map<int, initialDuplicateSet> > stmapVector;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    setSearchTelemetryPhase(SearchTelemetryPhase::initialEnumeration);
+#endif
     const bool hasInitialMatchings = initialRecursiveEnumeration(input, stmapVector);
     if (enumerationLimitReached || searchShouldStop()) return;
 
     if (!hasInitialMatchings) return;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
+#endif
     assemblyState candidate;
     candidate.reserveFragments(input.masks.size() + 2);
     for (int j = stmapVector.size() - 1; j >= 0; j--)
@@ -765,6 +818,14 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
         targetMolecule.mg.size(),
         univEdgeList.size()
     );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    configureSearchTelemetryGraph(
+        targetMolecule.mg.size(),
+        univEdgeList.size(),
+        EdgeMask::activeWordCount(),
+        fragmentationWorkspace.reuseResidualDecompositions
+    );
+#endif
     allEdges.reset();
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
     assemblyState as;
@@ -779,6 +840,9 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     int AI = std::numeric_limits<int>::max();
     initialRecursiveAssemblyWithWorkspace(as, AI, fragmentationWorkspace);
 
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    setSearchTelemetryPhase(SearchTelemetryPhase::output);
+#endif
     // Keep the primary result line machine-readable even for partial searches.
     ofs << compensateDisjointAssemblyIndex(AI) << '\n';
     if (runtimeLimitReached)

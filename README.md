@@ -27,6 +27,20 @@ support. The test and benchmark `--build` commands use the same target. For an
 older x86-64 processor or a non-x86 platform, omit `-mpopcnt` and
 `-march=x86-64-v3` to produce a portable `-O3` build instead.
 
+Search telemetry is compile-time opt-in so ordinary search loops contain no
+counter branches. Build an instrumented executable with:
+
+```bash
+c++ v5/main.cpp -std=c++23 -O3 -mpopcnt -march=x86-64-v3 \
+  -DASSEMBLY_ENABLE_TELEMETRY -I"${CONDA_PREFIX}/include" \
+  -o build/AssemblyCppTelemetry
+```
+
+`--telemetry=1` is available only in an instrumented build; a standard build
+reports it as an unknown option. The test runner's `--build` enables telemetry
+to exercise its schema; the benchmark runner builds a separate instrumented
+sibling when `--build` and `--telemetry` are used together.
+
 The environment installs a C++ compiler, Boost (including the Boost Graph Library),
 and Python for the test runner. Activating it places the Conda-provided compiler
 on `PATH`. Recreate the environment after changing `environment.yml` with:
@@ -73,6 +87,7 @@ the same argument using `=`. Boolean values must be exactly `0` (disabled) or
 | `--remove-hydrogens=<0\|1>` | Boolean | `1` | Remove explicit hydrogen atoms from molfile inputs before calculation. This has no effect on native graph inputs. |
 | `--compensate-disjoint=<0\|1>` | Boolean | `0` | Subtract one from final and intermediate assembly indices for every component after the first in the processed graph. For molfiles, components are counted after optional hydrogen removal. Empty graphs receive no adjustment. |
 | `--memory-report=<0\|1>` | Boolean | `0` | After the other calculation outputs are written successfully on Linux, write `/proc/self/status`'s peak virtual-memory value (`VmPeak`, in kB) to `memUsage` in the current working directory. The option has no output on other platforms. |
+| `--telemetry=<0\|1>` | Boolean | `0` | In a telemetry-enabled build, write retained-mask and matching counts, canonicalisation/VF2 activity, cache rates, and phase-specific memory to `INPUTTelemetry.json`. |
 | `--write-intermediate-mas=<0\|1>` | Boolean | `0` | Write each newly found best assembly index and its elapsed `std::clock` tick to `INPUTIntermediateMAs`. |
 
 The runtime and enumeration limits can stop an exhaustive search. `INPUTOut`
@@ -107,7 +122,17 @@ graph files it is the complete input path.
 | `INPUTOut` | When the input is read and this file can be opened | Numeric assembly index, any limit or interruption status, and total elapsed `std::clock` ticks. |
 | `INPUTPathway` | `--pathway=1` | Recovered pathway as JSON. |
 | `INPUTIntermediateMAs` | `--write-intermediate-mas=1` | `std::clock` tick and improved assembly index pairs, using the selected disjoint-compensation setting. |
+| `INPUTTelemetry.json` | `--telemetry=1` | Versioned search counters, cache statistics, processed mask width, phase clock ticks, and phase memory. |
 | `./memUsage` | `--memory-report=1` on Linux, after other outputs succeed | Peak process virtual memory (`VmPeak`) reported by the kernel. |
+
+Telemetry is opt-in so its accounting does not affect ordinary benchmark
+timings. On Linux, each flat search phase resets and reads the process's
+resident high-water mark through `/proc/self/clear_refs` and
+`/proc/self/status`. Phase `peak_rss_kib` values are absolute resident sets and
+must not be added together. If the kernel does not provide a resettable
+high-water mark, phase peaks are `null`; start/end snapshots and all counters
+remain available. Resetting `VmHWM` also resets `ru_maxrss`, so external
+`time -v` peak-RSS measurements from a telemetry-enabled process are not valid.
 
 If an enabled output cannot be opened or fully written, AssemblyCpp reports the
 affected path and exits with a non-zero status.

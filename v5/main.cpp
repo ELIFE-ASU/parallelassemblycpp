@@ -35,6 +35,9 @@ constexpr int ceilLog2(int value)
 }
 
 #include "globalPrimitives.h"
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+#include "searchTelemetry.h"
+#endif
 #include "ufds.h"
 #include "molGraph.h"
 #include "vf2.h"
@@ -98,6 +101,9 @@ bool hasMolfileExtension(const string &filename)
  */
 bool assemblyCalculator(const string &input)
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    resetSearchTelemetry();
+#endif
     const bool explicitMolfile = hasMolfileExtension(input);
     const string outputBase = explicitMolfile ? input.substr(0, input.size() - 4) : input;
     const string molfileName = explicitMolfile ? input : input + ".mol";
@@ -168,6 +174,15 @@ bool assemblyCalculator(const string &input)
         cerr << "error: could not write output file '" << outputName << "'\n";
         outputsSucceeded = false;
     }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (
+        searchTelemetryEnabled &&
+        !writeSearchTelemetry(outputBase + "Telemetry.json")
+    )
+    {
+        outputsSucceeded = false;
+    }
+#endif
     return outputsSucceeded;
 }
 

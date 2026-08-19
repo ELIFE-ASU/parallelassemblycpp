@@ -23,15 +23,30 @@ initialDagInsertion tryRetainInitialDagMask(
     size_t &retainedStateCount
 )
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.retainedMaskAttempts;
+#endif
     const size_t proposedIndex = level.size();
     auto [insertion, inserted] = level.try_emplace(mask);
-    if (!inserted) return {initialDagInsertionResult::existing};
+    if (!inserted)
+    {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.duplicateMaskAttempts;
+#endif
+        return {initialDagInsertionResult::existing};
+    }
 
     const size_t limit = ENUM_MAX > 0 ? static_cast<size_t>(ENUM_MAX) : 0;
     if (retainedStateCount >= limit)
     {
         level.erase(insertion);
         enumerationLimitReached = true;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.rejectedMasks;
+#endif
         return {initialDagInsertionResult::limitReached};
     }
     if (proposedIndex > static_cast<size_t>(numeric_limits<int>::max()))
@@ -40,6 +55,10 @@ initialDagInsertion tryRetainInitialDagMask(
         throw length_error("initial DAG level exceeds index capacity");
     }
     ++retainedStateCount;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.retainedMasks;
+#endif
     insertion->second.index = static_cast<int>(proposedIndex);
     return {initialDagInsertionResult::retained, insertion->second.index};
 }
@@ -242,6 +261,10 @@ struct duplicateSet
                     list[secondIndex].fragment,
                     size
                 );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                if (searchTelemetryEnabled) [[unlikely]]
+                    ++searchTelemetry.counters.matchingVisits;
+#endif
                 if (!visitor(matching)) return false;
             }
         }

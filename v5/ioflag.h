@@ -13,6 +13,9 @@ enum class InputFlag
     removeHydrogensFlag,
     compensateDisjoint,
     memoryReport,
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    telemetry,
+#endif
     writeIntermediateMAsFlag
 };
 
@@ -86,6 +89,16 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "On Linux, write peak virtual memory (VmPeak) to ./memUsage.",
             {"memTest", "testMemory"}
         },
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        {
+            InputFlag::telemetry,
+            "telemetry",
+            "0|1",
+            "0",
+            "Write structured search counters and phase memory to INPUTTelemetry.json (telemetry build only).",
+            {}
+        },
+#endif
         {
             InputFlag::writeIntermediateMAsFlag,
             "write-intermediate-mas",
@@ -187,6 +200,14 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
         case InputFlag::memoryReport:
             memTest = parseBooleanFlag(definition, value);
             break;
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        case InputFlag::telemetry:
+        {
+            searchTelemetryEnabled = parseBooleanFlag(definition, value);
+            break;
+        }
+#endif
 
         case InputFlag::writeIntermediateMAsFlag:
             writeIntermediateMAs = parseBooleanFlag(definition, value);

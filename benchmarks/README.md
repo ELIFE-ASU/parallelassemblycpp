@@ -25,10 +25,13 @@ expectation statuses, missing inputs, and non-integer expected results.
 - `profile` contains a second-scale tree search and multi-second macrocycle
   searches. Except for ketoconazole, their expectations are provisional
   benchmark guards rather than reviewed regression expectations.
-- `scaling` is a cumulative series of two through eight disconnected amino-acid
-  components. It grows from 18 atoms and 16 bonds to 68 atoms and 60 bonds;
-  every larger input contains the preceding graph and one additional component.
-  The expectations are provisional benchmark guards.
+- `scaling` combines two complementary series. The cumulative amino-acid series
+  grows from 18 atoms and 16 bonds to 68 atoms and 60 bonds; every larger input
+  contains the preceding graph and one additional component. A homogeneous-path
+  boundary series covers 63, 64, 65, 127, 128, and 129 bonds. Those cases cross
+  the residual-decomposition cache's 64-bond eligibility cutoff and the first
+  two 64-bit mask-word boundaries without introducing an exponential graph
+  family. The expectations are provisional benchmark guards.
 
 Run the scaling series with:
 
@@ -36,12 +39,29 @@ Run the scaling series with:
 python benchmarks/benchmark.py --suite scaling
 ```
 
-The workload column puts atoms, bonds, and component counts next to the timing
-statistics. Algorithm clock ticks are the clearest cost signal for the smaller
-inputs because wall time also includes fixed process-startup and parsing costs.
-The series measures this cumulative, changing-composition workload; it should
-not be interpreted as an asymptotic complexity measurement for arbitrary
-molecules.
+Collect scaling telemetry with one additional untimed candidate run per case:
+
+```bash
+python benchmarks/benchmark.py --build --telemetry \
+  --executable build/AssemblyCpp --suite scaling \
+  --json-output scaling.json
+```
+
+The build command creates the ordinary timed candidate at the requested path
+and an instrumented sibling with `Telemetry` appended to its name. The
+diagnostic run is performed after all timed rounds and is excluded from
+wall-clock, algorithm-clock, and paired speedup aggregates. In paired mode only
+the separate telemetry executable receives the diagnostic run, so an older
+baseline can still be used for timings. Without `--build`, pass a prebuilt
+instrumented binary with `--telemetry-executable`.
+
+The workload column puts atoms, bonds, component counts, cache eligibility, and
+active mask-word counts next to the relevant timing statistics. Algorithm clock
+ticks are the clearest cost signal for the smaller inputs because wall time also
+includes fixed process-startup and parsing costs. The two series measure a
+cumulative changing-composition workload and isolated representation
+boundaries; neither should be interpreted as an asymptotic complexity
+measurement for arbitrary molecules.
 
 ## Measurement method
 
@@ -64,8 +84,20 @@ by duration and is less sensitive to noise in very short processes. A
 descriptive equal-weight geometric mean is also reported, with MAD; treat it
 cautiously when a suite contains millisecond-scale cases.
 
-JSON schema version 1 retains every sample, case metadata, aggregate summaries,
-the deterministic schedule, platform information, and executable fingerprints.
+JSON schema version 2 retains every timed sample, case metadata, aggregate
+summaries, the deterministic schedule, platform information, executable
+fingerprints, and optional candidate telemetry. Telemetry includes the raw
+processed graph size, retained masks, matching visits, canonicalisation and VF2
+calls, canonical/residual/assembly/pair-bound cache rates, and absolute resident
+peak memory for setup, initial enumeration, DAG conversion, assembly search,
+and output. A cache rate is `null` when no lookup occurred.
+
+`retained_masks` counts unique initial-DAG masks accepted within the enumeration
+limit, including one-edge roots. `matching_visits` counts valid materialised
+duplicate pairs delivered to the search visitor. `canonicalisation_calls`
+includes canonical-mask cache hits, while `vf2_calls` counts actual exact graph
+isomorphism invocations. The residual lookup hit rate excludes first-occurrence,
+small-residual, and disabled-cache bypasses; the request hit rate includes them.
 Fingerprints are captured before measurement and verified afterward so a binary
 replaced during a run cannot be misattributed. No outliers are removed
 automatically, and no timing result is used as a CI pass/fail threshold.

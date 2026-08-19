@@ -138,8 +138,23 @@ std::unordered_map<graphHash, pii> graphHashMap;
  */
 int canonise(EdgeMask &mask)
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.canonicalisationCalls;
+#endif
     const auto cached = bitsetHashTable.find(mask);
-    if (cached != bitsetHashTable.end()) return cached->second.first;
+    if (cached != bitsetHashTable.end())
+    {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.canonicalisationMaskCacheHits;
+#endif
+        return cached->second.first;
+    }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.canonicalisationMaskCacheMisses;
+#endif
 
     bool isCyclic;
     molGraph mg = constructFromEdgeList(
@@ -155,6 +170,13 @@ int canonise(EdgeMask &mask)
         std::move(candidate),
         pii{nextCanonicalIndex, 1}
     );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+    {
+        if (inserted) ++searchTelemetry.counters.canonicalClassInsertions;
+        else ++searchTelemetry.counters.canonicalClassReuses;
+    }
+#endif
     if (!inserted) graphEntry->second.second++;
 
     const pii canonicalEntry = graphEntry->second;

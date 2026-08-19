@@ -1,6 +1,14 @@
 /**
  * @brief Print command-line usage and option documentation.
  */
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+#define ASSEMBLY_TELEMETRY_OUTPUT_HELP \
+    "  INPUTTelemetry.json   Search counters, cache rates, and phase memory when\n" \
+    "                        --telemetry=1.\n"
+#else
+#define ASSEMBLY_TELEMETRY_OUTPUT_HELP ""
+#endif
+
 void help()
 {
     cout << R"(AssemblyCpp v5
@@ -43,7 +51,7 @@ Outputs:
   INPUTOut              Assembly index, search status, and std::clock ticks.
   INPUTPathway          Recovered pathway when --pathway=1.
   INPUTIntermediateMAs  Improved intermediate indices when enabled.
-  ./memUsage            Linux VmPeak report after other outputs succeed when
+)" ASSEMBLY_TELEMETRY_OUTPUT_HELP R"(  ./memUsage            Linux VmPeak report after other outputs succeed when
                         --memory-report=1.
 
 Compatibility:
@@ -70,3 +78,5 @@ Examples:
   AssemblyCpp --remove-hydrogens=0 molecule.mol
 )";
 }
+
+#undef ASSEMBLY_TELEMETRY_OUTPUT_HELP
