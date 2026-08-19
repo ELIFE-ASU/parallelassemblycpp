@@ -1011,10 +1011,13 @@ def run_cli_checks(executable: Path) -> int:
                 )
             scenarios += 1
 
-        # Exercise both sides of the residual-cache and first-word boundary.
-        for edge_count, expected_index, cache_eligible, active_words in (
-            (64, 6, True, 1),
-            (65, 7, False, 2),
+        # Exercise scalar, wide, adaptive, and later-word cache paths.
+        for edge_count, expected_index, active_words, cache_outcome in (
+            (64, 6, 1, "scalar-lookups"),
+            (65, 7, 2, "adaptive-fallback"),
+            (127, 10, 2, "wide-hits"),
+            (128, 7, 2, "adaptive-fallback"),
+            (129, 8, 3, "adaptive-fallback"),
         ):
             wide_graph = "\n".join(
                 (
@@ -1068,7 +1071,7 @@ def run_cli_checks(executable: Path) -> int:
                 completed,
             )
             require_cli(
-                residual["eligible_for_processed_graph"] is cache_eligible,
+                residual["eligible_for_processed_graph"] is True,
                 f"the {edge_count}-edge telemetry reported the wrong cache eligibility",
                 completed,
             )
@@ -1099,24 +1102,41 @@ def run_cli_checks(executable: Path) -> int:
                 f"the {edge_count}-edge telemetry did not exercise search counters",
                 completed,
             )
-            if cache_eligible:
+            require_cli(
+                residual["requests"] > 0
+                and residual["eligible_requests"] == residual["requests"]
+                and residual["small_molecule_bypasses"] == 0
+                and residual["wide_molecule_bypasses"] == 0
+                and residual["eligible_requests"]
+                == residual["small_residual_bypasses"]
+                + residual["first_occurrence_bypasses"]
+                + residual["runtime_disabled_bypasses"]
+                + residual["lookups"],
+                f"the {edge_count}-edge case did not exercise an eligible cache path",
+                completed,
+            )
+            if cache_outcome == "scalar-lookups":
                 require_cli(
-                    residual["eligible_requests"] == residual["requests"]
-                    and residual["lookups"] > 0
+                    residual["lookups"] > 0
                     and residual["admissions"] > 0
-                    and residual["small_molecule_bypasses"] == 0
-                    and residual["wide_molecule_bypasses"] == 0,
-                    f"the {edge_count}-edge case did not exercise the cache path",
+                    and residual["runtime_disabled_bypasses"] == 0,
+                    f"the {edge_count}-edge case did not exercise scalar caching",
+                    completed,
+                )
+            elif cache_outcome == "wide-hits":
+                require_cli(
+                    residual["lookups"] > 0
+                    and residual["hits"] > 0
+                    and residual["admissions"] > 0
+                    and residual["runtime_disabled_bypasses"] == 0,
+                    f"the {edge_count}-edge case did not exercise wide cache hits",
                     completed,
                 )
             else:
                 require_cli(
-                    residual["requests"] > 0
-                    and residual["eligible_requests"] == 0
-                    and residual["lookups"] == 0
-                    and residual["wide_molecule_bypasses"]
-                    == residual["requests"],
-                    f"the {edge_count}-edge case did not exercise the wide bypass",
+                    residual["first_occurrence_bypasses"] > 0
+                    and residual["runtime_disabled_bypasses"] > 0,
+                    f"the {edge_count}-edge case did not exercise adaptive fallback",
                     completed,
                 )
             phases = telemetry["memory"]["phases"]

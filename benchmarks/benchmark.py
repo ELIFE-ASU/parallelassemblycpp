@@ -41,6 +41,7 @@ KNOWN_EXPECTATIONS = ("reviewed", "provisional")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
+MASK_BIT_CAPACITY = 512
 
 
 class BenchmarkError(RuntimeError):
@@ -559,6 +560,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         value = processed_graph.get(name)
         if not is_nonnegative_integer(value):
             raise BenchmarkError(f"invalid processed graph telemetry in {path.name}")
+    if processed_graph["edges"] > MASK_BIT_CAPACITY:
+        raise BenchmarkError(f"processed graph exceeds mask capacity in {path.name}")
     expected_active_words = (processed_graph["edges"] + 63) // 64
     if processed_graph["active_mask_words"] != expected_active_words:
         raise BenchmarkError(f"inconsistent processed mask width in {path.name}")
@@ -627,7 +630,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         raise BenchmarkError(f"inconsistent residual cache counters in {path.name}")
     if type(residual.get("eligible_for_processed_graph")) is not bool:
         raise BenchmarkError(f"invalid residual cache eligibility in {path.name}")
-    expected_residual_cache_eligibility = 31 <= processed_graph["edges"] <= 64
+    expected_residual_cache_eligibility = (
+        31 <= processed_graph["edges"] <= MASK_BIT_CAPACITY
+    )
     if (
         residual["eligible_for_processed_graph"]
         != expected_residual_cache_eligibility

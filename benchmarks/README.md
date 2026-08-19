@@ -29,9 +29,10 @@ expectation statuses, missing inputs, and non-integer expected results.
   grows from 18 atoms and 16 bonds to 68 atoms and 60 bonds; every larger input
   contains the preceding graph and one additional component. A homogeneous-path
   boundary series covers 63, 64, 65, 127, 128, and 129 bonds. Those cases cross
-  the residual-decomposition cache's 64-bond eligibility cutoff and the first
+  the residual-decomposition cache's scalar-to-wide key boundary and the first
   two 64-bit mask-word boundaries without introducing an exponential graph
-  family. The expectations are provisional benchmark guards.
+  family. Wide caching remains eligible through the fixed 512-bit mask capacity.
+  The expectations are provisional benchmark guards.
 
 Run the scaling series with:
 
@@ -98,6 +99,8 @@ duplicate pairs delivered to the search visitor. `canonicalisation_calls`
 includes canonical-mask cache hits, while `vf2_calls` counts actual exact graph
 isomorphism invocations. The residual lookup hit rate excludes first-occurrence,
 small-residual, and disabled-cache bypasses; the request hit rate includes them.
+Wide caches sample up to 6,144 residuals and return to direct decomposition when
+no hit demonstrates reuse, so unique workloads do not keep paying lookup cost.
 Fingerprints are captured before measurement and verified afterward so a binary
 replaced during a run cannot be misattributed. No outliers are removed
 automatically, and no timing result is used as a CI pass/fail threshold.

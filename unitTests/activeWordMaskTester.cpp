@@ -61,6 +61,23 @@ void testWidth(std::size_t width)
     }
     assert(selected.count() == expected.size());
 
+    for (
+        std::size_t wordIndex = 0;
+        wordIndex < Mask::activeWordCount();
+        wordIndex++
+    )
+    {
+        unsigned long long expectedWord = 0;
+        for (const std::size_t bit : expected)
+        {
+            if (bit / 64 == wordIndex)
+            {
+                expectedWord |= 1ULL << (bit % 64);
+            }
+        }
+        assert(selected.activeWord(wordIndex) == expectedWord);
+    }
+
     std::vector<std::size_t> actual;
     for (
         std::size_t bit = selected.findFirst();

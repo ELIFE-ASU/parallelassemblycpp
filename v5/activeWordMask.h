@@ -97,6 +97,17 @@ public:
         return Capacity;
     }
 
+    /**
+     * @brief Read one word inside the configured mask width.
+     *
+     * The caller must pass an index below activeWordCount(). This deliberately
+     * does not expose inactive inline storage, whose value is unspecified.
+     */
+    [[nodiscard]] word_type activeWord(std::size_t index) const noexcept
+    {
+        return words_[index];
+    }
+
     ActiveWordMask &set(std::size_t position, bool value = true)
     {
         checkPosition(position);

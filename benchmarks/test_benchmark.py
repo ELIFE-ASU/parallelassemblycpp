@@ -458,10 +458,10 @@ class BenchmarkTests(unittest.TestCase):
                 "68 atoms / 60 bonds / 8 comps",
                 "64 atoms / 63 bonds / cache on / 1 word",
                 "65 atoms / 64 bonds / cache on / 1 word",
-                "66 atoms / 65 bonds / cache off / 2 words",
-                "128 atoms / 127 bonds / cache off / 2 words",
-                "129 atoms / 128 bonds / cache off / 2 words",
-                "130 atoms / 129 bonds / cache off / 3 words",
+                "66 atoms / 65 bonds / cache on / 2 words",
+                "128 atoms / 127 bonds / cache on / 2 words",
+                "129 atoms / 128 bonds / cache on / 2 words",
+                "130 atoms / 129 bonds / cache on / 3 words",
             ],
         )
 
@@ -555,8 +555,11 @@ class BenchmarkTests(unittest.TestCase):
             [1, 1, 2, 2, 2, 3],
         )
         self.assertEqual(
-            [31 <= bonds <= 64 for bonds in expected_bonds],
-            [True, True, False, False, False, False],
+            [
+                31 <= bonds <= benchmark.MASK_BIT_CAPACITY
+                for bonds in expected_bonds
+            ],
+            [True, True, True, True, True, True],
         )
 
     def test_corpus_run_and_json_report(self) -> None:
@@ -643,7 +646,10 @@ class BenchmarkTests(unittest.TestCase):
             malformed = json.loads(json.dumps(telemetry))
             malformed["processed_graph"]["edges"] = 65
             malformed["processed_graph"]["active_mask_words"] = 2
-            malformed_path = directory / "malformed-cache-cutoff.json"
+            malformed["caches"]["residual_decomposition"][
+                "eligible_for_processed_graph"
+            ] = False
+            malformed_path = directory / "malformed-cache-eligibility.json"
             malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
