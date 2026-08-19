@@ -2,19 +2,14 @@
 struct dagTransition
 {
     int childIndex;
-    uint16_t addedEdge;
+    uint32_t addedEdge;
 
     dagTransition(int _childIndex, size_t _addedEdge):
         childIndex(_childIndex),
-        addedEdge(static_cast<uint16_t>(_addedEdge)) {}
+        addedEdge(static_cast<uint32_t>(_addedEdge)) {}
 };
 
-static_assert(sizeof(dagTransition) <= sizeof(uint64_t));
-
-static_assert(
-    MASK_BIT_CAPACITY <=
-    static_cast<size_t>(numeric_limits<uint16_t>::max()) + 1
-);
+static_assert(sizeof(dagTransition) == sizeof(uint64_t));
 
 /**
  * @brief A node retained while the initial enumeration DAG is being built.

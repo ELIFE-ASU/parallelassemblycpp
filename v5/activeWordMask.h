@@ -1,85 +1,145 @@
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <type_traits>
-
-inline constexpr std::size_t MASK_BIT_CAPACITY = 512;
+#include <utility>
 
 /**
- * @brief Fixed-capacity bit mask whose work is proportional to its active words.
+ * @brief Runtime-width bit mask with an exact one-word small specialization.
  *
- * Each mask domain is configured once per calculation before masks are inserted
- * into hash tables. Storage stays inline, while construction, copying, bitwise
- * operations, equality, population counts, set-bit searches, and hashing touch
- * only the words required by the current molecule.
+ * Domains up to 64 bits store their value directly in the eight-byte object.
+ * Wider domains store an intrusive copy-on-write pointer in the same slot and
+ * allocate exactly the configured number of words. Thus the common path has
+ * the footprint and data movement of one uint64_t, while larger graphs have no
+ * fixed mask ceiling and retain cheap value copies.
+ *
+ * A domain must be configured only after all masks from its preceding width
+ * have been destroyed (persistent masks must be destroyed and reconstructed)
+ * and all mask-keyed containers have been cleared. The surrounding search is
+ * process-global and already observes that lifecycle; it is not re-entrant, so
+ * reference counts are non-atomic.
  */
-template<typename Domain, std::size_t Capacity = MASK_BIT_CAPACITY>
+template<typename Domain>
 class ActiveWordMask
 {
 public:
     using word_type = std::uint64_t;
     static constexpr std::size_t wordBits =
         std::numeric_limits<word_type>::digits;
-    static constexpr std::size_t wordCapacity =
-        (Capacity + wordBits - 1) / wordBits;
 
     ActiveWordMask() noexcept
     {
-        clearActiveWords();
+        if (isSmall()) [[likely]] storage_.word = 0;
+        else storage_.tail = nullptr;
     }
 
-    ActiveWordMask(unsigned long long value) noexcept
+    ActiveWordMask(unsigned long long value)
     {
-        assign(value);
+        if (isSmall()) [[likely]]
+        {
+            storage_.word = static_cast<word_type>(value) & firstWordMask();
+        }
+        else
+        {
+            storage_.tail = nullptr;
+            if (value != 0)
+            {
+                storage_.tail = allocateWords();
+                storage_.tail->data()[0] = static_cast<word_type>(value);
+            }
+        }
     }
 
     ActiveWordMask(const ActiveWordMask &other) noexcept
     {
-        copyActiveWords(other);
+        if (isSmall()) [[likely]] storage_.word = other.storage_.word;
+        else
+        {
+            storage_.tail = other.storage_.tail;
+            retain(storage_.tail);
+        }
     }
 
     ActiveWordMask(ActiveWordMask &&other) noexcept
     {
-        copyActiveWords(other);
+        if (isSmall()) [[likely]]
+        {
+            storage_.word = std::exchange(other.storage_.word, word_type{0});
+        }
+        else
+        {
+            storage_.tail = std::exchange(other.storage_.tail, nullptr);
+        }
+    }
+
+    [[gnu::always_inline]] ~ActiveWordMask()
+    {
+        if (!isSmall() && storage_.tail != nullptr) [[unlikely]]
+        {
+            destroyWide(storage_.tail);
+        }
     }
 
     ActiveWordMask &operator=(const ActiveWordMask &other) noexcept
     {
-        if (this != &other) copyActiveWords(other);
+        if (this == &other) return *this;
+        if (isSmall()) [[likely]]
+        {
+            storage_.word = other.storage_.word;
+            return *this;
+        }
+        retain(other.storage_.tail);
+        release(storage_.tail);
+        storage_.tail = other.storage_.tail;
         return *this;
     }
 
     ActiveWordMask &operator=(ActiveWordMask &&other) noexcept
     {
-        if (this != &other) copyActiveWords(other);
-        return *this;
-    }
-
-    ActiveWordMask &operator=(unsigned long long value) noexcept
-    {
-        assign(value);
-        return *this;
-    }
-
-    /**
-     * @brief Set the logical width for this mask domain.
-     *
-     * Reconfiguration invalidates the meaning of existing masks and therefore
-     * must happen only after domain-specific hash containers have been cleared.
-     */
-    static void configure(std::size_t bitCount)
-    {
-        if (bitCount > Capacity)
+        if (this == &other) return *this;
+        if (isSmall()) [[likely]]
         {
-            throw std::length_error("mask capacity exceeded");
+            storage_.word = std::exchange(other.storage_.word, word_type{0});
         }
+        else
+        {
+            release(storage_.tail);
+            storage_.tail = std::exchange(other.storage_.tail, nullptr);
+        }
+        return *this;
+    }
+
+    ActiveWordMask &operator=(unsigned long long value)
+    {
+        if (isSmall()) [[likely]]
+        {
+            storage_.word = static_cast<word_type>(value) & firstWordMask();
+            return *this;
+        }
+        WideWords *replacement = nullptr;
+        if (value != 0)
+        {
+            replacement = allocateWords();
+            replacement->data()[0] = static_cast<word_type>(value);
+        }
+        release(storage_.tail);
+        storage_.tail = replacement;
+        return *this;
+    }
+
+    /** Configure this domain's logical width without a fixed bit ceiling. */
+    static void configure(std::size_t bitCount) noexcept
+    {
+        clearArena();
         activeBitCount_ = bitCount;
-        activeWordCount_ = (bitCount + wordBits - 1) / wordBits;
+        activeWordCount_ = bitCount / wordBits + (bitCount % wordBits != 0);
     }
 
     [[nodiscard]] static std::size_t size() noexcept
@@ -94,48 +154,116 @@ public:
 
     [[nodiscard]] static constexpr std::size_t capacity() noexcept
     {
-        return Capacity;
+        return std::numeric_limits<std::size_t>::max();
     }
 
-    /**
-     * @brief Read one word inside the configured mask width.
-     *
-     * The caller must pass an index below activeWordCount(). This deliberately
-     * does not expose inactive inline storage, whose value is unspecified.
-     */
     [[nodiscard]] word_type activeWord(std::size_t index) const noexcept
     {
-        return words_[index];
+        if (isSmall()) [[likely]] return storage_.word;
+        return storage_.tail == nullptr ? 0 : storage_.tail->data()[index];
     }
 
-    ActiveWordMask &set(std::size_t position, bool value = true)
+    [[gnu::always_inline]] ActiveWordMask &set(
+        std::size_t position,
+        bool value = true
+    )
     {
         checkPosition(position);
-        const word_type bit = word_type{1} << (position % wordBits);
-        word_type &word = words_[position / wordBits];
-        if (value) word |= bit;
-        else word &= ~bit;
-        return *this;
-    }
-
-    ActiveWordMask &set() noexcept
-    {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            words_[0] = lastWordMask();
+            const word_type bit = word_type{1} << position;
+            if (value) storage_.word |= bit;
+            else storage_.word &= ~bit;
             return *this;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        const std::size_t wordIndex = position / wordBits;
+        const word_type bit = word_type{1} << (position % wordBits);
+        const word_type oldWord = activeWord(wordIndex);
+        if (((oldWord & bit) != 0) == value) return *this;
+        return setWideChanged(wordIndex, bit, value);
+    }
+
+    /** Return this mask with one bit set, avoiding a COW retain/detach pair. */
+    [[nodiscard, gnu::always_inline]] ActiveWordMask withBitSet(
+        std::size_t position
+    ) const
+    {
+        checkPosition(position);
+        if (isSmall()) [[likely]]
         {
-            words_[i] = std::numeric_limits<word_type>::max();
+            ActiveWordMask result;
+            result.storage_.word = storage_.word | (word_type{1} << position);
+            return result;
         }
-        trimLastWord();
+        return withBitSetWide(position);
+    }
+
+    [[nodiscard, gnu::noinline]] ActiveWordMask withBitSetWide(
+        std::size_t position
+    ) const
+    {
+        const std::size_t wordIndex = position / wordBits;
+        const word_type bit = word_type{1} << (position % wordBits);
+        if ((activeWord(wordIndex) & bit) != 0) return *this;
+        ActiveWordMask result;
+        if (storage_.tail != nullptr)
+        {
+            result.storage_.tail = allocateWords(false);
+            std::copy_n(
+                storage_.tail->data(),
+                activeWordCount_,
+                result.storage_.tail->data()
+            );
+        }
+        else result.storage_.tail = allocateWords();
+        result.storage_.tail->data()[wordIndex] |= bit;
+        return result;
+    }
+
+    /** Build a mask from exactly activeWordCount() logical words. */
+    [[nodiscard]] static ActiveWordMask fromActiveWords(
+        const word_type *words
+    )
+    {
+        ActiveWordMask result;
+        if (activeWordCount_ == 0) return result;
+        if (isSmall()) [[likely]]
+        {
+            result.storage_.word = words[0] & lastWordMask();
+            return result;
+        }
+        result.storage_.tail = allocateWords(false);
+        std::copy_n(words, activeWordCount_, result.storage_.tail->data());
+        result.storage_.tail->data()[activeWordCount_ - 1] &= lastWordMask();
+        result.releaseWordsIfZero();
+        return result;
+    }
+
+    ActiveWordMask &set()
+    {
+        if (activeWordCount_ <= 1) [[likely]]
+        {
+            storage_.word = lastWordMask();
+            return *this;
+        }
+        WideWords *words = ensureUniqueWords();
+        std::fill_n(
+            words->data(),
+            activeWordCount_,
+            std::numeric_limits<word_type>::max()
+        );
+        words->data()[activeWordCount_ - 1] &= lastWordMask();
         return *this;
     }
 
     ActiveWordMask &reset() noexcept
     {
-        clearActiveWords();
+        if (isSmall()) [[likely]] storage_.word = 0;
+        else
+        {
+            release(storage_.tail);
+            storage_.tail = nullptr;
+        }
         return *this;
     }
 
@@ -147,27 +275,39 @@ public:
     ActiveWordMask &flip(std::size_t position)
     {
         checkPosition(position);
-        words_[position / wordBits] ^=
+        if (isSmall()) [[likely]]
+        {
+            storage_.word ^= word_type{1} << position;
+            return *this;
+        }
+        WideWords *words = ensureUniqueWords();
+        words->data()[position / wordBits] ^=
             word_type{1} << (position % wordBits);
+        releaseWordsIfZero();
         return *this;
     }
 
-    ActiveWordMask &flip() noexcept
+    ActiveWordMask &flip()
     {
-        if (activeWordCount_ == 1)
+        if (activeWordCount_ <= 1) [[likely]]
         {
-            words_[0] = ~words_[0] & lastWordMask();
+            storage_.word = ~storage_.word & lastWordMask();
             return *this;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++) words_[i] = ~words_[i];
-        trimLastWord();
+        WideWords *words = ensureUniqueWords();
+        for (std::size_t i = 0; i < activeWordCount_; i++)
+        {
+            words->data()[i] = ~words->data()[i];
+        }
+        words->data()[activeWordCount_ - 1] &= lastWordMask();
+        releaseWordsIfZero();
         return *this;
     }
 
     [[nodiscard]] bool operator[](std::size_t position) const noexcept
     {
         return (
-            words_[position / wordBits] &
+            activeWord(position / wordBits) &
             (word_type{1} << (position % wordBits))
         ) != 0;
     }
@@ -178,28 +318,32 @@ public:
         return (*this)[position];
     }
 
-    [[nodiscard]] std::size_t count() const noexcept
+    [[nodiscard, gnu::always_inline]] std::size_t count() const noexcept
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            return static_cast<std::size_t>(std::popcount(words_[0]));
+            return static_cast<std::size_t>(std::popcount(storage_.word));
         }
+        return countWide();
+    }
+
+    [[nodiscard, gnu::noinline]] std::size_t countWide() const noexcept
+    {
+        if (storage_.tail == nullptr) return 0;
         std::size_t result = 0;
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            result += static_cast<std::size_t>(std::popcount(words_[i]));
+            result += static_cast<std::size_t>(
+                std::popcount(storage_.tail->data()[i])
+            );
         }
         return result;
     }
 
     [[nodiscard]] bool any() const noexcept
     {
-        if (activeWordCount_ == 1) return words_[0] != 0;
-        for (std::size_t i = 0; i < activeWordCount_; i++)
-        {
-            if (words_[i] != 0) return true;
-        }
-        return false;
+        if (isSmall()) [[likely]] return storage_.word != 0;
+        return storage_.tail != nullptr;
     }
 
     [[nodiscard]] bool none() const noexcept
@@ -210,24 +354,29 @@ public:
     [[nodiscard]] bool all() const noexcept
     {
         if (activeBitCount_ == 0) return true;
-        const std::size_t last = activeWordCount_ - 1;
-        for (std::size_t i = 0; i < last; i++)
+        if (isSmall()) [[likely]] return storage_.word == lastWordMask();
+        if (storage_.tail == nullptr) return false;
+        for (std::size_t i = 0; i + 1 < activeWordCount_; i++)
         {
-            if (words_[i] != std::numeric_limits<word_type>::max()) return false;
+            if (storage_.tail->data()[i] !=
+                std::numeric_limits<word_type>::max()) return false;
         }
-        return words_[last] == lastWordMask();
+        return storage_.tail->data()[activeWordCount_ - 1] == lastWordMask();
     }
 
     [[nodiscard]] unsigned long long to_ullong() const
     {
+        if (isSmall()) [[likely]] return storage_.word;
         for (std::size_t i = 1; i < activeWordCount_; i++)
         {
-            if (words_[i] != 0)
+            if (activeWord(i) != 0)
             {
-                throw std::overflow_error("mask does not fit in unsigned long long");
+                throw std::overflow_error(
+                    "mask does not fit in unsigned long long"
+                );
             }
         }
-        return activeWordCount_ == 0 ? 0 : words_[0];
+        return activeWord(0);
     }
 
     [[nodiscard]] unsigned long long lowWordBelow(
@@ -235,20 +384,37 @@ public:
     ) const noexcept
     {
         if (activeWordCount_ == 0 || limit == 0) return 0;
-        word_type word = words_[0];
+        word_type word = activeWord(0);
         if (limit < wordBits) word &= (word_type{1} << limit) - 1;
         return word;
     }
 
-    [[nodiscard]] bool intersects(const ActiveWordMask &other) const noexcept
+    [[nodiscard, gnu::always_inline]] bool intersects(
+        const ActiveWordMask &other
+    ) const noexcept
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            return (words_[0] & other.words_[0]) != 0;
+            return (storage_.word & other.storage_.word) != 0;
         }
+        return intersectsWide(other);
+    }
+
+    [[nodiscard, gnu::noinline]] bool intersectsWide(
+        const ActiveWordMask &other
+    ) const noexcept
+    {
+        if (storage_.tail == nullptr || other.storage_.tail == nullptr)
+        {
+            return false;
+        }
+        if (storage_.tail == other.storage_.tail) return true;
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            if ((words_[i] & other.words_[i]) != 0) return true;
+            if ((storage_.tail->data()[i] & other.storage_.tail->data()[i]) != 0)
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -260,13 +426,17 @@ public:
 
     [[nodiscard]] bool contains(const ActiveWordMask &other) const noexcept
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            return (words_[0] & other.words_[0]) == other.words_[0];
+            return (storage_.word & other.storage_.word) == other.storage_.word;
         }
+        if (other.storage_.tail == nullptr) return true;
+        if (storage_.tail == nullptr) return false;
+        if (storage_.tail == other.storage_.tail) return true;
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            if ((words_[i] & other.words_[i]) != other.words_[i]) return false;
+            if ((storage_.tail->data()[i] & other.storage_.tail->data()[i]) !=
+                other.storage_.tail->data()[i]) return false;
         }
         return true;
     }
@@ -275,36 +445,39 @@ public:
         const ActiveWordMask &other
     ) const noexcept
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
             return static_cast<std::size_t>(
-                std::popcount(words_[0] & other.words_[0])
+                std::popcount(storage_.word & other.storage_.word)
             );
         }
+        if (storage_.tail == nullptr || other.storage_.tail == nullptr) return 0;
+        if (storage_.tail == other.storage_.tail) return count();
         std::size_t result = 0;
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            result += static_cast<std::size_t>(
-                std::popcount(words_[i] & other.words_[i])
-            );
+            result += static_cast<std::size_t>(std::popcount(
+                storage_.tail->data()[i] & other.storage_.tail->data()[i]
+            ));
         }
         return result;
     }
 
     [[nodiscard]] std::size_t findFirst() const noexcept
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            return words_[0] == 0
+            return storage_.word == 0
                 ? activeBitCount_
-                : static_cast<std::size_t>(std::countr_zero(words_[0]));
+                : static_cast<std::size_t>(std::countr_zero(storage_.word));
         }
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            if (words_[i] != 0)
+            const word_type word = activeWord(i);
+            if (word != 0)
             {
                 return i * wordBits +
-                    static_cast<std::size_t>(std::countr_zero(words_[i]));
+                    static_cast<std::size_t>(std::countr_zero(word));
             }
         }
         return activeBitCount_;
@@ -312,169 +485,243 @@ public:
 
     [[nodiscard]] std::size_t findNext(std::size_t position) const noexcept
     {
-        if (position >= activeBitCount_ - (activeBitCount_ != 0))
+        if (activeBitCount_ == 0 || position >= activeBitCount_ - 1)
         {
             return activeBitCount_;
         }
-
         position++;
         std::size_t wordIndex = position / wordBits;
-        word_type word = words_[wordIndex];
+        word_type word = activeWord(wordIndex);
         word &= std::numeric_limits<word_type>::max() << (position % wordBits);
         if (word != 0)
         {
             return wordIndex * wordBits +
                 static_cast<std::size_t>(std::countr_zero(word));
         }
-
         for (wordIndex++; wordIndex < activeWordCount_; wordIndex++)
         {
-            if (words_[wordIndex] != 0)
+            word = activeWord(wordIndex);
+            if (word != 0)
             {
-                return wordIndex * wordBits + static_cast<std::size_t>(
-                    std::countr_zero(words_[wordIndex])
-                );
+                return wordIndex * wordBits +
+                    static_cast<std::size_t>(std::countr_zero(word));
             }
         }
         return activeBitCount_;
     }
 
-    ActiveWordMask &operator&=(const ActiveWordMask &other) noexcept
+    ActiveWordMask &operator&=(const ActiveWordMask &other)
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            words_[0] &= other.words_[0];
+            storage_.word &= other.storage_.word;
             return *this;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        if (storage_.tail == nullptr) return *this;
+        if (other.storage_.tail == nullptr)
         {
-            words_[i] &= other.words_[i];
+            return reset();
         }
+        if (storage_.tail == other.storage_.tail) return *this;
+        replaceWithComputed(storage_.tail, other.storage_.tail, Operation::and_);
         return *this;
     }
 
-    ActiveWordMask &operator|=(const ActiveWordMask &other) noexcept
+    [[gnu::always_inline]] ActiveWordMask &operator|=(
+        const ActiveWordMask &other
+    )
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            words_[0] |= other.words_[0];
+            storage_.word |= other.storage_.word;
             return *this;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        return orAssignWide(other);
+    }
+
+    [[gnu::noinline]] ActiveWordMask &orAssignWide(
+        const ActiveWordMask &other
+    )
+    {
+        if (other.storage_.tail == nullptr ||
+            storage_.tail == other.storage_.tail) return *this;
+        if (storage_.tail == nullptr)
         {
-            words_[i] |= other.words_[i];
+            storage_.tail = other.storage_.tail;
+            retain(storage_.tail);
+            return *this;
         }
+        replaceWithOr(storage_.tail, other.storage_.tail);
         return *this;
     }
 
-    ActiveWordMask &operator^=(const ActiveWordMask &other) noexcept
+    [[gnu::always_inline]] ActiveWordMask &operator^=(
+        const ActiveWordMask &other
+    )
     {
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            words_[0] ^= other.words_[0];
+            storage_.word ^= other.storage_.word;
             return *this;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        return xorAssignWide(other);
+    }
+
+    [[gnu::noinline]] ActiveWordMask &xorAssignWide(
+        const ActiveWordMask &other
+    )
+    {
+        if (other.storage_.tail == nullptr) return *this;
+        if (storage_.tail == nullptr)
         {
-            words_[i] ^= other.words_[i];
+            storage_.tail = other.storage_.tail;
+            retain(storage_.tail);
+            return *this;
         }
+        if (storage_.tail == other.storage_.tail) return reset();
+        replaceWithComputed(storage_.tail, other.storage_.tail, Operation::xor_);
         return *this;
     }
 
     friend ActiveWordMask operator&(
         const ActiveWordMask &left,
         const ActiveWordMask &right
-    ) noexcept
+    )
     {
-        ActiveWordMask result(uninitialised);
-        if (activeWordCount_ == 1)
+        ActiveWordMask result;
+        if (isSmall()) [[likely]]
         {
-            result.words_[0] = left.words_[0] & right.words_[0];
+            result.storage_.word = left.storage_.word & right.storage_.word;
             return result;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        if (left.storage_.tail == nullptr || right.storage_.tail == nullptr)
         {
-            result.words_[i] = left.words_[i] & right.words_[i];
+            return result;
         }
+        if (left.storage_.tail == right.storage_.tail)
+        {
+            result.storage_.tail = left.storage_.tail;
+            retain(result.storage_.tail);
+            return result;
+        }
+        result.storage_.tail = makeComputed(
+            left.storage_.tail, right.storage_.tail, Operation::and_
+        );
         return result;
     }
 
     friend ActiveWordMask operator|(
         const ActiveWordMask &left,
         const ActiveWordMask &right
-    ) noexcept
+    )
     {
-        ActiveWordMask result(uninitialised);
-        if (activeWordCount_ == 1)
+        ActiveWordMask result;
+        if (isSmall()) [[likely]]
         {
-            result.words_[0] = left.words_[0] | right.words_[0];
+            result.storage_.word = left.storage_.word | right.storage_.word;
             return result;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        if (left.storage_.tail == nullptr ||
+            left.storage_.tail == right.storage_.tail)
         {
-            result.words_[i] = left.words_[i] | right.words_[i];
+            result.storage_.tail = right.storage_.tail;
+            retain(result.storage_.tail);
+            return result;
         }
+        if (right.storage_.tail == nullptr)
+        {
+            result.storage_.tail = left.storage_.tail;
+            retain(result.storage_.tail);
+            return result;
+        }
+        result.storage_.tail = makeOr(left.storage_.tail, right.storage_.tail);
         return result;
     }
 
     friend ActiveWordMask operator^(
         const ActiveWordMask &left,
         const ActiveWordMask &right
-    ) noexcept
+    )
     {
-        ActiveWordMask result(uninitialised);
-        if (activeWordCount_ == 1)
+        ActiveWordMask result;
+        if (isSmall()) [[likely]]
         {
-            result.words_[0] = left.words_[0] ^ right.words_[0];
+            result.storage_.word = left.storage_.word ^ right.storage_.word;
             return result;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
+        if (left.storage_.tail == right.storage_.tail) return result;
+        if (left.storage_.tail == nullptr || right.storage_.tail == nullptr)
         {
-            result.words_[i] = left.words_[i] ^ right.words_[i];
+            result.storage_.tail = left.storage_.tail == nullptr
+                ? right.storage_.tail : left.storage_.tail;
+            retain(result.storage_.tail);
+            return result;
         }
+        result.storage_.tail = makeComputed(
+            left.storage_.tail, right.storage_.tail, Operation::xor_
+        );
         return result;
     }
 
-    friend ActiveWordMask operator~(const ActiveWordMask &mask) noexcept
+    friend ActiveWordMask operator~(const ActiveWordMask &mask)
     {
-        ActiveWordMask result(uninitialised);
-        if (activeWordCount_ == 1)
+        ActiveWordMask result;
+        if (activeWordCount_ == 0) return result;
+        if (isSmall()) [[likely]]
         {
-            result.words_[0] = ~mask.words_[0] & lastWordMask();
+            result.storage_.word = ~mask.storage_.word & lastWordMask();
             return result;
         }
+        result.storage_.tail = allocateWords(false);
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            result.words_[i] = ~mask.words_[i];
+            result.storage_.tail->data()[i] = ~mask.activeWord(i);
         }
-        result.trimLastWord();
+        result.storage_.tail->data()[activeWordCount_ - 1] &= lastWordMask();
+        result.releaseWordsIfZero();
         return result;
     }
 
-    friend bool operator==(
+    [[gnu::always_inline]] friend bool operator==(
         const ActiveWordMask &left,
         const ActiveWordMask &right
     ) noexcept
     {
-        if (activeWordCount_ == 1) return left.words_[0] == right.words_[0];
+        if (isSmall()) [[likely]] return left.storage_.word == right.storage_.word;
+        return equalsWide(left, right);
+    }
+
+    [[gnu::noinline]] static bool equalsWide(
+        const ActiveWordMask &left,
+        const ActiveWordMask &right
+    ) noexcept
+    {
+        if (left.storage_.tail == right.storage_.tail) return true;
+        if (left.storage_.tail == nullptr || right.storage_.tail == nullptr)
+            return false;
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            if (left.words_[i] != right.words_[i]) return false;
+            if (left.storage_.tail->data()[i] != right.storage_.tail->data()[i])
+            {
+                return false;
+            }
         }
         return true;
     }
 
-    friend bool operator==(
+    [[gnu::always_inline]] friend bool operator==(
         const ActiveWordMask &mask,
         unsigned long long value
     ) noexcept
     {
-        if (activeWordCount_ == 0) return true;
         const word_type trimmed = static_cast<word_type>(value) & firstWordMask();
-        if (mask.words_[0] != trimmed) return false;
+        if (isSmall()) [[likely]] return mask.storage_.word == trimmed;
+        if (trimmed == 0) return mask.storage_.tail == nullptr;
+        if (mask.storage_.tail == nullptr) return false;
+        if (mask.activeWord(0) != trimmed) return false;
         for (std::size_t i = 1; i < activeWordCount_; i++)
         {
-            if (mask.words_[i] != 0) return false;
+            if (mask.activeWord(i) != 0) return false;
         }
         return true;
     }
@@ -487,18 +734,22 @@ public:
         return mask == value;
     }
 
-    [[nodiscard]] std::size_t hash() const noexcept
+    [[nodiscard, gnu::always_inline]] std::size_t hash() const noexcept
     {
         if (activeWordCount_ == 0) return 0;
-        if (activeWordCount_ == 1)
+        if (isSmall()) [[likely]]
         {
-            return std::hash<word_type>{}(words_[0]);
+            return std::hash<word_type>{}(storage_.word);
         }
+        return hashWide();
+    }
 
-        std::size_t result = std::hash<word_type>{}(words_[0]);
+    [[nodiscard, gnu::noinline]] std::size_t hashWide() const noexcept
+    {
+        std::size_t result = std::hash<word_type>{}(activeWord(0));
         for (std::size_t i = 1; i < activeWordCount_; i++)
         {
-            result ^= std::hash<word_type>{}(words_[i]) +
+            result ^= std::hash<word_type>{}(activeWord(i)) +
                 static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) +
                 (result << 6) + (result >> 2);
         }
@@ -506,10 +757,59 @@ public:
     }
 
 private:
-    struct Uninitialised {};
-    inline static constexpr Uninitialised uninitialised{};
+    struct WideWords
+    {
+        union
+        {
+            std::size_t references;
+            WideWords *nextFree;
+        };
 
-    explicit ActiveWordMask(Uninitialised) noexcept {}
+        [[nodiscard]] word_type *data() noexcept
+        {
+            return reinterpret_cast<word_type *>(this + 1);
+        }
+
+        [[nodiscard]] const word_type *data() const noexcept
+        {
+            return reinterpret_cast<const word_type *>(this + 1);
+        }
+    };
+
+    static_assert(sizeof(WideWords) == sizeof(std::size_t));
+
+    struct alignas(std::max_align_t) ArenaBlock
+    {
+        ArenaBlock *next;
+        std::size_t used;
+        std::size_t capacity;
+
+        [[nodiscard]] std::byte *data() noexcept
+        {
+            return reinterpret_cast<std::byte *>(this + 1);
+        }
+    };
+
+    struct ArenaState
+    {
+        ArenaBlock *blocks = nullptr;
+        WideWords *freeWords = nullptr;
+    };
+
+    union Storage
+    {
+        word_type word;
+        WideWords *tail;
+
+        constexpr Storage() noexcept: word(0) {}
+    };
+
+    enum class Operation { and_, or_, xor_ };
+
+    [[nodiscard]] static bool isSmall() noexcept
+    {
+        return activeWordCount_ <= 1;
+    }
 
     static void checkPosition(std::size_t position)
     {
@@ -521,63 +821,278 @@ private:
 
     static constexpr word_type lowBits(std::size_t bitCount) noexcept
     {
-        return bitCount == 0 || bitCount == wordBits
-            ? std::numeric_limits<word_type>::max()
-            : (word_type{1} << bitCount) - 1;
+        if (bitCount == 0) return 0;
+        if (bitCount == wordBits)
+        {
+            return std::numeric_limits<word_type>::max();
+        }
+        return (word_type{1} << bitCount) - 1;
     }
 
     static word_type firstWordMask() noexcept
     {
-        return lowBits(activeBitCount_ < wordBits ? activeBitCount_ : wordBits);
+        return lowBits(std::min(activeBitCount_, wordBits));
     }
 
     static word_type lastWordMask() noexcept
     {
+        if (activeWordCount_ == 0) return 0;
         const std::size_t remainder = activeBitCount_ % wordBits;
         return lowBits(remainder == 0 ? wordBits : remainder);
     }
 
-    void trimLastWord() noexcept
+    static WideWords *allocateWords(bool initialise = true)
     {
-        if (activeWordCount_ != 0)
+        constexpr std::size_t headerSize = sizeof(WideWords);
+        if (activeWordCount_ >
+            (std::numeric_limits<std::size_t>::max() - headerSize) /
+                sizeof(word_type))
         {
-            words_[activeWordCount_ - 1] &= lastWordMask();
+            throw std::bad_array_new_length();
+        }
+        const std::size_t rawSize =
+            headerSize + activeWordCount_ * sizeof(word_type);
+        constexpr std::size_t alignment = alignof(WideWords);
+        if (rawSize > std::numeric_limits<std::size_t>::max() - (alignment - 1))
+        {
+            throw std::bad_array_new_length();
+        }
+        const std::size_t allocationSize = alignUp(rawSize);
+        ArenaState &state = arena_;
+        void *memory = nullptr;
+        if (state.freeWords != nullptr)
+        {
+            WideWords *words = state.freeWords;
+            state.freeWords = words->nextFree;
+            memory = words;
+        }
+        else
+        {
+            ArenaBlock *block = state.blocks;
+            if (block == nullptr ||
+                allocationSize > block->capacity - block->used)
+            {
+                constexpr std::size_t defaultBlockSize = 64 * 1024;
+                const std::size_t capacity = std::max(
+                    defaultBlockSize, allocationSize
+                );
+                constexpr std::size_t blockHeader = sizeof(ArenaBlock);
+                if (capacity >
+                    std::numeric_limits<std::size_t>::max() - blockHeader)
+                {
+                    throw std::bad_array_new_length();
+                }
+                block = static_cast<ArenaBlock *>(
+                    ::operator new(blockHeader + capacity)
+                );
+                block->next = state.blocks;
+                block->used = 0;
+                block->capacity = capacity;
+                state.blocks = block;
+            }
+            memory = block->data() + block->used;
+            block->used += allocationSize;
+        }
+        WideWords *words = static_cast<WideWords *>(memory);
+        words->references = 1;
+        if (initialise)
+        {
+            std::fill_n(words->data(), activeWordCount_, word_type{0});
+        }
+        return words;
+    }
+
+    static void retain(WideWords *words) noexcept
+    {
+        if (words == nullptr) return;
+        if (words->references != std::numeric_limits<std::size_t>::max())
+        {
+            ++words->references;
         }
     }
 
-    void clearActiveWords() noexcept
+    static void release(WideWords *words) noexcept
     {
-        if (activeWordCount_ == 1)
+        if (words == nullptr ||
+            words->references == std::numeric_limits<std::size_t>::max()) return;
+        if (--words->references == 0)
         {
-            words_[0] = 0;
-            return;
+            words->nextFree = arena_.freeWords;
+            arena_.freeWords = words;
         }
-        for (std::size_t i = 0; i < activeWordCount_; i++) words_[i] = 0;
     }
 
-    void copyActiveWords(const ActiveWordMask &other) noexcept
+    [[gnu::noinline]] static void destroyWide(WideWords *words) noexcept
     {
-        if (activeWordCount_ == 1)
+        release(words);
+    }
+
+    static constexpr std::size_t alignUp(std::size_t value) noexcept
+    {
+        constexpr std::size_t alignment = alignof(WideWords);
+        return (value + alignment - 1) & ~(alignment - 1);
+    }
+
+    static void clearArena() noexcept
+    {
+        ArenaBlock *block = arena_.blocks;
+        while (block != nullptr)
         {
-            words_[0] = other.words_[0];
-            return;
+            ArenaBlock *next = block->next;
+            ::operator delete(block);
+            block = next;
         }
+        arena_.blocks = nullptr;
+        arena_.freeWords = nullptr;
+    }
+
+    WideWords *ensureUniqueWords()
+    {
+        if (storage_.tail == nullptr)
+        {
+            storage_.tail = allocateWords();
+            return storage_.tail;
+        }
+        if (storage_.tail->references == 1)
+        {
+            return storage_.tail;
+        }
+        WideWords *replacement = allocateWords(false);
+        std::copy_n(
+            storage_.tail->data(),
+            activeWordCount_,
+            replacement->data()
+        );
+        release(storage_.tail);
+        storage_.tail = replacement;
+        return storage_.tail;
+    }
+
+    [[gnu::noinline]] ActiveWordMask &setWideChanged(
+        std::size_t wordIndex,
+        word_type bit,
+        bool value
+    )
+    {
+        WideWords *words = ensureUniqueWords();
+        if (value) words->data()[wordIndex] |= bit;
+        else words->data()[wordIndex] &= ~bit;
+        if (!value) releaseWordsIfZero();
+        return *this;
+    }
+
+    static bool wordsAreZero(const WideWords *words) noexcept
+    {
+        if (words == nullptr) return true;
         for (std::size_t i = 0; i < activeWordCount_; i++)
         {
-            words_[i] = other.words_[i];
+            if (words->data()[i] != 0) return false;
         }
+        return true;
     }
 
-    void assign(unsigned long long value) noexcept
+    void releaseWordsIfZero() noexcept
     {
-        if (activeWordCount_ == 0) return;
-        words_[0] = static_cast<word_type>(value) & firstWordMask();
-        for (std::size_t i = 1; i < activeWordCount_; i++) words_[i] = 0;
+        if (!wordsAreZero(storage_.tail)) return;
+        release(storage_.tail);
+        storage_.tail = nullptr;
     }
 
-    inline static std::size_t activeBitCount_ = Capacity;
-    inline static std::size_t activeWordCount_ = wordCapacity;
-    word_type words_[wordCapacity];
+    static word_type apply(
+        word_type left,
+        word_type right,
+        Operation operation
+    ) noexcept
+    {
+        switch (operation)
+        {
+            case Operation::and_: return left & right;
+            case Operation::or_: return left | right;
+            case Operation::xor_: return left ^ right;
+        }
+        return 0;
+    }
+
+    static WideWords *makeComputed(
+        const WideWords *left,
+        const WideWords *right,
+        Operation operation
+    )
+    {
+        bool any = false;
+        for (std::size_t i = 0; i < activeWordCount_; i++)
+        {
+            any |= apply(left->data()[i], right->data()[i], operation) != 0;
+        }
+        if (!any) return nullptr;
+        WideWords *result = allocateWords(false);
+        for (std::size_t i = 0; i < activeWordCount_; i++)
+        {
+            result->data()[i] = apply(
+                left->data()[i], right->data()[i], operation
+            );
+        }
+        return result;
+    }
+
+    static WideWords *makeOr(
+        const WideWords *left,
+        const WideWords *right
+    )
+    {
+        WideWords *result = allocateWords(false);
+        for (std::size_t i = 0; i < activeWordCount_; i++)
+        {
+            result->data()[i] = left->data()[i] | right->data()[i];
+        }
+        return result;
+    }
+
+    void replaceWithOr(
+        const WideWords *left,
+        const WideWords *right
+    )
+    {
+        if (storage_.tail->references == 1)
+        {
+            for (std::size_t i = 0; i < activeWordCount_; i++)
+            {
+                storage_.tail->data()[i] =
+                    left->data()[i] | right->data()[i];
+            }
+            return;
+        }
+        WideWords *replacement = makeOr(left, right);
+        release(storage_.tail);
+        storage_.tail = replacement;
+    }
+
+    void replaceWithComputed(
+        const WideWords *left,
+        const WideWords *right,
+        Operation operation
+    )
+    {
+        if (storage_.tail->references == 1)
+        {
+            for (std::size_t i = 0; i < activeWordCount_; i++)
+            {
+                storage_.tail->data()[i] = apply(
+                    left->data()[i], right->data()[i], operation
+                );
+            }
+            releaseWordsIfZero();
+            return;
+        }
+        WideWords *replacement = makeComputed(left, right, operation);
+        release(storage_.tail);
+        storage_.tail = replacement;
+    }
+
+    inline static std::size_t activeBitCount_ = wordBits;
+    inline static std::size_t activeWordCount_ = 1;
+    inline static ArenaState arena_;
+    Storage storage_;
 };
 
 struct EdgeMaskDomain;
@@ -587,17 +1102,18 @@ using EdgeMask = ActiveWordMask<EdgeMaskDomain>;
 using AtomMask = ActiveWordMask<AtomMaskDomain>;
 
 static_assert(!std::is_same_v<EdgeMask, AtomMask>);
-static_assert(sizeof(EdgeMask) == MASK_BIT_CAPACITY / 8);
-static_assert(sizeof(AtomMask) == MASK_BIT_CAPACITY / 8);
+static_assert(sizeof(EdgeMask) == sizeof(std::uint64_t));
+static_assert(sizeof(AtomMask) == sizeof(std::uint64_t));
+static_assert(std::is_nothrow_copy_constructible_v<EdgeMask>);
+static_assert(std::is_nothrow_move_constructible_v<EdgeMask>);
+static_assert(std::is_nothrow_move_assignable_v<EdgeMask>);
 
 namespace std
 {
-    template<typename Domain, size_t Capacity>
-    struct hash<ActiveWordMask<Domain, Capacity>>
+    template<typename Domain>
+    struct hash<ActiveWordMask<Domain>>
     {
-        size_t operator()(
-            const ActiveWordMask<Domain, Capacity> &mask
-        ) const noexcept
+        size_t operator()(const ActiveWordMask<Domain> &mask) const noexcept
         {
             return mask.hash();
         }

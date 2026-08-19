@@ -358,6 +358,42 @@ def read_last_intermediate_index(path: Path) -> int | None:
     return int(rows[-1][1])
 
 
+def make_mask_capacity_graph(component_sizes: Sequence[int]) -> str:
+    """Build a bounded-work native graph whose final atom appears in edge zero."""
+    atom_colours: list[str] = []
+    component_edges: list[list[tuple[int, int]]] = []
+    first_atom = 1
+    for component, size in enumerate(component_sizes):
+        if size < 3:
+            raise ValueError("capacity-test components must be cycles of size >= 3")
+        vertices = list(range(first_atom, first_atom + size))
+        atom_colours.extend([f"C{component}"] * size)
+        component_edges.append(
+            list(zip(vertices, vertices[1:] + vertices[:1], strict=True))
+        )
+        first_atom += size
+
+    # Visit the last component first and start at its wraparound edge. This
+    # makes the first connected-subgraph seed include the highest atom index,
+    # so a 513-atom case necessarily exercises AtomMask word eight as well as
+    # EdgeMask word eight.
+    last_edges = component_edges[-1]
+    edges = [last_edges[-1], *last_edges[:-1]]
+    for cycle_edges in component_edges[:-1]:
+        edges.extend(cycle_edges)
+
+    return "\n".join(
+        (
+            "mask-capacity-boundary",
+            str(len(atom_colours)),
+            " ".join(f"{first} {second}" for first, second in edges),
+            " ".join(atom_colours),
+            " ".join("1" for _ in edges),
+            "",
+        )
+    )
+
+
 def run_cli_checks(executable: Path) -> int:
     """Exercise help, validation, aliases, input handling, and output flags."""
     scenarios = 0
@@ -1163,6 +1199,79 @@ def run_cli_checks(executable: Path) -> int:
                         for phase in phases.values()
                     ),
                     f"the {edge_count}-edge phase RSS peaks are inconsistent",
+                    completed,
+                )
+            scenarios += 1
+
+        # Cross the former fixed 512-bit cap in both mask domains without
+        # introducing a large connected-subgraph search. Each component is a
+        # small cycle with its own atom colour; the enumeration cap is reached
+        # only after every one-edge EdgeMask has been retained and the first
+        # high-index AtomMask seed has expanded once.
+        for atom_count, edge_count, component_sizes in (
+            (512, 512, [4] * 128),
+            (513, 513, [4] * 127 + [5]),
+        ):
+            capacity_directory = (
+                working_directory
+                / f"dynamic-mask-capacity-{atom_count}a-{edge_count}e"
+            )
+            capacity_directory.mkdir()
+            capacity_graph = make_mask_capacity_graph(component_sizes)
+            (capacity_directory / "input").write_text(capacity_graph)
+            capacity_options = [
+                "input",
+                "--pathway=0",
+                f"--enum-max={edge_count + 1}",
+            ]
+            if telemetry_supported:
+                capacity_options.append("--telemetry=1")
+            completed = run_cli_command(
+                executable,
+                capacity_options,
+                capacity_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"the {atom_count}-atom/{edge_count}-edge capacity scenario "
+                "should succeed",
+                completed,
+            )
+            output_path = capacity_directory / "inputOut"
+            output_lines = output_path.read_text().splitlines()
+            require_cli(
+                read_first_line_assembly_index(output_path) == edge_count - 1,
+                f"the {atom_count}-atom/{edge_count}-edge capacity scenario "
+                "returned the wrong bounded-search index",
+                completed,
+            )
+            require_cli(
+                "status: enumeration limit reached" in output_lines,
+                f"the {atom_count}-atom/{edge_count}-edge capacity scenario "
+                "did not reach its deterministic enumeration boundary",
+                completed,
+            )
+            if telemetry_supported:
+                telemetry = json.loads(
+                    (capacity_directory / "inputTelemetry.json").read_text()
+                )
+                graph = telemetry["processed_graph"]
+                counters = telemetry["counters"]
+                require_cli(
+                    graph == {
+                        "atoms": atom_count,
+                        "edges": edge_count,
+                        "active_mask_words": (edge_count + 63) // 64,
+                    },
+                    f"the {atom_count}-atom/{edge_count}-edge capacity telemetry "
+                    "reported the wrong dynamic mask dimensions",
+                    completed,
+                )
+                require_cli(
+                    counters["retained_masks"] == edge_count + 1
+                    and counters["rejected_masks"] == 1,
+                    f"the {atom_count}-atom/{edge_count}-edge capacity scenario "
+                    "did not traverse every singleton mask and the first child",
                     completed,
                 )
             scenarios += 1

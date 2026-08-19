@@ -31,8 +31,9 @@ expectation statuses, missing inputs, and non-integer expected results.
   boundary series covers 63, 64, 65, 127, 128, and 129 bonds. Those cases cross
   the residual-decomposition cache's scalar-to-wide key boundary and the first
   two 64-bit mask-word boundaries without introducing an exponential graph
-  family. Wide caching remains eligible through the fixed 512-bit mask capacity.
-  The expectations are provisional benchmark guards.
+  family. Wide caching remains eligible at later word boundaries because masks
+  now grow to the processed graph's width rather than stopping at 512 bits. The
+  expectations are provisional benchmark guards.
 
 Run the scaling series with:
 

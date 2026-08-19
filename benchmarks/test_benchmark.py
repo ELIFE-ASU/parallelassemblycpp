@@ -556,7 +556,7 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                31 <= bonds <= benchmark.MASK_BIT_CAPACITY
+                31 <= bonds
                 for bonds in expected_bonds
             ],
             [True, True, True, True, True, True],
@@ -656,6 +656,17 @@ class BenchmarkTests(unittest.TestCase):
                 "inconsistent residual cache eligibility",
             ):
                 benchmark.parse_search_telemetry(malformed_path)
+
+            wider = json.loads(json.dumps(telemetry))
+            wider["processed_graph"] = {
+                "atoms": 514,
+                "edges": 513,
+                "active_mask_words": 9,
+            }
+            wider_path = directory / "dynamic-mask-width.json"
+            wider_path.write_text(json.dumps(wider), encoding="utf-8")
+            parsed = benchmark.parse_search_telemetry(wider_path)
+            self.assertEqual(parsed["processed_graph"]["active_mask_words"], 9)
 
     def test_search_telemetry_parser_rejects_malformed_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

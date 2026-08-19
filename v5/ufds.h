@@ -29,6 +29,33 @@ void forEachSetBitWithWideLimit(
 )
 {
     limit = min(limit, mask.size());
+    if constexpr (requires(const Bitset &bits, size_t wordIndex) {
+        Bitset::activeWordCount();
+        bits.activeWord(wordIndex);
+    })
+    {
+        constexpr size_t wordBits =
+            numeric_limits<unsigned long long>::digits;
+        const size_t wordCount =
+            limit / wordBits + (limit % wordBits != 0);
+        for (size_t wordIndex = 0; wordIndex < wordCount; wordIndex++)
+        {
+            unsigned long long word = mask.activeWord(wordIndex);
+            if (wordIndex + 1 == wordCount && limit % wordBits != 0)
+            {
+                word &= (1ULL << (limit % wordBits)) - 1;
+            }
+            while (word != 0)
+            {
+                visitor(
+                    wordIndex * wordBits +
+                    static_cast<size_t>(std::countr_zero(word))
+                );
+                word &= word - 1;
+            }
+        }
+        return;
+    }
     if constexpr (requires(const Bitset &bits, size_t index) {
         bits.findFirst();
         bits.findNext(index);
@@ -145,19 +172,20 @@ struct disjointSet
 struct ufdsSplitNode
 {
     /// parent, rank, fragment this is part of
-    int16_t parent = -1, rank = 0, val = -1, component = -1;
+    int16_t parent = -1, rank = 0;
+    int32_t val = -1, component = -1;
     uint32_t generation = 0;
 
     ufdsSplitNode() = default;
     ufdsSplitNode(int _parent, int _val, uint32_t _generation):
         parent(static_cast<int16_t>(_parent)),
-        val(static_cast<int16_t>(_val)),
+        val(_val),
         generation(_generation)
     {
     }
 };
 
-static_assert(MASK_BIT_CAPACITY <= numeric_limits<int16_t>::max());
+static_assert(sizeof(ufdsSplitNode) == 16);
 
 /**
  * @brief for UFDS split node - variant on textbook UFDS
@@ -165,14 +193,21 @@ static_assert(MASK_BIT_CAPACITY <= numeric_limits<int16_t>::max());
 struct ufdsSplit
 {
     static constexpr size_t atomWordBits = numeric_limits<uint64_t>::digits;
-    static constexpr size_t atomWordCount =
-        (MASK_BIT_CAPACITY + atomWordBits - 1) / atomWordBits;
-    static_assert(atomWordCount <= numeric_limits<uint64_t>::digits);
+    // Keep the common case allocation-free and identical to the former
+    // fixed-capacity representation. Larger atom indices spill into the
+    // vectors below, removing this structure's former 512-atom boundary;
+    // molGraph's adjacency-index type retains a separate, much higher limit.
+    static constexpr size_t inlineAtomBitCount = 512;
+    static constexpr size_t inlineAtomWordCount =
+        inlineAtomBitCount / atomWordBits;
 
     vector<ufdsSplitNode> elements;
     vector<pii> extraVals;
-    array<uint64_t, atomWordCount> touchedAtomWords{};
+    array<uint64_t, inlineAtomWordCount> touchedAtomWords{};
     uint64_t touchedAtomWordMask = 0;
+    vector<uint64_t> wideTouchedAtomWords;
+    vector<size_t> touchedWideAtomWordIndices;
+    vector<uint64_t> componentMaskWords;
     // Keep the active generation distinct from default-constructed nodes even
     // before the first reset.
     uint32_t generation = 1;
@@ -194,14 +229,41 @@ struct ufdsSplit
             activeWords &= activeWords - 1;
         }
         touchedAtomWordMask = 0;
+        if (!touchedWideAtomWordIndices.empty()) [[unlikely]]
+        {
+            for (const size_t wordIndex : touchedWideAtomWordIndices)
+            {
+                wideTouchedAtomWords[wordIndex - inlineAtomWordCount] = 0;
+            }
+            touchedWideAtomWordIndices.clear();
+        }
         extraVals.clear();
     }
 
-    void markTouched(size_t index)
+    [[gnu::always_inline]] void markTouched(size_t index)
     {
         const size_t wordIndex = index / atomWordBits;
-        touchedAtomWords[wordIndex] |= uint64_t{1} << (index % atomWordBits);
-        touchedAtomWordMask |= uint64_t{1} << wordIndex;
+        const uint64_t bit = uint64_t{1} << (index % atomWordBits);
+        if (wordIndex < inlineAtomWordCount) [[likely]]
+        {
+            touchedAtomWords[wordIndex] |= bit;
+            touchedAtomWordMask |= uint64_t{1} << wordIndex;
+            return;
+        }
+
+        markTouchedWide(wordIndex, bit);
+    }
+
+    [[gnu::noinline]] void markTouchedWide(size_t wordIndex, uint64_t bit)
+    {
+        const size_t wideWordIndex = wordIndex - inlineAtomWordCount;
+        if (wideWordIndex >= wideTouchedAtomWords.size())
+        {
+            wideTouchedAtomWords.resize(wideWordIndex + 1, 0);
+        }
+        uint64_t &word = wideTouchedAtomWords[wideWordIndex];
+        if (word == 0) touchedWideAtomWordIndices.push_back(wordIndex);
+        word |= bit;
     }
 
     bool contains(size_t index) const
@@ -274,27 +336,25 @@ struct ufdsSplit
      * @param edgeCounts Edge counts parallel to the appended output masks
      * @param tempMaskList Reusable component-mask buffer; must not alias maskList
      */
-    void splitWithBuffers(
+    [[gnu::noinline]] void splitSmallWithBuffers(
         vector<EdgeMask> &maskList,
         vi &edgeCounts,
         vector<EdgeMask> &tempMaskList
     )
     {
-        tempMaskList.clear();
+        static_cast<void>(tempMaskList);
+        componentMaskWords.clear();
         auto addTouchedAtom = [&](size_t index) {
             find(index);
             const int root = elements[index].parent;
-            int16_t &component = elements[root].component;
+            int32_t &component = elements[root].component;
             if (component == -1)
             {
-                component = tempMaskList.size();
-                EdgeMask b = 0; b.set(elements[index].val);
-                tempMaskList.push_back(b);
+                component = static_cast<int32_t>(componentMaskWords.size());
+                componentMaskWords.push_back(0);
             }
-            else
-            {
-                tempMaskList[component].set(elements[index].val);
-            }
+            componentMaskWords[component] |=
+                uint64_t{1} << elements[index].val;
         };
         uint64_t atoms = touchedAtomWords[0];
         while (atoms != 0)
@@ -316,18 +376,247 @@ struct ufdsSplit
             }
             activeWords &= activeWords - 1;
         }
+        if (!touchedWideAtomWordIndices.empty()) [[unlikely]]
+        {
+            if (!is_sorted(
+                touchedWideAtomWordIndices.begin(),
+                touchedWideAtomWordIndices.end()
+            ))
+            {
+                sort(
+                    touchedWideAtomWordIndices.begin(),
+                    touchedWideAtomWordIndices.end()
+                );
+            }
+            for (const size_t wordIndex : touchedWideAtomWordIndices)
+            {
+                atoms = wideTouchedAtomWords[wordIndex - inlineAtomWordCount];
+                while (atoms != 0)
+                {
+                    const size_t bitIndex = std::countr_zero(atoms);
+                    addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                    atoms &= atoms - 1;
+                }
+            }
+        }
+        for (const pii &extra : extraVals)
+        {
+            const size_t root = find(extra.first);
+            componentMaskWords[elements[root].component] |=
+                uint64_t{1} << extra.second;
+        }
+        for (const uint64_t word : componentMaskWords)
+        {
+            const int edgeCount = static_cast<int>(std::popcount(word));
+            if (edgeCount > 1)
+            {
+                maskList.emplace_back(word);
+                edgeCounts.push_back(edgeCount);
+            }
+        }
+    }
+
+    [[gnu::always_inline]] void splitWithBuffers(
+        vector<EdgeMask> &maskList,
+        vi &edgeCounts,
+        vector<EdgeMask> &tempMaskList
+    )
+    {
+        if (EdgeMask::activeWordCount() <= 1) [[likely]]
+        {
+            splitSmallWithBuffers(maskList, edgeCounts, tempMaskList);
+            return;
+        }
+        if (EdgeMask::activeWordCount() == 2) [[likely]]
+        {
+            splitTwoWordWithBuffers(maskList, edgeCounts, tempMaskList);
+            return;
+        }
+        splitWideWithBuffers(maskList, edgeCounts, tempMaskList);
+    }
+
+    [[gnu::noinline]] void splitTwoWordWithBuffers(
+        vector<EdgeMask> &maskList,
+        vi &edgeCounts,
+        vector<EdgeMask> &tempMaskList
+    )
+    {
+        static_cast<void>(tempMaskList);
+        componentMaskWords.clear();
+        auto setComponentEdge = [&](size_t componentOffset, size_t edge) {
+            componentMaskWords[componentOffset + edge / 64] |=
+                uint64_t{1} << (edge % 64);
+        };
+        auto addTouchedAtom = [&](size_t index) {
+            find(index);
+            const int root = elements[index].parent;
+            int32_t &component = elements[root].component;
+            if (component == -1)
+            {
+                component = static_cast<int32_t>(componentMaskWords.size());
+                componentMaskWords.push_back(0);
+                componentMaskWords.push_back(0);
+            }
+            setComponentEdge(component, elements[index].val);
+        };
+        uint64_t atoms = touchedAtomWords[0];
+        while (atoms != 0)
+        {
+            const size_t bitIndex = std::countr_zero(atoms);
+            addTouchedAtom(bitIndex);
+            atoms &= atoms - 1;
+        }
+        uint64_t activeWords = touchedAtomWordMask & ~uint64_t{1};
+        while (activeWords != 0)
+        {
+            const size_t wordIndex = std::countr_zero(activeWords);
+            atoms = touchedAtomWords[wordIndex];
+            while (atoms != 0)
+            {
+                const size_t bitIndex = std::countr_zero(atoms);
+                addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                atoms &= atoms - 1;
+            }
+            activeWords &= activeWords - 1;
+        }
+        if (!touchedWideAtomWordIndices.empty()) [[unlikely]]
+        {
+            if (!is_sorted(
+                touchedWideAtomWordIndices.begin(),
+                touchedWideAtomWordIndices.end()
+            ))
+            {
+                sort(
+                    touchedWideAtomWordIndices.begin(),
+                    touchedWideAtomWordIndices.end()
+                );
+            }
+            for (const size_t wordIndex : touchedWideAtomWordIndices)
+            {
+                atoms = wideTouchedAtomWords[wordIndex - inlineAtomWordCount];
+                while (atoms != 0)
+                {
+                    const size_t bitIndex = std::countr_zero(atoms);
+                    addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                    atoms &= atoms - 1;
+                }
+            }
+        }
+        for (const pii &extra : extraVals)
+        {
+            const size_t root = find(extra.first);
+            setComponentEdge(elements[root].component, extra.second);
+        }
+        for (size_t offset = 0;
+             offset < componentMaskWords.size();
+             offset += 2)
+        {
+            const uint64_t *words = componentMaskWords.data() + offset;
+            const int edgeCount = static_cast<int>(
+                std::popcount(words[0]) + std::popcount(words[1])
+            );
+            if (edgeCount > 1)
+            {
+                maskList.push_back(EdgeMask::fromActiveWords(words));
+                edgeCounts.push_back(edgeCount);
+            }
+        }
+    }
+
+    [[gnu::noinline]] void splitWideWithBuffers(
+        vector<EdgeMask> &maskList,
+        vi &edgeCounts,
+        vector<EdgeMask> &tempMaskList
+    )
+    {
+        tempMaskList.clear();
+        componentMaskWords.clear();
+        const size_t edgeWordCount = EdgeMask::activeWordCount();
+        auto setComponentEdge = [&](size_t componentOffset, size_t edge) {
+            componentMaskWords[componentOffset + edge / 64] |=
+                uint64_t{1} << (edge % 64);
+        };
+        auto addTouchedAtom = [&](size_t index) {
+            find(index);
+            const int root = elements[index].parent;
+            int32_t &component = elements[root].component;
+            if (component == -1)
+            {
+                if (componentMaskWords.size() >
+                    static_cast<size_t>(numeric_limits<int32_t>::max()))
+                {
+                    throw length_error("too many residual component words");
+                }
+                component = static_cast<int32_t>(componentMaskWords.size());
+                componentMaskWords.resize(
+                    componentMaskWords.size() + edgeWordCount,
+                    0
+                );
+            }
+            setComponentEdge(component, elements[index].val);
+        };
+        uint64_t atoms = touchedAtomWords[0];
+        while (atoms != 0)
+        {
+            const size_t bitIndex = std::countr_zero(atoms);
+            addTouchedAtom(bitIndex);
+            atoms &= atoms - 1;
+        }
+        uint64_t activeWords = touchedAtomWordMask & ~uint64_t{1};
+        while (activeWords != 0)
+        {
+            const size_t wordIndex = std::countr_zero(activeWords);
+            atoms = touchedAtomWords[wordIndex];
+            while (atoms != 0)
+            {
+                const size_t bitIndex = std::countr_zero(atoms);
+                addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                atoms &= atoms - 1;
+            }
+            activeWords &= activeWords - 1;
+        }
+        if (!touchedWideAtomWordIndices.empty()) [[unlikely]]
+        {
+            if (!is_sorted(
+                touchedWideAtomWordIndices.begin(),
+                touchedWideAtomWordIndices.end()
+            ))
+            {
+                sort(
+                    touchedWideAtomWordIndices.begin(),
+                    touchedWideAtomWordIndices.end()
+                );
+            }
+            for (const size_t wordIndex : touchedWideAtomWordIndices)
+            {
+                atoms = wideTouchedAtomWords[wordIndex - inlineAtomWordCount];
+                while (atoms != 0)
+                {
+                    const size_t bitIndex = std::countr_zero(atoms);
+                    addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                    atoms &= atoms - 1;
+                }
+            }
+        }
         for (size_t i = 0; i < extraVals.size(); i++)
         {
             const size_t root = find(extraVals[i].first);
-            const int component = elements[root].component;
-            tempMaskList[component].set(extraVals[i].second);
+            const int32_t component = elements[root].component;
+            setComponentEdge(component, extraVals[i].second);
         }
-        for (size_t i = 0; i < tempMaskList.size(); i++)
+        for (size_t offset = 0;
+             offset < componentMaskWords.size();
+             offset += edgeWordCount)
         {
-            const int edgeCount = static_cast<int>(tempMaskList[i].count());
+            const uint64_t *words = componentMaskWords.data() + offset;
+            int edgeCount = 0;
+            for (size_t wordIndex = 0; wordIndex < edgeWordCount; wordIndex++)
+            {
+                edgeCount += static_cast<int>(std::popcount(words[wordIndex]));
+            }
             if (edgeCount > 1)
             {
-                maskList.push_back(tempMaskList[i]);
+                maskList.push_back(EdgeMask::fromActiveWords(words));
                 edgeCounts.push_back(edgeCount);
             }
         }

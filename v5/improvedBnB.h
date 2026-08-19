@@ -133,7 +133,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
             if (masks[i][j] != 0)
             {
                 EdgeMask b = 0; b.set(j);
-                potentialDuplicate m(b, i, j);
+                potentialDuplicate m(std::move(b), i, j);
                 dagGenerate(m, stmapVector[0], masks[i], currSize, ordinal, masks.size());
                 if (searchShouldStop()) return 0;
             }
@@ -813,7 +813,12 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     vector<edgeL> removedEdges;
     targetMolecule = preprocessWriteback(mg, removedEdges);
     univEdgeList = targetMolecule.writeEdgeList();
+    // End the persistent mask's lifetime under its old representation before
+    // changing the domain width, then construct its new representation. Other
+    // mask-owning globals were cleared above.
+    std::destroy_at(std::addressof(allEdges));
     EdgeMask::configure(univEdgeList.size());
+    std::construct_at(std::addressof(allEdges));
     AtomMask::configure(targetMolecule.mg.size());
     ufdsMaskWorkspace fragmentationWorkspace(
         targetMolecule.mg.size(),
@@ -827,7 +832,6 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
         fragmentationWorkspace.reuseResidualDecompositions
     );
 #endif
-    allEdges.reset();
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
     assemblyState as;
     as.appendFragment(allEdges, static_cast<int>(univEdgeList.size()));

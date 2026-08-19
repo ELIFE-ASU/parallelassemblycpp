@@ -239,6 +239,55 @@ void testUnsupportedGraphsFallBack()
     assert(canonicalForm(sentinel).empty());
 }
 
+void testWideUfdsSplit()
+{
+    EdgeMask::configure(513);
+    {
+        ufdsSplit splitter;
+        splitter.elements.resize(514);
+        splitter.reset();
+
+        // Insert the high component first and include atom/edge bit 512. The
+        // splitter must still emit components in atom order and reconstruct
+        // the complete nine-word masks without the former fixed arrays.
+        splitter.doubleInsert(512, 513, 512);
+        splitter.insert(511, 512, 511);
+        splitter.doubleInsert(0, 1, 0);
+        splitter.insert(2, 1, 1);
+
+        vector<EdgeMask> masks;
+        vector<EdgeMask> temporaryMasks;
+        vi edgeCounts;
+        splitter.splitWithBuffers(masks, edgeCounts, temporaryMasks);
+
+        assert(masks.size() == 2);
+        assert(edgeCounts == vi({2, 2}));
+        assert(masks[0].count() == 2);
+        assert(masks[0].test(0));
+        assert(masks[0].test(1));
+        assert(masks[1].count() == 2);
+        assert(masks[1].test(511));
+        assert(masks[1].test(512));
+
+        // Reuse the workspace to verify reset clears the sparse wide-word
+        // tracking rather than leaking the preceding high component.
+        splitter.reset();
+        masks.clear();
+        edgeCounts.clear();
+        splitter.doubleInsert(512, 513, 7);
+        splitter.insert(511, 512, 8);
+        splitter.splitWithBuffers(masks, edgeCounts, temporaryMasks);
+        assert(masks.size() == 1);
+        assert(edgeCounts == vi({2}));
+        assert(masks[0].count() == 2);
+        assert(masks[0].test(7));
+        assert(masks[0].test(8));
+        assert(!masks[0].test(511));
+        assert(!masks[0].test(512));
+    }
+    EdgeMask::configure(64);
+}
+
 int main()
 {
     testCentroidForms();
@@ -248,6 +297,7 @@ int main()
     testLongPaths();
     testHighDegreeTree();
     testUnsupportedGraphsFallBack();
+    testWideUfdsSplit();
     clearTreeCanonInterner();
     assert(treeCanonInterner.empty());
     assert(treeCanonAtomInterner.empty());

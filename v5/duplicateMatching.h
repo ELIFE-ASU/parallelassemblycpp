@@ -74,8 +74,8 @@ struct potentialDuplicate
     int idx, fragment;
     potentialDuplicate() = default;
 
-    potentialDuplicate(EdgeMask &_mask, int _fragment, int _idx):
-        mask(_mask), idx(_idx), fragment(_fragment) {}
+    potentialDuplicate(EdgeMask _mask, int _fragment, int _idx):
+        mask(std::move(_mask)), idx(_idx), fragment(_fragment) {}
 };
 
 /**
@@ -105,6 +105,23 @@ struct initialPotentialDuplicate : potentialDuplicate
         atomMask.set(univEdgeList[x].b);
     }
 
+    initialPotentialDuplicate(
+        const initialPotentialDuplicate &parent,
+        size_t edge,
+        size_t atomA,
+        size_t atomB
+    ):
+        potentialDuplicate(
+            parent.mask.withBitSet(edge),
+            parent.fragment,
+            parent.idx
+        ),
+        atomMask(parent.atomMask.withBitSet(atomA)),
+        fragMask(parent.fragMask)
+    {
+        atomMask.set(atomB);
+    }
+
     /**
      * @brief Generate potential matches originating from this fragment and update the DAG
      *
@@ -115,20 +132,19 @@ struct initialPotentialDuplicate : potentialDuplicate
     bool generateDAG(vector<initialPotentialDuplicate> &q, size_t &retainedStateCount,
     vector<initialDagLevel> &tempDag)
     {
-        vector<edgeL> &edgeList = univEdgeList;
         const size_t childLevelIndex = mask.count();
         initialDagLevel &childLevel = tempDag[childLevelIndex];
         vector<dagTransition> *transitions = nullptr;
-        for (size_t i = 0; i < edgeList.size(); i++)
+        for (size_t i = 0; i < univEdgeList.size(); i++)
         {
             if (searchShouldStop()) return false;
-            if ((mask[i] == 0) && (fragMask[i] != 0))
+            if (!mask[i] && fragMask[i])
             {
-                const size_t atomA = edgeList[i].a;
-                const size_t atomB = edgeList[i].b;
+                const size_t atomA = univEdgeList[i].a;
+                const size_t atomB = univEdgeList[i].b;
                 if (atomMask[atomA] || atomMask[atomB])
                 {
-                    EdgeMask tempMask = mask; tempMask.set(i);
+                    EdgeMask tempMask = mask.withBitSet(i);
                     const initialDagInsertion insertion =
                         tryRetainInitialDagMask(
                             childLevel,
@@ -148,11 +164,8 @@ struct initialPotentialDuplicate : potentialDuplicate
                     )
                         return false;
 
-                    initialPotentialDuplicate g = *this;
-                    g.mask.set(i);
-                    g.atomMask.set(atomA);
-                    g.atomMask.set(atomB);
-                    q.push_back(g);
+                    initialPotentialDuplicate g(*this, i, atomA, atomB);
+                    q.push_back(std::move(g));
                     if (transitions == nullptr)
                     {
                         transitions = &tempDag[childLevelIndex - 1]
@@ -174,10 +187,16 @@ struct initialPotentialDuplicate : potentialDuplicate
 struct validMatchings
 {
     /// @brief first and second duplicate masks
-    EdgeMask first, second;
+    const EdgeMask &first, &second;
     /// @brief frag1 and frag2 index first and second; maxFragSize is their maximum size
     int frag1, frag2, maxFragSize;
-    validMatchings(EdgeMask &_first, EdgeMask &_second, int _frag1, int _frag2, int _maxFragSize):
+    validMatchings(
+        const EdgeMask &_first,
+        const EdgeMask &_second,
+        int _frag1,
+        int _frag2,
+        int _maxFragSize
+    ):
     first(_first), second(_second), frag1(_frag1), frag2(_frag2), maxFragSize(_maxFragSize){}
 };
 
@@ -192,16 +211,16 @@ struct duplicateSet
     vector<potentialDuplicate> list;
     duplicateSet(size_t _size, size_t fragments)
     {
-        size = _size; maskList.resize(fragments, 0);
+        size = _size; maskList.resize(fragments);
     }
 
     /**
      * @brief Insert a potential duplicate into the list
      */
-    void insert(const potentialDuplicate &m)
+    void insert(potentialDuplicate m)
     {
-        list.push_back(m);
         maskList[m.fragment] |= m.mask;
+        list.push_back(std::move(m));
     }
 
     /**
@@ -394,15 +413,18 @@ bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, EdgeMa
             dagNode &dn = DAG[size][transition.childIndex];
             if (dn.ix <= ordinal)
             {
-                potentialDuplicate child = d;
-                child.mask.set(transition.addedEdge);
+                potentialDuplicate child(
+                    d.mask.withBitSet(transition.addedEdge),
+                    d.fragment,
+                    d.idx
+                );
                 child.idx = transition.childIndex;
                 auto entry = stmap.try_emplace(
                     dn.ix,
                     size + 1,
                     frags
                 ).first;
-                entry->second.insert(child);
+                entry->second.insert(std::move(child));
             }
             else overweight = 1;
         }
