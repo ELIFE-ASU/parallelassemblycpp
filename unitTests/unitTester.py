@@ -925,6 +925,78 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
+        for enum_limit, expected_index, expect_limit_status in (
+            (86, 12, True),
+            (87, 8, False),
+        ):
+            case_directory = (
+                working_directory / f"enum-deep-boundary-{enum_limit}"
+            )
+            case_directory.mkdir()
+            shutil.copy2(
+                TEST_DIRECTORY / "113.mol",
+                case_directory / "input.mol",
+            )
+            completed = run_cli_command(
+                executable,
+                ["input.mol", "--pathway=0", f"--enum-max={enum_limit}"],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"deep enum boundary {enum_limit} should return a best result",
+                completed,
+            )
+            output_path = case_directory / "inputOut"
+            output_lines = output_path.read_text().splitlines()
+            require_cli(
+                read_first_line_assembly_index(output_path) == expected_index,
+                f"deep enum boundary {enum_limit} returned the wrong index",
+                completed,
+            )
+            require_cli(
+                ("status: enumeration limit reached" in output_lines)
+                == expect_limit_status,
+                f"deep enum boundary {enum_limit} enforced the wrong state cap",
+                completed,
+            )
+            scenarios += 1
+
+        # Construct and consume a DAG that crosses the first 64-bit mask word.
+        wide_edge_count = 65
+        wide_graph = "\n".join(
+            (
+                "wide-path",
+                str(wide_edge_count + 1),
+                " ".join(
+                    f"{vertex} {vertex + 1}"
+                    for vertex in range(1, wide_edge_count + 1)
+                ),
+                " ".join("C" for _ in range(wide_edge_count + 1)),
+                " ".join("1" for _ in range(wide_edge_count)),
+                "",
+            )
+        )
+        wide_directory = working_directory / "wide-initial-dag"
+        wide_directory.mkdir()
+        (wide_directory / "input").write_text(wide_graph)
+        completed = run_cli_command(
+            executable,
+            ["input", "--pathway=0"],
+            wide_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "the 65-edge initial DAG scenario should succeed",
+            completed,
+        )
+        require_cli(
+            read_first_line_assembly_index(wide_directory / "inputOut") == 7,
+            "the 65-edge initial DAG scenario returned the wrong index",
+            completed,
+        )
+        scenarios += 1
+
         output_failure_cases = [
             (
                 "pathway-output-failure",

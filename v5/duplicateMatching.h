@@ -1,11 +1,14 @@
-using initialDagLevel =
-    std::unordered_map<EdgeMask, pair<int, vector<EdgeMask> > >;
-
 enum class initialDagInsertionResult
 {
     existing,
     retained,
     limitReached
+};
+
+struct initialDagInsertion
+{
+    initialDagInsertionResult result;
+    int index = -1;
 };
 
 /**
@@ -14,26 +17,31 @@ enum class initialDagInsertionResult
  * The level map is both the state store and the uniqueness index. A rejected
  * insertion is erased by iterator so its mask is not hashed a second time.
  */
-initialDagInsertionResult tryRetainInitialDagMask(
+initialDagInsertion tryRetainInitialDagMask(
     initialDagLevel &level,
     const EdgeMask &mask,
-    size_t &retainedStateCount,
-    int canonicalIndex = 0
+    size_t &retainedStateCount
 )
 {
+    const size_t proposedIndex = level.size();
     auto [insertion, inserted] = level.try_emplace(mask);
-    if (!inserted) return initialDagInsertionResult::existing;
+    if (!inserted) return {initialDagInsertionResult::existing};
 
     const size_t limit = ENUM_MAX > 0 ? static_cast<size_t>(ENUM_MAX) : 0;
     if (retainedStateCount >= limit)
     {
         level.erase(insertion);
         enumerationLimitReached = true;
-        return initialDagInsertionResult::limitReached;
+        return {initialDagInsertionResult::limitReached};
+    }
+    if (proposedIndex > static_cast<size_t>(numeric_limits<int>::max()))
+    {
+        level.erase(insertion);
+        throw length_error("initial DAG level exceeds index capacity");
     }
     ++retainedStateCount;
-    insertion->second.first = canonicalIndex;
-    return initialDagInsertionResult::retained;
+    insertion->second.index = static_cast<int>(proposedIndex);
+    return {initialDagInsertionResult::retained, insertion->second.index};
 }
 
 /**
@@ -91,7 +99,7 @@ struct initialPotentialDuplicate : potentialDuplicate
         vector<edgeL> &edgeList = univEdgeList;
         const size_t childLevelIndex = mask.count();
         initialDagLevel &childLevel = tempDag[childLevelIndex];
-        vector<EdgeMask> *adjList = nullptr;
+        vector<dagTransition> *transitions = nullptr;
         for (size_t i = 0; i < edgeList.size(); i++)
         {
             if (searchShouldStop()) return false;
@@ -102,15 +110,23 @@ struct initialPotentialDuplicate : potentialDuplicate
                 if (atomMask[atomA] || atomMask[atomB])
                 {
                     EdgeMask tempMask = mask; tempMask.set(i);
-                    const initialDagInsertionResult insertion =
+                    const initialDagInsertion insertion =
                         tryRetainInitialDagMask(
                             childLevel,
                             tempMask,
                             retainedStateCount
                         );
-                    if (insertion == initialDagInsertionResult::existing)
+                    // The initial DAG is a first-discovery forest. An existing
+                    // state already has its one retained parent transition.
+                    if (
+                        insertion.result ==
+                        initialDagInsertionResult::existing
+                    )
                         continue;
-                    if (insertion == initialDagInsertionResult::limitReached)
+                    if (
+                        insertion.result ==
+                        initialDagInsertionResult::limitReached
+                    )
                         return false;
 
                     initialPotentialDuplicate g = *this;
@@ -118,13 +134,13 @@ struct initialPotentialDuplicate : potentialDuplicate
                     g.atomMask.set(atomA);
                     g.atomMask.set(atomB);
                     q.push_back(g);
-                    if (adjList == nullptr)
+                    if (transitions == nullptr)
                     {
-                        adjList = &tempDag[childLevelIndex - 1]
+                        transitions = &tempDag[childLevelIndex - 1]
                             .at(mask)
-                            .second;
+                            .transitions;
                     }
-                    adjList->push_back(g.mask);
+                    transitions->emplace_back(insertion.index, i);
                 }
             }
         }

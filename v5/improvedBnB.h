@@ -24,14 +24,13 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             if (masks[i][j] != 0)
             {
                 EdgeMask b = 0; b.set(j);
-                const initialDagInsertionResult insertion =
+                const initialDagInsertion insertion =
                     tryRetainInitialDagMask(
                         tempDag[0],
                         b,
-                        retainedStateCount,
-                        -1
+                        retainedStateCount
                     );
-                if (insertion == initialDagInsertionResult::limitReached)
+                if (insertion.result == initialDagInsertionResult::limitReached)
                     return false;
             }
         }
