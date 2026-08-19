@@ -89,16 +89,17 @@ cautiously when a suite contains millisecond-scale cases.
 JSON schema version 2 retains every timed sample, case metadata, aggregate
 summaries, the deterministic schedule, platform information, executable
 fingerprints, and optional candidate telemetry. Telemetry includes the raw
-processed graph size, retained masks, matching visits, canonicalisation and VF2
-calls, canonical/residual/assembly/pair-bound cache rates, and absolute resident
-peak memory for setup, initial enumeration, DAG conversion, assembly search,
-and output. A cache rate is `null` when no lookup occurred.
+processed graph size, retained masks, matching visits, canonicalisation activity,
+legacy VF2 counters, canonical/residual/assembly/pair-bound cache rates, and
+absolute resident peak memory for setup, initial enumeration, DAG conversion,
+assembly search, and output. A cache rate is `null` when no lookup occurred.
 
 `retained_masks` counts unique initial-DAG masks accepted within the enumeration
 limit, including one-edge roots. `matching_visits` counts valid materialised
 duplicate pairs delivered to the search visitor. `canonicalisation_calls`
-includes canonical-mask cache hits, while `vf2_calls` counts actual exact graph
-isomorphism invocations. The residual lookup hit rate excludes first-occurrence,
+includes canonical-mask cache hits. `vf2_calls` and `vf2_matches` are retained for
+schema compatibility and remain zero now that exact cyclic canonical codes replace
+VF2. The residual lookup hit rate excludes first-occurrence,
 small-residual, and disabled-cache bypasses; the request hit rate includes them.
 Wide caches sample up to 6,144 residuals and return to direct decomposition when
 no hit demonstrates reuse, so unique workloads do not keep paying lookup cost.

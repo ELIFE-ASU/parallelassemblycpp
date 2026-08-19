@@ -1485,12 +1485,46 @@ def run_tree_canon_unit_tests(compiler: str) -> None:
         print("Tree canon tests: passed", flush=True)
 
 
+def run_cyclic_canon_unit_tests(compiler: str) -> None:
+    command_prefix = compiler_command(compiler)
+    with tempfile.TemporaryDirectory(prefix="assemblycpp-cyclic-canon-tests-") as directory:
+        test_executable = Path(directory) / "cyclicCanonTester"
+        command = [
+            *command_prefix,
+            str(TEST_DIRECTORY / "cyclicCanonTester.cpp"),
+            "-std=c++23",
+            "-O2",
+            "-mpopcnt",
+            "-march=x86-64-v3",
+        ]
+        conda_prefix = os.environ.get("CONDA_PREFIX")
+        if conda_prefix:
+            command.append(f"-I{Path(conda_prefix) / 'include'}")
+        command.extend(["-o", str(test_executable)])
+        print(f"Building cyclic canon tests: {shlex.join(command)}", flush=True)
+        completed = subprocess.run(command, check=False)
+        if completed.returncode != 0:
+            raise TestConfigurationError(
+                "cyclic canon test build failed with exit code "
+                f"{completed.returncode}"
+            )
+
+        completed = subprocess.run([str(test_executable)], check=False)
+        if completed.returncode != 0:
+            raise TestConfigurationError(
+                "cyclic canon tests failed with exit code "
+                f"{completed.returncode}"
+            )
+        print("Cyclic canon tests: passed", flush=True)
+
+
 def build_executable(executable: Path, compiler: str) -> Path:
     executable = executable.resolve()
     executable.parent.mkdir(parents=True, exist_ok=True)
 
     run_mask_unit_tests(compiler)
     run_tree_canon_unit_tests(compiler)
+    run_cyclic_canon_unit_tests(compiler)
     command_prefix = compiler_command(compiler)
 
     command = [

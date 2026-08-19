@@ -11,7 +11,6 @@ struct triple
 
 int ENUM_MAX = 50000000;
 
-std::unordered_map<string, int> atypeHash;
 string moleculeName;
 EdgeMask allEdges;
 #ifdef _WIN32

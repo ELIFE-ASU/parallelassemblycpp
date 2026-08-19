@@ -25,8 +25,6 @@ using namespace std;
 using vi = vector<int>;
 using vb = vector<bool>;
 using pii = pair<int, int>;
-constexpr int HASH_DEPTH_MAX = 7;
-
 #include "activeWordMask.h"
 
 constexpr int ceilLog2(int value)
@@ -40,10 +38,10 @@ constexpr int ceilLog2(int value)
 #endif
 #include "ufds.h"
 #include "molGraph.h"
-#include "vf2.h"
 #include "molfileParser.h"
 #include "graphio.h"
 #include "treeCanon.h"
+#include "cyclicCanon.h"
 #include "assemblyState.h"
 #include "graphHashes.h"
 #include "dagEnumeration.h"

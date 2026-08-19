@@ -87,7 +87,7 @@ the same argument using `=`. Boolean values must be exactly `0` (disabled) or
 | `--remove-hydrogens=<0\|1>` | Boolean | `1` | Remove explicit hydrogen atoms from molfile inputs before calculation. This has no effect on native graph inputs. |
 | `--compensate-disjoint=<0\|1>` | Boolean | `0` | Subtract one from final and intermediate assembly indices for every component after the first in the processed graph. For molfiles, components are counted after optional hydrogen removal. Empty graphs receive no adjustment. |
 | `--memory-report=<0\|1>` | Boolean | `0` | After the other calculation outputs are written successfully on Linux, write `/proc/self/status`'s peak virtual-memory value (`VmPeak`, in kB) to `memUsage` in the current working directory. The option has no output on other platforms. |
-| `--telemetry=<0\|1>` | Boolean | `0` | In a telemetry-enabled build, write retained-mask and matching counts, canonicalisation/VF2 activity, cache rates, and phase-specific memory to `INPUTTelemetry.json`. |
+| `--telemetry=<0\|1>` | Boolean | `0` | In a telemetry-enabled build, write retained-mask and matching counts, canonicalisation activity, legacy VF2 counters, cache rates, and phase-specific memory to `INPUTTelemetry.json`. The current exact cyclic canonicaliser does not invoke VF2, so those compatibility counters remain zero. |
 | `--write-intermediate-mas=<0\|1>` | Boolean | `0` | Write each newly found best assembly index and its elapsed `std::clock` tick to `INPUTIntermediateMAs`. |
 
 The runtime and enumeration limits can stop an exhaustive search. `INPUTOut`

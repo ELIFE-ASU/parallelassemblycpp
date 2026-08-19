@@ -277,6 +277,80 @@ public:
     }
 };
 
+/** Reused dense source-to-fragment mapping for constructFromEdgeList. */
+struct constructFromEdgeListWorkspace
+{
+    std::vector<int> localVertex;
+    std::vector<std::uint32_t> vertexEpoch;
+    std::uint32_t epoch = 0;
+    std::vector<disjointSetNode> unionNodes;
+
+    void begin(std::size_t sourceVertexCount)
+    {
+        if (localVertex.size() < sourceVertexCount)
+        {
+            localVertex.resize(sourceVertexCount);
+            vertexEpoch.resize(sourceVertexCount, 0);
+        }
+        if (++epoch == 0)
+        {
+            std::fill(vertexEpoch.begin(), vertexEpoch.end(), 0);
+            epoch = 1;
+        }
+        unionNodes.clear();
+    }
+
+    [[nodiscard]] bool contains(std::size_t sourceVertex) const noexcept
+    {
+        return vertexEpoch[sourceVertex] == epoch;
+    }
+
+    [[nodiscard]] int local(std::size_t sourceVertex) const noexcept
+    {
+        return localVertex[sourceVertex];
+    }
+
+    int add(std::size_t sourceVertex, int parent)
+    {
+        const int mapped = static_cast<int>(unionNodes.size());
+        localVertex[sourceVertex] = mapped;
+        vertexEpoch[sourceVertex] = epoch;
+        unionNodes.emplace_back();
+        unionNodes.back().parent = parent < 0 ? mapped : parent;
+        unionNodes.back().rank = 0;
+        return mapped;
+    }
+
+    std::size_t find(std::size_t vertex)
+    {
+        disjointSetNode &node = unionNodes[vertex];
+        if (node.parent != static_cast<int>(vertex))
+            node.parent = static_cast<int>(find(node.parent));
+        return static_cast<std::size_t>(node.parent);
+    }
+
+    bool merge(std::size_t first, std::size_t second)
+    {
+        const std::size_t firstRoot = find(first);
+        const std::size_t secondRoot = find(second);
+        if (firstRoot == secondRoot) return true;
+        if (unionNodes[firstRoot].rank > unionNodes[secondRoot].rank)
+        {
+            unionNodes[secondRoot].parent = static_cast<int>(firstRoot);
+        }
+        else
+        {
+            unionNodes[firstRoot].parent = static_cast<int>(secondRoot);
+            if (unionNodes[firstRoot].rank == unionNodes[secondRoot].rank)
+                ++unionNodes[secondRoot].rank;
+        }
+        return false;
+    }
+};
+
+// The surrounding enumeration engine is process-global and single-threaded.
+inline constructFromEdgeListWorkspace constructEdgeListScratch;
+
 /**
  * @brief construct new molGraph from input molGraph and boolean edgelist
  *
@@ -289,50 +363,50 @@ public:
 molGraph constructFromEdgeList(molGraph &mg, vector<edgeL> &edgeList, 
     EdgeMask &mask, bool &isCyclic)
     {
-        disjointSet u(mg.mg.size());
+        constructEdgeListScratch.begin(mg.mg.size());
         molGraph output;
-        std::unordered_map<int, int> ht;
         isCyclic = 0;
         for (size_t i = 0; i < edgeList.size(); i++)
         {
             if (mask[i] != 0)
             {
                 int a = edgeList[i].a, b = edgeList[i].b, c = 0;
-                if (ht.count(a) == 0 && ht.count(b) == 0)
+                const bool hasA = constructEdgeListScratch.contains(a);
+                const bool hasB = constructEdgeListScratch.contains(b);
+                if (!hasA && !hasB)
                 {
-                    size_t x = ht.size();
-                    ht[a] = x;
+                    const int x = constructEdgeListScratch.add(a, -1);
                     output.addAtom(mg.mg[a].type);
-                    size_t y = ht.size();
-                    ht[b] = y;
+                    constructEdgeListScratch.add(b, x);
                     output.addAtom(mg.mg[b].type);
-                    u.insert(x, x);
-                    u.insert(y, x);
                 }
                 else
                 {
-                    if (ht.count(a) == 0)
+                    if (!hasA)
                     {
-                        size_t x = ht.size();
-                        ht[a] = x;
+                        constructEdgeListScratch.add(
+                            a,
+                            constructEdgeListScratch.local(b)
+                        );
                         output.addAtom(mg.mg[a].type);
-                        u.insert(x, ht[b]);
                     }
                     else c++;
-                    if (ht.count(b) == 0)
+                    if (!hasB)
                     {
-                        size_t x = ht.size();
-                        ht[b] = x;
+                        constructEdgeListScratch.add(
+                            b,
+                            constructEdgeListScratch.local(a)
+                        );
                         output.addAtom(mg.mg[b].type);
-                        u.insert(x, ht[a]);
                     }
                     else c++;
                 }
-                int a2 = ht[a], b2 = ht[b];
+                const int a2 = constructEdgeListScratch.local(a);
+                const int b2 = constructEdgeListScratch.local(b);
                 output.addBond(a2, b2, mg.btype(a, edgeList[i].c));
                 if (c == 2)
                 {
-                    isCyclic |= u.merge(a2, b2);
+                    isCyclic |= constructEdgeListScratch.merge(a2, b2);
                 }
             }
         }

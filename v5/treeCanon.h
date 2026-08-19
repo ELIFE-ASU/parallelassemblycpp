@@ -61,10 +61,12 @@ struct treeCanonSignatureHash
 };
 
 /**
- * IDs only have meaning while these interners are alive. They are reset
- * together with graphHashMap before each assembly calculation.
+ * IDs are opaque and stable within one interner generation. Production
+ * discards graphHashMap before resetting these interners between calculations;
+ * forms from different generations must not be mixed.
  */
 inline std::unordered_map<std::string, treeCanonAtomId> treeCanonAtomInterner;
+inline std::vector<treeCanonNodeId> treeCanonLeafInterner;
 inline std::unordered_map<
     treeCanonSignature,
     treeCanonNodeId,
@@ -75,6 +77,7 @@ void clearTreeCanonInterner()
 {
     treeCanonInterner.clear();
     treeCanonAtomInterner.clear();
+    treeCanonLeafInterner.clear();
 }
 
 treeCanonAtomId internTreeCanonAtom(const std::string &atomType)
@@ -95,8 +98,7 @@ treeCanonNodeId internTreeCanonSignature(treeCanonSignature signature)
 }
 
 treeCanonNodeId internTreeCanonNode(
-    molGraph &mg,
-    int node,
+    treeCanonAtomId atomType,
     std::vector<treeCanonChild> children
 )
 {
@@ -110,10 +112,28 @@ treeCanonNodeId internTreeCanonNode(
             return left.subtree < right.subtree;
         }
     );
-    return internTreeCanonSignature({
+    if (children.empty())
+    {
+        if (treeCanonLeafInterner.size() <= atomType)
+            treeCanonLeafInterner.resize(atomType + 1, 0);
+        treeCanonNodeId &leaf = treeCanonLeafInterner[atomType];
+        if (leaf == 0)
+            leaf = internTreeCanonSignature({atomType, {}});
+        return leaf;
+    }
+    return internTreeCanonSignature({atomType, std::move(children)});
+}
+
+treeCanonNodeId internTreeCanonNode(
+    molGraph &mg,
+    int node,
+    std::vector<treeCanonChild> children
+)
+{
+    return internTreeCanonNode(
         internTreeCanonAtom(mg.mg[node].type),
         std::move(children)
-    });
+    );
 }
 
 /**
@@ -148,7 +168,7 @@ treeCanonForm centroidTreeCanon(molGraph &mg, int n)
     for (std::size_t node = 0; node < nodeCount; node++)
     {
         // X was a legacy deletion sentinel with inconsistent partial-tree
-        // semantics. Exact VF2 comparison is safer for any such input.
+        // semantics. Route such input through exact whole-graph canonicalisation.
         if (mg.mg[node].type == "X") return {};
         remaining++;
         remainingDegree[node] = static_cast<int>(mg.mg[node].list.size());
@@ -159,7 +179,7 @@ treeCanonForm centroidTreeCanon(molGraph &mg, int n)
     while (remaining > 2)
     {
         // A connected acyclic graph always has a leaf. Returning no tree form
-        // safely routes malformed input through the existing VF2 fallback.
+        // safely routes malformed input through exact whole-graph canonicalisation.
         if (leaves.empty()) return {};
         remaining -= leaves.size();
         for (const int leaf : leaves) removed[leaf] = 1;

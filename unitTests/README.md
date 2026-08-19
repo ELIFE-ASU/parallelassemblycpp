@@ -30,10 +30,14 @@ the ordinary CLI and regression checks; telemetry-only checks are detected and
 skipped. Use a separately compiled portable executable on older x86-64 or
 non-x86 systems.
 
-The build path also runs focused active-word mask and iterative tree-
-canonicalisation tests. On Linux the tree tests use a 64 KiB stack and include
-32,766- and 32,767-node labelled paths, preventing recursive traversal from
-returning unnoticed for either centroid shape.
+The build path also runs focused active-word mask, iterative tree-
+canonicalisation, and cyclic-canonicalisation tests. The cyclic tests compare
+the exact coloured-2-core form with VF2 across vertex permutations, atom and
+bond labels, pendant trees, disconnected fallbacks, multiedges, and regular
+graphs that colour refinement alone cannot distinguish. On Linux the tree
+tests use a 64 KiB stack and include 32,766- and 32,767-node labelled paths,
+preventing recursive traversal from returning unnoticed for either centroid
+shape.
 
 Run the manifest and fixture integrity audit with:
 
