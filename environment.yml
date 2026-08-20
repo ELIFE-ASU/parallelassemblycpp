@@ -3,5 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - boost-cpp>=1.80
+  - cmake>=4.3
   - cxx-compiler
+  - ninja
   - python>=3.10

@@ -1,0 +1,113 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Developer build",
+      "description": "Portable optimized build with focused tests and telemetry",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": true,
+        "ASSEMBLYCPP_BUILD_TELEMETRY": true,
+        "ASSEMBLYCPP_FULL_REGRESSION_TESTS": false
+      }
+    },
+    {
+      "name": "ci",
+      "displayName": "Continuous integration build",
+      "description": "Portable release build with the complete regression suite",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": true,
+        "ASSEMBLYCPP_BUILD_TELEMETRY": true,
+        "ASSEMBLYCPP_FULL_REGRESSION_TESTS": true
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Portable release",
+      "description": "Portable release build used for installation and packaging",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": false,
+        "ASSEMBLYCPP_BUILD_TELEMETRY": false,
+        "ASSEMBLYCPP_X86_64_V3": false
+      }
+    },
+    {
+      "name": "performance",
+      "displayName": "x86-64-v3 performance build",
+      "description": "Optimized x86-64-v3 executables with a telemetry sibling",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": false,
+        "ASSEMBLYCPP_BUILD_TELEMETRY": true,
+        "ASSEMBLYCPP_X86_64_V3": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "performance",
+      "configurePreset": "performance"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ],
+  "packagePresets": [
+    {
+      "name": "release",
+      "configurePreset": "release"
+    }
+  ]
+}

@@ -1,8 +1,13 @@
-CMakeLists.txt
 __pycache__/
 *.py[cod]
+/.ruff_cache/
 /unitTests/*Pathway
 /unitTests/*Out
 /.vscode
 /build
+/dist
+/stage
 /unitTests/*MAs
+CMakeUserPresets.json
+memUsage
+*Telemetry.json

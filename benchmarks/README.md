@@ -35,27 +35,37 @@ expectation statuses, missing inputs, and non-integer expected results.
   now grow to the processed graph's width rather than stopping at 512 bits. The
   expectations are provisional benchmark guards.
 
+Build the optimized candidate and telemetry sibling from the repository root:
+
+```bash
+cmake --preset performance
+cmake --build --preset performance
+```
+
 Run the scaling series with:
 
 ```bash
-python benchmarks/benchmark.py --suite scaling
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp --suite scaling
 ```
 
 Collect scaling telemetry with one additional untimed candidate run per case:
 
 ```bash
-python benchmarks/benchmark.py --build --telemetry \
-  --executable build/AssemblyCpp --suite scaling \
+python benchmarks/benchmark.py --telemetry \
+  --executable build/performance/AssemblyCpp \
+  --telemetry-executable build/performance/AssemblyCppTelemetry \
+  --suite scaling \
   --json-output scaling.json
 ```
 
-The build command creates the ordinary timed candidate at the requested path
-and an instrumented sibling with `Telemetry` appended to its name. The
-diagnostic run is performed after all timed rounds and is excluded from
-wall-clock, algorithm-clock, and paired speedup aggregates. In paired mode only
-the separate telemetry executable receives the diagnostic run, so an older
-baseline can still be used for timings. Without `--build`, pass a prebuilt
-instrumented binary with `--telemetry-executable`.
+The `performance` preset creates the ordinary timed candidate and its
+instrumented sibling used above. The diagnostic run is performed after all
+timed rounds and is excluded from wall-clock, algorithm-clock, and paired
+speedup aggregates. In paired mode only the separate telemetry executable
+receives the diagnostic run, so an older baseline can still be used for
+timings. As an alternative, the runner's `--build` option creates both files
+directly at the requested executable path.
 
 The workload column puts atoms, bonds, component counts, cache eligibility, and
 active mask-word counts next to the relevant timing statistics. Algorithm clock

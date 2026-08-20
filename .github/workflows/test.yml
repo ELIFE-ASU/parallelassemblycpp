@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     defaults:
       run:
         shell: bash -el {0}
@@ -28,14 +28,116 @@ jobs:
           channel-priority: strict
           conda-remove-defaults: true
 
-      - name: Audit test data
-        run: python unitTests/unitTester.py --audit
+      - name: Configure
+        run: cmake --preset ci
 
-      - name: Test benchmark tooling
-        run: |
-          python -m unittest discover -s benchmarks -p 'test_*.py'
-          python benchmarks/benchmark.py --list-cases
+      - name: Build
+        run: cmake --build --preset ci
 
-      - name: Build and run regression suite
+      - name: Test
         timeout-minutes: 30
-        run: python unitTests/unitTester.py --build --jobs 2 --timeout 120
+        run: ctest --preset ci
+
+      - name: Build portable package candidate
+        run: |
+          CXX=/usr/bin/g++ CXXFLAGS= LDFLAGS= cmake --preset release
+          cmake --build --preset release
+
+      - name: Verify staged install
+        run: |
+          cmake --install build/release --prefix build/stage
+          build/stage/bin/AssemblyCpp --help
+          if readelf -d build/stage/bin/AssemblyCpp | grep -Eq '\((RPATH|RUNPATH)\)'; then
+            echo 'error: staged executable contains an RPATH or RUNPATH' >&2
+            exit 1
+          fi
+          if readelf -n build/stage/bin/AssemblyCpp | grep -Eq 'x86-64-v[234]'; then
+            echo 'error: portable executable requires an x86-64 microarchitecture level' >&2
+            exit 1
+          fi
+          if ldd build/stage/bin/AssemblyCpp | grep -Fq "$CONDA_PREFIX"; then
+            echo 'error: staged executable resolves a runtime from Conda' >&2
+            exit 1
+          fi
+          python unitTests/unitTester.py build/stage/bin/AssemblyCpp --limit 20
+
+      - name: Verify binary and source packaging
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+          cpack --config build/release/CPackConfig.cmake -B build/packages
+          cpack --config build/release/CPackSourceConfig.cmake -B build/packages
+          (
+            cd build/packages
+            sha256sum -c ./*.sha256
+          )
+          archive=$(find build/packages -maxdepth 1 -name '*-portable.tar.gz' -print -quit)
+          test -n "$archive"
+          if ! tar --numeric-owner -tvzf "$archive" | awk '$2 != "0/0" { exit 1 }'; then
+            echo 'error: binary package ownership is not normalized' >&2
+            exit 1
+          fi
+          if ! tar -tvzf "$archive" | awk '
+            BEGIN { bad = 0 }
+            $1 ~ /^d/ && $1 != "drwxr-xr-x" { bad = 1 }
+            $1 ~ /^-/ && $NF ~ /\/bin\/AssemblyCpp$/ && $1 != "-rwxr-xr-x" { bad = 1 }
+            $1 ~ /^-/ && $NF !~ /\/bin\/AssemblyCpp$/ && $1 != "-rw-r--r--" { bad = 1 }
+            END { exit bad }
+          '; then
+            echo 'error: binary package permissions are not normalized' >&2
+            exit 1
+          fi
+          cmake -E make_directory build/package-smoke
+          cmake -E chdir build/package-smoke cmake -E tar xzf "$GITHUB_WORKSPACE/$archive"
+          packaged_executable=$(find build/package-smoke -type f -path '*/bin/AssemblyCpp' -print -quit)
+          test -n "$packaged_executable"
+          "$packaged_executable" --help
+          if readelf -d "$packaged_executable" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+            echo 'error: packaged executable contains an RPATH or RUNPATH' >&2
+            exit 1
+          fi
+          if readelf -n "$packaged_executable" | grep -Eq 'x86-64-v[234]'; then
+            echo 'error: packaged executable requires an x86-64 microarchitecture level' >&2
+            exit 1
+          fi
+          test "$(stat -c '%a' "$packaged_executable")" = 755
+          python unitTests/unitTester.py "$packaged_executable" --limit 20
+
+          source_archive=$(find build/packages -maxdepth 1 -name '*-source.tar.gz' -print -quit)
+          test -n "$source_archive"
+          if ! tar --numeric-owner -tvzf "$source_archive" | awk '$2 != "0/0" { exit 1 }'; then
+            echo 'error: source package ownership is not normalized' >&2
+            exit 1
+          fi
+          if ! tar -tvzf "$source_archive" | awk '
+            BEGIN { bad = 0 }
+            $1 ~ /^d/ && $1 != "drwxr-xr-x" { bad = 1 }
+            $1 ~ /^-/ && $1 != "-rw-r--r--" { bad = 1 }
+            END { exit bad }
+          '; then
+            echo 'error: source package permissions are not normalized' >&2
+            exit 1
+          fi
+          cmake -E make_directory build/source-package-smoke
+          cmake -E chdir build/source-package-smoke cmake -E tar xzf "$GITHUB_WORKSPACE/$source_archive"
+          source_root=$(find build/source-package-smoke -mindepth 1 -maxdepth 1 -type d -name 'assemblycpp-*-source' -print -quit)
+          test -n "$source_root"
+          test -f "$source_root/CMakeLists.txt"
+          test -f "$source_root/CMakePresets.json"
+          test -f "$source_root/License.md"
+          test ! -e "$source_root/.git"
+          test ! -e "$source_root/.agents"
+          test ! -e "$source_root/.codex"
+          test ! -e "$source_root/build"
+          writable_path=$(find "$source_root" -mindepth 1 -perm /022 -print -quit)
+          if [[ -n "$writable_path" ]]; then
+            echo 'error: source package contains group- or world-writable paths' >&2
+            exit 1
+          fi
+          generated_output=$(find "$source_root/unitTests" -maxdepth 1 -type f \( -name '*Out' -o -name '*Pathway' -o -name '*MAs' -o -name '*Telemetry.json' \) -print -quit)
+          if [[ -n "$generated_output" ]]; then
+            echo 'error: source package contains generated test output' >&2
+            exit 1
+          fi
+          python "$source_root/unitTests/unitTester.py" --audit
+          CXX=/usr/bin/g++ CXXFLAGS= LDFLAGS= cmake -E chdir "$source_root" cmake --preset release
+          cmake -E chdir "$source_root" cmake --build --preset release

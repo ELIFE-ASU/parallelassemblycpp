@@ -9,52 +9,83 @@ School of Chemistry, The University of Glasgow, University Avenue, Glasgow G12 8
 Authors Ian Seet, Leroy Cronin
 
 
-## Build with Conda
+## Build
 
-Install [Miniconda](https://docs.conda.io/projects/miniconda/en/latest/) or another
-Conda distribution, then run the following commands from the repository root:
+AssemblyCpp uses CMake 3.25 or newer, Ninja, and a C++20 compiler. The release
+preset builds a portable CPU baseline by default:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+./build/release/AssemblyCpp --help
+```
+
+Boost is not required for the executable. It is used only by the cyclic
+canonicalisation equivalence test.
+
+For an isolated development environment, install
+[Miniconda](https://docs.conda.io/projects/miniconda/en/latest/) or another
+Conda distribution, then run:
 
 ```bash
 conda env create --file environment.yml
 conda activate assemblycpp-v5
-mkdir -p build
-c++ v5/main.cpp -std=c++23 -O3 -mpopcnt -march=x86-64-v3 \
-  -I"${CONDA_PREFIX}/include" -o build/AssemblyCpp
+cmake --preset release
+cmake --build --preset release
 ```
 
-The generated executable targets x86-64-v3 processors and requires POPCNT
-support. The test and benchmark `--build` commands use the same target. For an
-older x86-64 processor or a non-x86 platform, omit `-mpopcnt` and
-`-march=x86-64-v3` to produce a portable `-O3` build instead.
-
-Search telemetry is compile-time opt-in so ordinary search loops contain no
-counter branches. Build an instrumented executable with:
-
-```bash
-c++ v5/main.cpp -std=c++23 -O3 -mpopcnt -march=x86-64-v3 \
-  -DASSEMBLY_ENABLE_TELEMETRY -I"${CONDA_PREFIX}/include" \
-  -o build/AssemblyCppTelemetry
-```
-
-`--telemetry=1` is available only in an instrumented build; a standard build
-reports it as an unknown option. The test runner's `--build` enables telemetry
-to exercise its schema; the benchmark runner builds a separate instrumented
-sibling when `--build` and `--telemetry` are used together.
-
-The environment installs a C++ compiler, Boost (including the Boost Graph Library),
-and Python for the test runner. Activating it places the Conda-provided compiler
-on `PATH`. Recreate the environment after changing `environment.yml` with:
+The environment provides CMake, Ninja, a C++ compiler, Python, and the Boost
+headers needed by the tests. Recreate it after changing `environment.yml` with:
 
 ```bash
 conda env remove --name assemblycpp-v5
 conda env create --file environment.yml
 ```
 
-To confirm that the executable was built successfully:
+The performance preset preserves the former x86-64-v3 and POPCNT optimization
+as an explicit opt-in. It also builds a separately instrumented executable:
 
 ```bash
-./build/AssemblyCpp --help
+cmake --preset performance
+cmake --build --preset performance
+./build/performance/AssemblyCpp --help
+./build/performance/AssemblyCppTelemetry --help
 ```
+
+Do not run the performance binaries on processors that lack the x86-64-v3
+feature level. Portable and performance builds never mix in the same build
+directory.
+
+Search telemetry is compile-time opt-in so ordinary search loops contain no
+counter branches. `--telemetry=1` is available only in
+`AssemblyCppTelemetry`; the standard executable reports it as an unknown
+option.
+
+### Install and package
+
+Install the portable executable and its documentation to a chosen prefix:
+
+```bash
+cmake --install build/release --prefix build/install
+./build/install/bin/AssemblyCpp --help
+```
+
+Create a platform-specific binary archive and a source archive with SHA-256
+checksum sidecars:
+
+```bash
+cpack --preset release
+cmake --build build/release --target package_source
+```
+
+Create source archives from a clean checkout because CPack packages the working
+tree as well as tracked files.
+
+Binary archive names state the operating system, architecture, and CPU
+baseline. They are still specific to the platform and toolchain used to build
+them; `portable` describes the CPU instruction baseline, not a universal
+binary. CI builds its checked Linux archive on Ubuntu 22.04 with the system
+compiler. Packages include the README and the CC BY-NC 4.0 license.
 
 ## Running AssemblyCpp
 
@@ -147,19 +178,19 @@ exits with status `130`; an output failure still exits with status `1`.
 Calculate a molfile using the defaults:
 
 ```bash
-./build/AssemblyCpp unitTests/alanine.mol
+./build/release/AssemblyCpp unitTests/alanine.mol
 ```
 
 Skip pathway output and lower the enumeration budget:
 
 ```bash
-./build/AssemblyCpp unitTests/alanine --pathway=0 --enum-max=1000000
+./build/release/AssemblyCpp unitTests/alanine --pathway=0 --enum-max=1000000
 ```
 
 Keep explicit hydrogen atoms and write intermediate best values:
 
 ```bash
-./build/AssemblyCpp \
+./build/release/AssemblyCpp \
   --remove-hydrogens=0 \
   --write-intermediate-mas=1 \
   unitTests/alanine.mol
@@ -167,9 +198,27 @@ Keep explicit hydrogen atoms and write intermediate best values:
 
 ## Tests
 
-The test runner checks both mask domains at every 64-bit boundary, compiles the
-executable, checks the command-line interface, and runs the complete regression
-manifest in one command. The CLI checks cover help content, validation errors,
+The default developer preset builds the application, a telemetry sibling, and
+the focused C++ tests. CTest checks both mask domains at every 64-bit boundary,
+preserves the tree canonicaliser's constrained-stack regression, audits test
+and benchmark tooling, checks the command-line interface, and runs a 20-case
+regression sample:
+
+```bash
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+```
+
+Use the CI preset to run all reviewed regression cases:
+
+```bash
+cmake --preset ci
+cmake --build --preset ci
+ctest --preset ci
+```
+
+The CLI checks cover help content, validation errors,
 compatibility names, input ordering, resource-limit
 boundaries, hydrogen removal, disjoint compensation, output toggles and
 failures, and Linux memory reporting. Each calculation runs in an isolated
@@ -177,13 +226,13 @@ temporary directory, so test artifacts do not modify `unitTests/`. Selected
 cases also compare generated pathways with reviewed JSON golden files:
 
 ```bash
-python unitTests/unitTester.py --build --jobs 4
+python unitTests/unitTester.py build/release/AssemblyCpp --jobs 4
 ```
 
 For a quicker development check, limit the number of cases:
 
 ```bash
-python unitTests/unitTester.py --build --limit 20
+python unitTests/unitTester.py build/release/AssemblyCpp --limit 20
 ```
 
 Audit the manifest for duplicate cases, missing fixtures, conflicting
@@ -196,27 +245,34 @@ python unitTests/unitTester.py --audit
 Use `python unitTests/unitTester.py --help` to see all options, including custom
 manifests, per-case timeouts, and verbose output.
 
-GitHub Actions audits the test data and runs the complete regression manifest
-for every push and pull request.
+GitHub Actions builds through CMake, runs the complete regression manifest,
+smoke-tests a staged installation, and generates both package forms for every
+push and pull request.
 
 ## Benchmark
 
 The benchmark runner supports both the original single-input benchmark and
 manifest-driven workload suites. It disables pathway generation, validates
 configured assembly-index expectations on every calculation, and reports
-wall-clock and algorithm clock-tick statistics. The no-argument default remains
-five measured `ketoconazole` runs after one warm-up:
+wall-clock and algorithm clock-tick statistics. The no-argument workload is
+five measured `ketoconazole` runs after one warm-up. Reuse the optimized CMake
+build with:
 
 ```bash
-python benchmarks/benchmark.py --build
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp
 ```
+
+The runner's `--build` option remains available as a direct-compiler shortcut.
 
 Run the reviewed quick corpus for routine development, or the larger reviewed
 corpus before merging an optimization:
 
 ```bash
-python benchmarks/benchmark.py --suite quick
-python benchmarks/benchmark.py --suite full
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp --suite quick
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp --suite full
 ```
 
 Suite cases are run serially in rounds, with the starting case rotated each
@@ -235,7 +291,9 @@ fixtures are not part of the reviewed regression manifest. A one-pass profile
 smoke run is:
 
 ```bash
-python benchmarks/benchmark.py --suite profile --runs 1 --warmup 0
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp \
+  --suite profile --runs 1 --warmup 0
 ```
 
 The `scaling` suite measures a cumulative sequence of two through eight
@@ -243,7 +301,8 @@ disconnected amino-acid components (18 to 68 atoms, 16 to 60 bonds). Its table
 places system size beside wall-time and algorithm clock-tick costs:
 
 ```bash
-python benchmarks/benchmark.py --suite scaling
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp --suite scaling
 ```
 
 Use clock ticks to compare the smallest cases, where fixed process-startup and
@@ -261,7 +320,7 @@ ratios; values greater than one mean the candidate is faster.
 python benchmarks/benchmark.py \
   --suite quick \
   --baseline-executable build/AssemblyCpp-before \
-  --executable build/AssemblyCpp
+  --executable build/performance/AssemblyCpp
 ```
 
 Raw samples, executable SHA-256 fingerprints, platform details, and summaries
@@ -269,6 +328,7 @@ can be retained for later comparison:
 
 ```bash
 python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp \
   --suite quick \
   --json-output benchmark-results.json
 ```
@@ -277,8 +337,10 @@ To reuse an existing build, increase the number of measured runs, or select a
 single different input:
 
 ```bash
-python benchmarks/benchmark.py --runs 10
 python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp --runs 10
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp \
   --input unitTests/sucrose.mol \
   --expected 8
 ```
