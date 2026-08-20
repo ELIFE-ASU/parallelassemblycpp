@@ -81,18 +81,53 @@ unsigned long long elapsedClockTicks()
 /**
  * @brief Cooperatively stop the search once its std::clock budget is spent.
  */
+constexpr size_t searchStopPollInterval = 128;
+static_assert(std::has_single_bit(searchStopPollInterval));
+size_t searchStopPollCountdown = 0;
+size_t searchStopInnerPollCountdown = 0;
+
 bool searchShouldStop()
 {
     if (interruptionRequested()) return true;
     if (runTimeMax == std::numeric_limits<unsigned long long>::max()) return false;
+
+    if (searchStopPollCountdown != 0)
+    {
+        --searchStopPollCountdown;
+        return false;
+    }
+
+    searchStopPollCountdown = searchStopPollInterval - 1;
     if (elapsedClockTicks() < runTimeMax) return false;
 
     runtimeLimitReached = true;
+    searchStopPollCountdown = 0;
     #ifdef _WIN32
         interruptFlag.store(true);
     #else
         interruptFlag = 1;
     #endif
+    return true;
+}
+
+/**
+ * @brief Check cancellation at a bounded cadence inside cheap inner loops.
+ */
+bool searchShouldStopPeriodically()
+{
+    if (searchStopInnerPollCountdown != 0)
+    {
+        --searchStopInnerPollCountdown;
+        return false;
+    }
+
+    searchStopInnerPollCountdown = searchStopPollInterval - 1;
+    // A due inner-loop poll must sample the deadline even if ordinary search
+    // boundaries recently did so.
+    searchStopPollCountdown = 0;
+    if (!searchShouldStop()) return false;
+
+    searchStopInnerPollCountdown = 0;
     return true;
 }
 

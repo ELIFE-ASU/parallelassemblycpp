@@ -18,9 +18,10 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
     // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
     for (size_t i = 0; i < masks.size(); i++)
     {
+        if (searchShouldStop()) return false;
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
-            if (searchShouldStop()) return false;
+            if (searchShouldStopPeriodically()) return false;
             if (masks[i][j] != 0)
             {
                 EdgeMask b = 0; b.set(j);
@@ -39,9 +40,10 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
     // Generate the first multi-edge frontier only after all base states exist.
     for (size_t i = 0; i < masks.size(); i++)
     {
+        if (searchShouldStop()) return false;
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
-            if (searchShouldStop()) return false;
+            if (searchShouldStopPeriodically()) return false;
             if (masks[i][j] == 0) continue;
 
             initialPotentialDuplicate m(j, masks[i], i);
@@ -127,9 +129,10 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
     stmapVector.resize(1);
     for (size_t i = 0; i < masks.size(); i++)
     {
+        if (searchShouldStop()) return 0;
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
-            if (searchShouldStop()) return 0;
+            if (searchShouldStopPeriodically()) return 0;
             if (masks[i][j] != 0)
             {
                 EdgeMask b = 0; b.set(j);
@@ -797,6 +800,8 @@ void initialRecursiveAssemblyWithWorkspace(
 bool improvedBnB(molGraph &mg, ofstream &ofs)
 {
     startTime = clock();
+    searchStopPollCountdown = 0;
+    searchStopInnerPollCountdown = 0;
     runtimeLimitReached = false;
     enumerationLimitReached = false;
     clearPathMap();

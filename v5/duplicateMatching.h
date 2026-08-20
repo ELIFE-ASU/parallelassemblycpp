@@ -137,7 +137,7 @@ struct initialPotentialDuplicate : potentialDuplicate
         vector<dagTransition> *transitions = nullptr;
         for (size_t i = 0; i < univEdgeList.size(); i++)
         {
-            if (searchShouldStop()) return false;
+            if (searchShouldStopPeriodically()) return false;
             if (!mask[i] && fragMask[i])
             {
                 const size_t atomA = univEdgeList[i].a;
@@ -267,7 +267,7 @@ struct duplicateSet
                  secondIndex > firstIndex + 1;)
             {
                 --secondIndex;
-                if (searchShouldStop()) return false;
+                if (searchShouldStopPeriodically()) return false;
                 if (
                     frag == list[secondIndex].fragment &&
                     !list[firstIndex].mask.disjoint(list[secondIndex].mask)
@@ -355,7 +355,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
             int frag = list[i].fragment;
             for (size_t j = i + 1; j < list.size(); j++)
             {
-                if (searchShouldStop()) return output;
+                if (searchShouldStopPeriodically()) return output;
                 if (frag == list[j].fragment)
                 {
                     if (list[i].mask.disjoint(list[j].mask))
@@ -407,7 +407,7 @@ bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, EdgeMa
     const dagNode &parent = DAG[size - 1][d.idx];
     for (const dagTransition &transition : parent.transitions)
     {
-        if (searchShouldStop()) return overweight;
+        if (searchShouldStopPeriodically()) return overweight;
         if (fragment[transition.addedEdge])
         {
             dagNode &dn = DAG[size][transition.childIndex];
@@ -489,7 +489,7 @@ bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap
             int frag = ds.list[i].fragment;
             for (size_t j = i + 1; j < ds.list.size(); j++)
             {
-                if (searchShouldStop()) return output;
+                if (searchShouldStopPeriodically()) return output;
                 if (frag == ds.list[j].fragment)
                 {
                     if (ds.list[i].mask.disjoint(ds.list[j].mask))

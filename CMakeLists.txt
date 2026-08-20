@@ -135,6 +135,12 @@ if(BUILD_TESTING)
   )
   assemblycpp_configure_target(assemblycpp_cyclic_canon_tests)
 
+  add_executable(
+    assemblycpp_search_stop_poll_tests
+    unitTests/searchStopPollTester.cpp
+  )
+  assemblycpp_configure_target(assemblycpp_search_stop_poll_tests)
+
   add_test(
     NAME unit.active-word-mask
     COMMAND assemblycpp_active_word_mask_tests
@@ -156,10 +162,15 @@ if(BUILD_TESTING)
     NAME unit.cyclic-canonicalisation
     COMMAND assemblycpp_cyclic_canon_tests
   )
+  add_test(
+    NAME unit.search-stop-polling
+    COMMAND assemblycpp_search_stop_poll_tests
+  )
   set_tests_properties(
     unit.active-word-mask
     unit.tree-canonicalisation
     unit.cyclic-canonicalisation
+    unit.search-stop-polling
     PROPERTIES LABELS "unit"
   )
 
