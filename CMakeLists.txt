@@ -1,8 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
 
-if(POLICY CMP0167)
-  cmake_policy(SET CMP0167 NEW)
-endif()
 if(POLICY CMP0206)
   cmake_policy(SET CMP0206 NEW)
 endif()
@@ -118,7 +115,6 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
-  find_package(Boost 1.80 REQUIRED)
   find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 
   add_executable(
@@ -137,16 +133,6 @@ if(BUILD_TESTING)
     assemblycpp_cyclic_canon_tests
     unitTests/cyclicCanonTester.cpp
   )
-  if(TARGET Boost::headers)
-    target_link_libraries(assemblycpp_cyclic_canon_tests PRIVATE Boost::headers)
-  elseif(TARGET Boost::boost)
-    target_link_libraries(assemblycpp_cyclic_canon_tests PRIVATE Boost::boost)
-  else()
-    target_include_directories(
-      assemblycpp_cyclic_canon_tests
-      SYSTEM PRIVATE "${Boost_INCLUDE_DIRS}"
-    )
-  endif()
   assemblycpp_configure_target(assemblycpp_cyclic_canon_tests)
 
   add_test(

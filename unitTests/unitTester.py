@@ -1497,9 +1497,6 @@ def run_cyclic_canon_unit_tests(compiler: str) -> None:
             "-mpopcnt",
             "-march=x86-64-v3",
         ]
-        conda_prefix = os.environ.get("CONDA_PREFIX")
-        if conda_prefix:
-            command.append(f"-I{Path(conda_prefix) / 'include'}")
         command.extend(["-o", str(test_executable)])
         print(f"Building cyclic canon tests: {shlex.join(command)}", flush=True)
         completed = subprocess.run(command, check=False)
@@ -1536,9 +1533,6 @@ def build_executable(executable: Path, compiler: str) -> Path:
         "-march=x86-64-v3",
         "-DASSEMBLY_ENABLE_TELEMETRY",
     ]
-    conda_prefix = os.environ.get("CONDA_PREFIX")
-    if conda_prefix:
-        command.append(f"-I{Path(conda_prefix) / 'include'}")
     command.extend(["-o", str(executable)])
 
     print(f"Building: {shlex.join(command)}", flush=True)

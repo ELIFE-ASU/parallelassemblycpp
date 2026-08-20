@@ -347,9 +347,6 @@ def build_executable(
     ]
     if telemetry:
         command.append("-DASSEMBLY_ENABLE_TELEMETRY")
-    conda_prefix = os.environ.get("CONDA_PREFIX")
-    if conda_prefix:
-        command.append(f"-I{Path(conda_prefix) / 'include'}")
     command.extend(["-o", str(executable)])
 
     print(f"Building: {shlex.join(command)}", flush=True)

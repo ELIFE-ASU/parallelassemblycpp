@@ -35,7 +35,6 @@ constexpr int ceilLog2(int value)
 #include "../v5/globalPrimitives.h"
 #include "../v5/ufds.h"
 #include "../v5/molGraph.h"
-#include "../v5/vf2.h"
 #include "../v5/treeCanon.h"
 #include "../v5/cyclicCanon.h"
 #include "../v5/graphHashes.h"
@@ -120,37 +119,190 @@ molGraph makeGraph(
     return result;
 }
 
-molGraphBoost toBoostGraph(molGraph &graph)
+using bondLabelBag = vector<short>;
+using neighbourInvariant = tuple<string, bondLabelBag, bondLabelBag>;
+
+struct exactGraph
 {
-    molGraphBoost result;
-    for (const atom &vertex : graph.mg)
-    {
-        string label = vertex.type;
-        add_vertex(atom_vf2(label), result);
-    }
-    for (size_t first = 0; first < graph.mg.size(); first++)
+    vector<string> labels;
+    vector<vector<bondLabelBag>> bonds;
+    vector<bondLabelBag> incidentBondLabels;
+    vector<vector<neighbourInvariant>> neighbourhoods;
+};
+
+exactGraph describeGraph(const molGraph &graph)
+{
+    const size_t size = graph.mg.size();
+    exactGraph result;
+    result.labels.reserve(size);
+    result.bonds.assign(size, vector<bondLabelBag>(size));
+    result.incidentBondLabels.resize(size);
+    result.neighbourhoods.resize(size);
+
+    for (const atom &vertex : graph.mg) result.labels.push_back(vertex.type);
+    for (size_t first = 0; first < size; first++)
     {
         for (const bond &edge : graph.mg[first].list)
         {
-            if (first < static_cast<size_t>(edge.n))
+            require(
+                edge.n >= 0 && static_cast<size_t>(edge.n) < size,
+                "graph contains an out-of-range bond endpoint"
+            );
+            result.incidentBondLabels[first].push_back(edge.type);
+
+            const size_t second = static_cast<size_t>(edge.n);
+            if (first < second)
             {
-                add_edge(
-                    first,
-                    static_cast<size_t>(edge.n),
-                    static_cast<char>(edge.type),
-                    result
-                );
+                result.bonds[first][second].push_back(edge.type);
+                result.bonds[second][first].push_back(edge.type);
+            }
+            else if (first == second)
+            {
+                // molGraph records both ends of a self-loop in the same list.
+                // Keeping both entries still gives an exact, consistent
+                // multiplicity for comparisons between molGraph instances.
+                result.bonds[first][first].push_back(edge.type);
             }
         }
+        sort(
+            result.incidentBondLabels[first].begin(),
+            result.incidentBondLabels[first].end()
+        );
+    }
+
+    for (size_t first = 0; first < size; first++)
+    {
+        for (size_t second = 0; second < size; second++)
+        {
+            bondLabelBag &labels = result.bonds[first][second];
+            sort(labels.begin(), labels.end());
+            if (labels.empty()) continue;
+            result.neighbourhoods[first].emplace_back(
+                result.labels[second],
+                result.incidentBondLabels[second],
+                labels
+            );
+        }
+        sort(
+            result.neighbourhoods[first].begin(),
+            result.neighbourhoods[first].end()
+        );
     }
     return result;
 }
 
-bool vf2Equivalent(molGraph left, molGraph right)
+bool sameVertexInvariant(
+    const exactGraph &left,
+    size_t leftVertex,
+    const exactGraph &right,
+    size_t rightVertex
+)
 {
-    molGraphBoost leftBoost = toBoostGraph(left);
-    molGraphBoost rightBoost = toBoostGraph(right);
-    return vf2GraphIso(leftBoost, rightBoost);
+    return
+        left.labels[leftVertex] == right.labels[rightVertex] &&
+        left.incidentBondLabels[leftVertex] ==
+            right.incidentBondLabels[rightVertex] &&
+        left.bonds[leftVertex][leftVertex] ==
+            right.bonds[rightVertex][rightVertex] &&
+        left.neighbourhoods[leftVertex] == right.neighbourhoods[rightVertex];
+}
+
+struct exactMatcher
+{
+    const exactGraph &left;
+    const exactGraph &right;
+    vector<vector<size_t>> candidates;
+    vector<int> leftToRight;
+    vector<unsigned char> rightUsed;
+
+    bool pairCompatible(size_t leftVertex, size_t rightVertex) const
+    {
+        for (size_t mappedLeft = 0; mappedLeft < leftToRight.size(); mappedLeft++)
+        {
+            if (leftToRight[mappedLeft] < 0) continue;
+            const size_t mappedRight = static_cast<size_t>(leftToRight[mappedLeft]);
+            if (
+                left.bonds[leftVertex][mappedLeft] !=
+                right.bonds[rightVertex][mappedRight]
+            )
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool search(size_t matched)
+    {
+        if (matched == leftToRight.size()) return true;
+
+        size_t bestLeft = leftToRight.size();
+        vector<size_t> bestRights;
+        size_t bestCount = numeric_limits<size_t>::max();
+
+        for (size_t leftVertex = 0; leftVertex < leftToRight.size(); leftVertex++)
+        {
+            if (leftToRight[leftVertex] >= 0) continue;
+
+            vector<size_t> available;
+            for (size_t rightVertex : candidates[leftVertex])
+            {
+                if (
+                    !rightUsed[rightVertex] &&
+                    pairCompatible(leftVertex, rightVertex)
+                )
+                {
+                    available.push_back(rightVertex);
+                }
+            }
+            if (available.empty()) return false;
+            if (available.size() < bestCount)
+            {
+                bestLeft = leftVertex;
+                bestRights = std::move(available);
+                bestCount = bestRights.size();
+            }
+        }
+
+        require(bestLeft < leftToRight.size(), "exact matcher lost an unmapped vertex");
+        for (size_t rightVertex : bestRights)
+        {
+            leftToRight[bestLeft] = static_cast<int>(rightVertex);
+            rightUsed[rightVertex] = 1;
+            if (search(matched + 1)) return true;
+            rightUsed[rightVertex] = 0;
+            leftToRight[bestLeft] = -1;
+        }
+        return false;
+    }
+};
+
+bool exactlyIsomorphic(const molGraph &leftInput, const molGraph &rightInput)
+{
+    if (leftInput.mg.size() != rightInput.mg.size()) return false;
+
+    const exactGraph left = describeGraph(leftInput);
+    const exactGraph right = describeGraph(rightInput);
+    const size_t size = left.labels.size();
+    vector<vector<size_t>> candidates(size);
+    for (size_t leftVertex = 0; leftVertex < size; leftVertex++)
+    {
+        for (size_t rightVertex = 0; rightVertex < size; rightVertex++)
+        {
+            if (sameVertexInvariant(left, leftVertex, right, rightVertex))
+                candidates[leftVertex].push_back(rightVertex);
+        }
+        if (candidates[leftVertex].empty()) return false;
+    }
+
+    exactMatcher matcher{
+        left,
+        right,
+        std::move(candidates),
+        vector<int>(size, -1),
+        vector<unsigned char>(size, 0)
+    };
+    return matcher.search(0);
 }
 
 vector<edgeSpec> cycleEdges(int size, short bondType = 1)
@@ -423,7 +575,7 @@ vector<namedGraph> makeDifferentialCorpus()
     return corpus;
 }
 
-void testAgainstVf2()
+void testAgainstExactMatcher()
 {
     clearTreeCanonInterner();
     vector<namedGraph> corpus = makeDifferentialCorpus();
@@ -443,16 +595,16 @@ void testAgainstVf2()
         for (size_t right = left; right < corpus.size(); right++)
         {
             const bool canonicalEquivalent = forms[left] == forms[right];
-            const bool vf2Isomorphic = vf2Equivalent(
+            const bool exactlyEquivalent = exactlyIsomorphic(
                 corpus[left].graph,
                 corpus[right].graph
             );
-            if (canonicalEquivalent != vf2Isomorphic)
+            if (canonicalEquivalent != exactlyEquivalent)
             {
                 fail(
                     corpus[left].name + " vs " + corpus[right].name +
                     ": canonical=" + to_string(canonicalEquivalent) +
-                    ", VF2=" + to_string(vf2Isomorphic)
+                    ", exact=" + to_string(exactlyEquivalent)
                 );
             }
             if (canonicalEquivalent)
@@ -490,7 +642,10 @@ void testLargeAttachedTrees()
         originalForm.hash() == permutedForm.hash(),
         "long attached tree hashes differ"
     );
-    require(vf2Equivalent(original, permuted), "VF2 rejected long-tree permutation");
+    require(
+        exactlyIsomorphic(original, permuted),
+        "exact matcher rejected long-tree permutation"
+    );
 
     vector<string> highDegreeLabels(68, "C");
     vector<edgeSpec> highDegreeEdges = cycleEdges(3);
@@ -556,7 +711,7 @@ void testCachedGraphHashIsSelfContained()
 
 int main()
 {
-    testAgainstVf2();
+    testAgainstExactMatcher();
     testLargeAttachedTrees();
     testCachedGraphHashIsSelfContained();
     graphHashMap.clear();

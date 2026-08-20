@@ -20,9 +20,6 @@ cmake --build --preset release
 ./build/release/AssemblyCpp --help
 ```
 
-Boost is not required for the executable. It is used only by the cyclic
-canonicalisation equivalence test.
-
 For an isolated development environment, install
 [Miniconda](https://docs.conda.io/projects/miniconda/en/latest/) or another
 Conda distribution, then run:
@@ -34,8 +31,8 @@ cmake --preset release
 cmake --build --preset release
 ```
 
-The environment provides CMake, Ninja, a C++ compiler, Python, and the Boost
-headers needed by the tests. Recreate it after changing `environment.yml` with:
+The environment provides CMake, Ninja, a C++ compiler, and Python. Recreate it
+after changing `environment.yml` with:
 
 ```bash
 conda env remove --name assemblycpp-v5
