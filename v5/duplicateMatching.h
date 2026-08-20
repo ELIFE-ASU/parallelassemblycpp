@@ -14,8 +14,9 @@ struct initialDagInsertion
 /**
  * @brief Insert one initial-DAG state if it is new and fits the budget.
  *
- * The level map is both the state store and the uniqueness index. A rejected
- * insertion is erased by iterator so its mask is not hashed a second time.
+ * The level hash is the uniqueness index while nodes are stored densely by
+ * first-discovery index. A rejected insertion is erased by iterator so its
+ * mask is not hashed a second time.
  */
 initialDagInsertion tryRetainInitialDagMask(
     initialDagLevel &level,
@@ -27,21 +28,26 @@ initialDagInsertion tryRetainInitialDagMask(
     if (searchTelemetryEnabled) [[unlikely]]
         ++searchTelemetry.counters.retainedMaskAttempts;
 #endif
-    const size_t proposedIndex = level.size();
-    auto [insertion, inserted] = level.try_emplace(mask);
+    const size_t proposedIndex = level.nodes.size();
+    if (proposedIndex > static_cast<size_t>(numeric_limits<int>::max()))
+        throw length_error("initial DAG level exceeds index capacity");
+    auto [insertion, inserted] = level.maskIndices.try_emplace(
+        mask,
+        static_cast<int>(proposedIndex)
+    );
     if (!inserted)
     {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         if (searchTelemetryEnabled) [[unlikely]]
             ++searchTelemetry.counters.duplicateMaskAttempts;
 #endif
-        return {initialDagInsertionResult::existing};
+        return {initialDagInsertionResult::existing, insertion->second};
     }
 
     const size_t limit = ENUM_MAX > 0 ? static_cast<size_t>(ENUM_MAX) : 0;
     if (retainedStateCount >= limit)
     {
-        level.erase(insertion);
+        level.maskIndices.erase(insertion);
         enumerationLimitReached = true;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         if (searchTelemetryEnabled) [[unlikely]]
@@ -49,18 +55,16 @@ initialDagInsertion tryRetainInitialDagMask(
 #endif
         return {initialDagInsertionResult::limitReached};
     }
-    if (proposedIndex > static_cast<size_t>(numeric_limits<int>::max()))
-    {
-        level.erase(insertion);
-        throw length_error("initial DAG level exceeds index capacity");
-    }
+    level.nodes.emplace_back();
     ++retainedStateCount;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]
         ++searchTelemetry.counters.retainedMasks;
 #endif
-    insertion->second.index = static_cast<int>(proposedIndex);
-    return {initialDagInsertionResult::retained, insertion->second.index};
+    return {
+        initialDagInsertionResult::retained,
+        static_cast<int>(proposedIndex)
+    };
 }
 
 /**
@@ -96,10 +100,16 @@ struct initialPotentialDuplicate : potentialDuplicate
      * @param _fragMask Boolean edgelist of the fragment the duplicate is part of
      * @param _fragment Index of the fragment in its assembly state
      */
-    initialPotentialDuplicate(int x, EdgeMask &_fragMask, size_t _fragment)
+    initialPotentialDuplicate(
+        int x,
+        EdgeMask &_fragMask,
+        size_t _fragment,
+        int _idx
+    )
     {
         fragMask = _fragMask;
-        fragment = _fragment;
+        fragment = static_cast<int>(_fragment);
+        idx = _idx;
         mask.set(x);
         atomMask.set(univEdgeList[x].a);
         atomMask.set(univEdgeList[x].b);
@@ -109,12 +119,13 @@ struct initialPotentialDuplicate : potentialDuplicate
         const initialPotentialDuplicate &parent,
         size_t edge,
         size_t atomA,
-        size_t atomB
+        size_t atomB,
+        int _idx
     ):
         potentialDuplicate(
             parent.mask.withBitSet(edge),
             parent.fragment,
-            parent.idx
+            _idx
         ),
         atomMask(parent.atomMask.withBitSet(atomA)),
         fragMask(parent.fragMask)
@@ -134,7 +145,8 @@ struct initialPotentialDuplicate : potentialDuplicate
     {
         const size_t childLevelIndex = mask.count();
         initialDagLevel &childLevel = tempDag[childLevelIndex];
-        vector<dagTransition> *transitions = nullptr;
+        initialDagLevel &parentLevel = tempDag[childLevelIndex - 1];
+        initialDagNode *parentNode = nullptr;
         for (size_t i = 0; i < univEdgeList.size(); i++)
         {
             if (searchShouldStopPeriodically()) return false;
@@ -164,15 +176,57 @@ struct initialPotentialDuplicate : potentialDuplicate
                     )
                         return false;
 
-                    initialPotentialDuplicate g(*this, i, atomA, atomB);
+                    initialPotentialDuplicate g(
+                        *this,
+                        i,
+                        atomA,
+                        atomB,
+                        insertion.index
+                    );
                     q.push_back(std::move(g));
-                    if (transitions == nullptr)
+                    if (parentNode == nullptr)
                     {
-                        transitions = &tempDag[childLevelIndex - 1]
-                            .at(mask)
-                            .transitions;
+                        if (
+                            idx < 0 ||
+                            static_cast<size_t>(idx) >= parentLevel.nodes.size()
+                        )
+                        {
+                            throw logic_error("initial DAG parent is missing");
+                        }
+                        parentNode = &parentLevel.nodes[idx];
+                        if (
+                            parentNode->transitionOffset !=
+                            unassignedDagTransitionOffset
+                        )
+                        {
+                            throw logic_error(
+                                "initial DAG parent was expanded twice"
+                            );
+                        }
+                        if (
+                            parentLevel.transitions.size() >=
+                            numeric_limits<uint32_t>::max()
+                        )
+                        {
+                            throw length_error(
+                                "initial DAG transition table is too large"
+                            );
+                        }
+                        parentNode->transitionOffset = static_cast<uint32_t>(
+                            parentLevel.transitions.size()
+                        );
                     }
-                    transitions->emplace_back(insertion.index, i);
+                    if (
+                        parentNode->transitionCount ==
+                        numeric_limits<uint32_t>::max()
+                    )
+                    {
+                        throw length_error(
+                            "initial DAG node has too many transitions"
+                        );
+                    }
+                    parentLevel.transitions.emplace_back(insertion.index, i);
+                    ++parentNode->transitionCount;
                 }
             }
         }
@@ -430,6 +484,139 @@ struct dagDuplicateSet : duplicateSet<potentialDuplicate>
     using duplicateSet::duplicateSet;
 };
 
+/** @brief One compact canonical-class bucket in an enumeration level. */
+template<typename DuplicateSetType>
+struct duplicateClassEntry
+{
+    int canonicalId;
+    DuplicateSetType duplicates;
+
+    duplicateClassEntry(
+        int _canonicalId,
+        size_t duplicateSize,
+        size_t fragmentCount
+    ):
+        canonicalId(_canonicalId),
+        duplicates(duplicateSize, fragmentCount) {}
+};
+
+/**
+ * @brief Compact duplicate classes, sealed in ascending canonical-ID order.
+ */
+template<typename DuplicateSetType>
+struct duplicateClassLevel
+{
+    vector<duplicateClassEntry<DuplicateSetType>> classes;
+
+    bool empty() const noexcept {return classes.empty();}
+    size_t size() const noexcept {return classes.size();}
+
+    void seal()
+    {
+        if (classes.size() < 2) return;
+        sort(
+            classes.begin(),
+            classes.end(),
+            [](const auto &left, const auto &right)
+            {
+                return left.canonicalId < right.canonicalId;
+            }
+        );
+    }
+};
+
+using initialDuplicateClassLevel = duplicateClassLevel<initialDuplicateSet>;
+using dagDuplicateClassLevel = duplicateClassLevel<dagDuplicateSet>;
+
+/**
+ * @brief Reusable dense canonical-ID lookup for one level being populated.
+ *
+ * The slots contain only primitive positions. Enumeration levels retain
+ * ownership of their buckets while recursive child searches reuse this index.
+ */
+struct duplicateClassIndexWorkspace
+{
+    struct slot
+    {
+        uint32_t generation = 0;
+        uint32_t position = 0;
+    };
+
+    vector<slot> slots;
+    uint32_t generation = 0;
+
+    void beginLevel()
+    {
+        ++generation;
+        if (generation != 0) return;
+        for (slot &entry : slots) entry.generation = 0;
+        generation = 1;
+    }
+
+    template<typename DuplicateSetType>
+    DuplicateSetType &getOrCreate(
+        duplicateClassLevel<DuplicateSetType> &level,
+        int canonicalId,
+        size_t duplicateSize,
+        size_t fragmentCount
+    )
+    {
+        if (generation == 0) [[unlikely]]
+            throw logic_error("duplicate-class level was not started");
+        if (
+            !level.classes.empty() &&
+            level.classes.back().canonicalId == canonicalId
+        ) [[likely]]
+        {
+            return level.classes.back().duplicates;
+        }
+        const size_t id = static_cast<size_t>(canonicalId);
+        if (canonicalId >= 0 && id < slots.size()) [[likely]]
+        {
+            const slot &entry = slots[id];
+            if (entry.generation == generation) [[likely]]
+            {
+                return level.classes[entry.position].duplicates;
+            }
+        }
+        return create(
+            level,
+            canonicalId,
+            duplicateSize,
+            fragmentCount
+        );
+    }
+
+private:
+    template<typename DuplicateSetType>
+    [[gnu::noinline]] DuplicateSetType &create(
+        duplicateClassLevel<DuplicateSetType> &level,
+        int canonicalId,
+        size_t duplicateSize,
+        size_t fragmentCount
+    )
+    {
+        if (generation == 0)
+            throw logic_error("duplicate-class level was not started");
+        if (canonicalId < 0)
+            throw logic_error("negative canonical duplicate class");
+        const size_t id = static_cast<size_t>(canonicalId);
+        if (id >= slots.size()) slots.resize(id + 1);
+        if (level.classes.size() > numeric_limits<uint32_t>::max())
+            throw length_error("duplicate-class level exceeds index capacity");
+
+        slot &entry = slots[id];
+        entry.generation = generation;
+        entry.position = static_cast<uint32_t>(level.classes.size());
+        level.classes.emplace_back(
+            canonicalId,
+            duplicateSize,
+            fragmentCount
+        );
+        return level.classes.back().duplicates;
+    }
+};
+
 /**
  * @brief Generate the next set of duplicates from the duplicate d
  * 
@@ -442,31 +629,45 @@ struct dagDuplicateSet : duplicateSet<potentialDuplicate>
  * @return true if the canonical index of any duplicate is greater than the ordinal
  * @return false otherwise
  */
-bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, EdgeMask &fragment,
-    size_t size, int ordinal, size_t frags)
+bool dagGenerate(
+    potentialDuplicate &d,
+    dagDuplicateClassLevel &stmap,
+    duplicateClassIndexWorkspace &classIndex,
+    EdgeMask &fragment,
+    size_t size,
+    int ordinal,
+    size_t frags
+)
 {
     bool overweight = 0;
-    const dagNode &parent = DAG[size - 1][d.idx];
-    for (const dagTransition &transition : parent.transitions)
+    const dagLevel &parentLevel = DAG[size - 1];
+    const dagNode &parent = parentLevel.nodes[d.idx];
+    if (parent.transitionCount == 0) return overweight;
+    const dagTransition *transition =
+        parentLevel.transitions.data() + parent.transitionOffset;
+    const dagTransition *const transitionEnd =
+        transition + parent.transitionCount;
+    const dagNode *const childNodes = DAG[size].nodes.data();
+    for (; transition != transitionEnd; ++transition)
     {
         if (searchShouldStopPeriodically()) return overweight;
-        if (fragment[transition.addedEdge])
+        if (fragment[transition->addedEdge])
         {
-            dagNode &dn = DAG[size][transition.childIndex];
+            const dagNode &dn = childNodes[transition->childIndex];
             if (dn.ix <= ordinal)
             {
                 potentialDuplicate child(
-                    d.mask.withBitSet(transition.addedEdge),
+                    d.mask.withBitSet(transition->addedEdge),
                     d.fragment,
                     d.idx
                 );
-                child.idx = transition.childIndex;
-                auto entry = stmap.try_emplace(
+                child.idx = transition->childIndex;
+                classIndex.getOrCreate(
+                    stmap,
                     dn.ix,
                     size + 1,
                     frags
-                ).first;
-                entry->second.insert(std::move(child));
+                ).insert(std::move(child));
             }
             else overweight = 1;
         }
@@ -487,8 +688,16 @@ bool dagGenerate(potentialDuplicate &d, map<int, dagDuplicateSet> &stmap, EdgeMa
  * @return true if any valid duplicatable subgraphs found and not the final iteration
  * @return false 
  */
-bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap,
-    vector<EdgeMask> &takenMasks, vector<EdgeMask> &stateMasks, int ordinal, bool &overweight, bool last)
+bool dagDuplicateGenerator(
+    dagDuplicateSet &ds,
+    dagDuplicateClassLevel &stmap,
+    duplicateClassIndexWorkspace &classIndex,
+    vector<EdgeMask> &takenMasks,
+    vector<EdgeMask> &stateMasks,
+    int ordinal,
+    bool &overweight,
+    bool last
+)
     {
         bool output = 0;
         const bool allAlive = ds.occurrencesSpanMultipleFragments();
@@ -504,6 +713,7 @@ bool dagDuplicateGenerator(dagDuplicateSet &ds, map<int, dagDuplicateSet> &stmap
                 overweight |= dagGenerate(
                     duplicate,
                     stmap,
+                    classIndex,
                     stateMasks[frag],
                     ds.size,
                     ordinal,

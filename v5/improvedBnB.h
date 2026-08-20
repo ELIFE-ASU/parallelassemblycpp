@@ -6,13 +6,18 @@
  * @return true if any matchings found
  * @return false if no matchings found
  */
-bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initialDuplicateSet> > &stmapVector)
+bool initialRecursiveEnumeration(
+    assemblyState &_target,
+    vector<initialDuplicateClassLevel> &stmapVector,
+    duplicateClassIndexWorkspace &classIndex
+)
 {
     vector<initialDagLevel> tempDag(2);
     vector<EdgeMask> &masks = _target.masks;
     bool alive = 0;
     size_t currSize = 1;
     vector<initialPotentialDuplicate> prevML;
+    vector<int> rootNodeIndices(univEdgeList.size(), -1);
     size_t retainedStateCount = 0;
 
     // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
@@ -33,6 +38,7 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
                     );
                 if (insertion.result == initialDagInsertionResult::limitReached)
                     return false;
+                rootNodeIndices[j] = insertion.index;
             }
         }
     }
@@ -46,7 +52,14 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
             if (searchShouldStopPeriodically()) return false;
             if (masks[i][j] == 0) continue;
 
-            initialPotentialDuplicate m(j, masks[i], i);
+            if (rootNodeIndices[j] < 0)
+                throw logic_error("initial DAG root was not retained");
+            initialPotentialDuplicate m(
+                j,
+                masks[i],
+                i,
+                rootNodeIndices[j]
+            );
             if (!m.generateDAG(prevML, retainedStateCount, tempDag))
             {
                 return false;
@@ -59,7 +72,8 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
     {
         if (searchShouldStop()) return false;
         stmapVector.emplace_back();
-        map<int, initialDuplicateSet> &stmap = stmapVector.back();
+        initialDuplicateClassLevel &stmap = stmapVector.back();
+        classIndex.beginLevel();
         active = 0;
         vector<initialPotentialDuplicate> currML;
         for (size_t i = 0; i < prevML.size(); i++)
@@ -69,18 +83,19 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
 
             int s = canonise(m.mask);
             if (searchShouldStop()) return false;
-            auto entry = stmap.try_emplace(
+            classIndex.getOrCreate(
+                stmap,
                 s,
                 currSize + 1,
                 masks.size()
-            ).first;
-            entry->second.insert(m);
+            ).insert(m);
         }
+        stmap.seal();
         tempDag.resize(tempDag.size() + 1);
-        for (auto it = stmap.begin(); it != stmap.end(); ++it)
+        for (auto &entry : stmap.classes)
         {
             if (searchShouldStop()) return false;
-            initialDuplicateSet &ss = it->second;
+            initialDuplicateSet &ss = entry.duplicates;
             if (ss.isValid())
             {
                 if (searchShouldStop()) return false;
@@ -116,8 +131,12 @@ bool initialRecursiveEnumeration(assemblyState &_target, vector<map<int, initial
  * @param stmapVector List of generated duplicate pairs
  * @return Maximum duplicate size reached
  */
-int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicateSet> > &stmapVector,
-    vector<vector<EdgeMask> > &targetMasks)
+int dagRecursiveEnumeration(
+    assemblyState &_target,
+    vector<dagDuplicateClassLevel> &stmapVector,
+    vector<vector<EdgeMask>> &targetMasks,
+    duplicateClassIndexWorkspace &classIndex
+)
 {
     if (searchShouldStop()) return 0;
     int ordinal = std::numeric_limits<int>::max();
@@ -127,6 +146,7 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
     size_t currSize = 1;
     
     stmapVector.resize(1);
+    classIndex.beginLevel();
     for (size_t i = 0; i < masks.size(); i++)
     {
         if (searchShouldStop()) return 0;
@@ -137,11 +157,20 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
             {
                 EdgeMask b = 0; b.set(j);
                 potentialDuplicate m(std::move(b), i, j);
-                dagGenerate(m, stmapVector[0], masks[i], currSize, ordinal, masks.size());
+                dagGenerate(
+                    m,
+                    stmapVector[0],
+                    classIndex,
+                    masks[i],
+                    currSize,
+                    ordinal,
+                    masks.size()
+                );
                 if (searchShouldStop()) return 0;
             }
         }
     }
+    stmapVector[0].seal();
     bool active = 1, overweight = 0, last = 0;
     while (active)
     {
@@ -149,18 +178,30 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
         vector<EdgeMask> targetMask(masks.size(), 0);
         active = 0;
         stmapVector.emplace_back();
-        map<int, dagDuplicateSet> &stmap = stmapVector[stmapVector.size() - 2];
-        for (auto it = stmap.begin(); it != stmap.end(); ++it)
+        classIndex.beginLevel();
+        dagDuplicateClassLevel &stmap =
+            stmapVector[stmapVector.size() - 2];
+        for (auto &entry : stmap.classes)
         {
             if (searchShouldStop()) return 0;
-            dagDuplicateSet &ss = it->second;
+            dagDuplicateSet &ss = entry.duplicates;
             if (ss.isValid())
             {
                 if (searchShouldStop()) return 0;
-                active |= dagDuplicateGenerator(ss, stmapVector.back(), targetMask, masks, ordinal, overweight, last);
+                active |= dagDuplicateGenerator(
+                    ss,
+                    stmapVector.back(),
+                    classIndex,
+                    targetMask,
+                    masks,
+                    ordinal,
+                    overweight,
+                    last
+                );
                 if (searchShouldStop()) return 0;
             }
         }
+        stmapVector.back().seal();
         if (overweight) last = 1;
         targetMasks.push_back(targetMask);
         currSize++;
@@ -502,6 +543,7 @@ struct assemblySearchStorage
 {
     scoreOnlyAssemblySearchStorage *scoreOnly = nullptr;
     pathwayAssemblySearchStorage *pathway = nullptr;
+    duplicateClassIndexWorkspace duplicateClassIndex;
 
     bool tracksPath() const noexcept
     {
@@ -917,9 +959,14 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     recordImprovedAssemblyIndex(input, AI, searchStorage);
     if (searchShouldStop()) return;
 
-    vector<map<int, dagDuplicateSet> > stmapVector;
+    vector<dagDuplicateClassLevel> stmapVector;
     vector<vector<EdgeMask> > targetMasks;
-    int maxFragSize = dagRecursiveEnumeration(input, stmapVector, targetMasks);
+    int maxFragSize = dagRecursiveEnumeration(
+        input,
+        stmapVector,
+        targetMasks,
+        searchStorage.duplicateClassIndex
+    );
 
     if (searchShouldStop()) return;
 
@@ -934,15 +981,15 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
-        map<int, dagDuplicateSet> &stmap = stmapVector[j];
+        dagDuplicateClassLevel &stmap = stmapVector[j];
         vector<EdgeMask> stmapMaskList(input.masks.size(), 0);
         vi unrestrictedParentTotals;
         vi pairGenericBoundCache;
         EdgeMask maskM = 0;
-        for (auto it = stmap.begin(); it != stmap.end(); ++it)
+        for (auto &entry : stmap.classes)
         {
             if (searchShouldStop()) return;
-            dagDuplicateSet &ss = it->second;
+            dagDuplicateSet &ss = entry.duplicates;
             if (!ss.dead)
             {
             EdgeMask maskC = 0;
@@ -1229,11 +1276,15 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
     recordImprovedAssemblyIndex(input, AI, searchStorage);
     if (searchShouldStop()) return;
 
-    vector<map<int, initialDuplicateSet> > stmapVector;
+    vector<initialDuplicateClassLevel> stmapVector;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     setSearchTelemetryPhase(SearchTelemetryPhase::initialEnumeration);
 #endif
-    const bool hasInitialMatchings = initialRecursiveEnumeration(input, stmapVector);
+    const bool hasInitialMatchings = initialRecursiveEnumeration(
+        input,
+        stmapVector,
+        searchStorage.duplicateClassIndex
+    );
     if (enumerationLimitReached || searchShouldStop()) return;
 
     if (!hasInitialMatchings) return;
@@ -1245,11 +1296,11 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
-        map<int, initialDuplicateSet> &stmap = stmapVector[j];
-        for (auto it = stmap.begin(); it != stmap.end(); ++it)
+        initialDuplicateClassLevel &stmap = stmapVector[j];
+        for (auto &entry : stmap.classes)
         {
             if (searchShouldStop()) return;
-            initialDuplicateSet &ss = it->second;
+            initialDuplicateSet &ss = entry.duplicates;
             auto matchingVisitor = [&](validMatchings &matching)
             {
                 candidate.clearFragments();
