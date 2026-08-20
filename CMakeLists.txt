@@ -70,7 +70,7 @@ function(assemblycpp_configure_target target)
         # budget in the performance preset.
         target_compile_options(
           ${target}
-          PRIVATE --param=inline-unit-growth=100
+          PRIVATE --param=inline-unit-growth=104
         )
       endif()
     else()

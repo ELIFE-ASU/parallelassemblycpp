@@ -83,55 +83,176 @@ struct potentialDuplicate
 };
 
 /**
+ * @brief Compact atom-to-incident-edge index for frontier expansion.
+ *
+ * A full EdgeMask per atom would use quadratic auxiliary space on sparse
+ * graphs. This CSR index stores the same incidence relation in O(V + E) space
+ * while states carry their own eligible-edge frontier mask.
+ */
+struct initialIncidentEdgeIndex
+{
+    vector<size_t> offsets;
+    vector<uint32_t> edgeIndices;
+    vector<EdgeMask> singleWordMasks;
+
+    initialIncidentEdgeIndex(): offsets(AtomMask::size() + 1, 0)
+    {
+        if (
+            univEdgeList.size() >
+            static_cast<size_t>(numeric_limits<int>::max())
+        )
+        {
+            throw length_error("edge universe exceeds frontier index capacity");
+        }
+
+        // A true per-atom edge mask is both compact and faster when the whole
+        // edge domain fits in one machine word. Wider domains use the sparse
+        // CSR representation below so auxiliary storage remains O(V + E).
+        if (EdgeMask::activeWordCount() <= 1)
+        {
+            singleWordMasks.resize(AtomMask::size());
+            for (size_t edgeIndex = 0;
+                 edgeIndex < univEdgeList.size();
+                 edgeIndex++)
+            {
+                const edgeL &edge = univEdgeList[edgeIndex];
+                validateEndpoint(edge.a);
+                validateEndpoint(edge.b);
+                singleWordMasks[edge.a].set(edgeIndex);
+                if (edge.b != edge.a)
+                    singleWordMasks[edge.b].set(edgeIndex);
+            }
+            return;
+        }
+
+        for (const edgeL &edge : univEdgeList)
+        {
+            validateEndpoint(edge.a);
+            validateEndpoint(edge.b);
+            ++offsets[static_cast<size_t>(edge.a) + 1];
+            if (edge.b != edge.a)
+                ++offsets[static_cast<size_t>(edge.b) + 1];
+        }
+        for (size_t atom = 1; atom < offsets.size(); atom++)
+            offsets[atom] += offsets[atom - 1];
+
+        edgeIndices.resize(offsets.back());
+        vector<size_t> next = offsets;
+        for (size_t edgeIndex = 0; edgeIndex < univEdgeList.size(); edgeIndex++)
+        {
+            const edgeL &edge = univEdgeList[edgeIndex];
+            const size_t atomA = static_cast<size_t>(edge.a);
+            const size_t atomB = static_cast<size_t>(edge.b);
+            edgeIndices[next[atomA]++] = static_cast<uint32_t>(edgeIndex);
+            if (edge.b != edge.a)
+                edgeIndices[next[atomB]++] = static_cast<uint32_t>(edgeIndex);
+        }
+    }
+
+    [[gnu::noinline]] void addEligibleEdges(
+        size_t atomA,
+        size_t atomB,
+        const EdgeMask &fragmentMask,
+        const EdgeMask &selectedMask,
+        EdgeMask &frontier
+    ) const
+    {
+        if (atomA + 1 >= offsets.size() || atomB + 1 >= offsets.size())
+            throw logic_error("frontier atom is outside the incidence index");
+        if (!singleWordMasks.empty())
+        {
+            frontier |= singleWordMasks[atomA];
+            if (atomB != atomA) frontier |= singleWordMasks[atomB];
+            frontier &= fragmentMask;
+            frontier &= ~selectedMask;
+            return;
+        }
+        addEligibleEdges(atomA, fragmentMask, selectedMask, frontier);
+        if (atomB != atomA)
+            addEligibleEdges(atomB, fragmentMask, selectedMask, frontier);
+    }
+
+private:
+    void addEligibleEdges(
+        size_t atom,
+        const EdgeMask &fragmentMask,
+        const EdgeMask &selectedMask,
+        EdgeMask &frontier
+    ) const
+    {
+        for (size_t position = offsets[atom];
+             position < offsets[atom + 1];
+             position++)
+        {
+            const size_t edge = edgeIndices[position];
+            if (fragmentMask[edge] && !selectedMask[edge]) frontier.set(edge);
+        }
+    }
+
+    void validateEndpoint(short endpoint) const
+    {
+        if (
+            endpoint < 0 ||
+            static_cast<size_t>(endpoint) + 1 >= offsets.size()
+        )
+        {
+            throw logic_error("edge endpoint is outside the atom domain");
+        }
+    }
+};
+
+/**
  * @brief Struct for storing a potential duplicate during the initial enumeration before the construction of the DAG
  *
  */
 struct initialPotentialDuplicate : potentialDuplicate
 {
-    /// mask representing presence of specific atoms in the potential duplicate
-    AtomMask atomMask = 0;
-    /// mask representing the edge list of the parent fragment
-    EdgeMask fragMask = 0;
+    /// unselected fragment edges incident to at least one selected atom
+    EdgeMask frontier = 0;
 
     /**
      * @brief Construct a new potential Duplicate object
      *
      * @param x edge to be set
-     * @param _fragMask Boolean edgelist of the fragment the duplicate is part of
+     * @param fragmentMask Edge mask of the fragment containing the duplicate
+     * @param incidentEdges Precomputed compact atom-to-edge incidence index
      * @param _fragment Index of the fragment in its assembly state
      */
     initialPotentialDuplicate(
         int x,
-        EdgeMask &_fragMask,
+        const EdgeMask &fragmentMask,
+        const initialIncidentEdgeIndex &incidentEdges,
         size_t _fragment,
         int _idx
     )
     {
-        fragMask = _fragMask;
         fragment = static_cast<int>(_fragment);
         idx = _idx;
         mask.set(x);
-        atomMask.set(univEdgeList[x].a);
-        atomMask.set(univEdgeList[x].b);
+        const size_t atomA = univEdgeList[x].a;
+        const size_t atomB = univEdgeList[x].b;
+        incidentEdges.addEligibleEdges(
+            atomA,
+            atomB,
+            fragmentMask,
+            mask,
+            frontier
+        );
     }
 
     initialPotentialDuplicate(
         const initialPotentialDuplicate &parent,
-        size_t edge,
-        size_t atomA,
-        size_t atomB,
+        EdgeMask childMask,
+        EdgeMask childFrontier,
         int _idx
     ):
         potentialDuplicate(
-            parent.mask.withBitSet(edge),
+            std::move(childMask),
             parent.fragment,
             _idx
         ),
-        atomMask(parent.atomMask.withBitSet(atomA)),
-        fragMask(parent.fragMask)
-    {
-        atomMask.set(atomB);
-    }
+        frontier(std::move(childFrontier))
+    {}
 
     /**
      * @brief Generate potential matches originating from this fragment and update the DAG
@@ -140,94 +261,107 @@ struct initialPotentialDuplicate : potentialDuplicate
      * @param retainedStateCount Number of unique masks currently held in tempDag
      * @param tempDag Temporary DAG populated with generated children
      */
-    bool generateDAG(vector<initialPotentialDuplicate> &q, size_t &retainedStateCount,
-    vector<initialDagLevel> &tempDag)
+    bool generateDAG(
+        vector<initialPotentialDuplicate> &q,
+        size_t &retainedStateCount,
+        vector<initialDagLevel> &tempDag,
+        const EdgeMask &fragmentMask,
+        const initialIncidentEdgeIndex &incidentEdges
+    )
     {
         const size_t childLevelIndex = mask.count();
         initialDagLevel &childLevel = tempDag[childLevelIndex];
         initialDagLevel &parentLevel = tempDag[childLevelIndex - 1];
         initialDagNode *parentNode = nullptr;
-        for (size_t i = 0; i < univEdgeList.size(); i++)
+        constexpr size_t frontierWordBits =
+            numeric_limits<unsigned long long>::digits;
+        for (size_t wordIndex = 0;
+             wordIndex < EdgeMask::activeWordCount();
+             wordIndex++)
         {
-            if (searchShouldStopPeriodically()) return false;
-            if (!mask[i] && fragMask[i])
+            unsigned long long frontierWord = frontier.activeWord(wordIndex);
+            while (frontierWord != 0)
             {
+                const size_t i = wordIndex * frontierWordBits +
+                    static_cast<size_t>(std::countr_zero(frontierWord));
+                frontierWord &= frontierWord - 1;
+                if (searchShouldStopPeriodically()) return false;
                 const size_t atomA = univEdgeList[i].a;
                 const size_t atomB = univEdgeList[i].b;
-                if (atomMask[atomA] || atomMask[atomB])
-                {
-                    EdgeMask tempMask = mask.withBitSet(i);
-                    const initialDagInsertion insertion =
-                        tryRetainInitialDagMask(
-                            childLevel,
-                            tempMask,
-                            retainedStateCount
-                        );
-                    // The initial DAG is a first-discovery forest. An existing
-                    // state already has its one retained parent transition.
-                    if (
-                        insertion.result ==
-                        initialDagInsertionResult::existing
-                    )
-                        continue;
-                    if (
-                        insertion.result ==
-                        initialDagInsertionResult::limitReached
-                    )
-                        return false;
-
-                    initialPotentialDuplicate g(
-                        *this,
-                        i,
-                        atomA,
-                        atomB,
-                        insertion.index
+                EdgeMask tempMask = mask.withBitSet(i);
+                const initialDagInsertion insertion =
+                    tryRetainInitialDagMask(
+                        childLevel,
+                        tempMask,
+                        retainedStateCount
                     );
-                    q.push_back(std::move(g));
-                    if (parentNode == nullptr)
+                // The initial DAG is a first-discovery forest. An existing
+                // state already has its one retained parent transition.
+                if (insertion.result == initialDagInsertionResult::existing)
+                    continue;
+                if (insertion.result == initialDagInsertionResult::limitReached)
+                    return false;
+
+                EdgeMask childFrontier = frontier;
+                childFrontier.reset(i);
+                incidentEdges.addEligibleEdges(
+                    atomA,
+                    atomB,
+                    fragmentMask,
+                    tempMask,
+                    childFrontier
+                );
+
+                initialPotentialDuplicate g(
+                    *this,
+                    std::move(tempMask),
+                    std::move(childFrontier),
+                    insertion.index
+                );
+                q.push_back(std::move(g));
+                if (parentNode == nullptr)
+                {
+                    if (
+                        idx < 0 ||
+                        static_cast<size_t>(idx) >= parentLevel.nodes.size()
+                    )
                     {
-                        if (
-                            idx < 0 ||
-                            static_cast<size_t>(idx) >= parentLevel.nodes.size()
-                        )
-                        {
-                            throw logic_error("initial DAG parent is missing");
-                        }
-                        parentNode = &parentLevel.nodes[idx];
-                        if (
-                            parentNode->transitionOffset !=
-                            unassignedDagTransitionOffset
-                        )
-                        {
-                            throw logic_error(
-                                "initial DAG parent was expanded twice"
-                            );
-                        }
-                        if (
-                            parentLevel.transitions.size() >=
-                            numeric_limits<uint32_t>::max()
-                        )
-                        {
-                            throw length_error(
-                                "initial DAG transition table is too large"
-                            );
-                        }
-                        parentNode->transitionOffset = static_cast<uint32_t>(
-                            parentLevel.transitions.size()
+                        throw logic_error("initial DAG parent is missing");
+                    }
+                    parentNode = &parentLevel.nodes[idx];
+                    if (
+                        parentNode->transitionOffset !=
+                        unassignedDagTransitionOffset
+                    )
+                    {
+                        throw logic_error(
+                            "initial DAG parent was expanded twice"
                         );
                     }
                     if (
-                        parentNode->transitionCount ==
+                        parentLevel.transitions.size() >=
                         numeric_limits<uint32_t>::max()
                     )
                     {
                         throw length_error(
-                            "initial DAG node has too many transitions"
+                            "initial DAG transition table is too large"
                         );
                     }
-                    parentLevel.transitions.emplace_back(insertion.index, i);
-                    ++parentNode->transitionCount;
+                    parentNode->transitionOffset = static_cast<uint32_t>(
+                        parentLevel.transitions.size()
+                    );
                 }
+                if (
+                    parentNode->transitionCount ==
+                    numeric_limits<uint32_t>::max()
+                )
+                {
+                    throw length_error(
+                        "initial DAG node has too many transitions"
+                    );
+                }
+                parentLevel.transitions.emplace_back(insertion.index, i);
+                ++parentNode->transitionCount;
             }
         }
         return true;
@@ -421,7 +555,9 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
      */
     bool dagPopulator(vector<initialPotentialDuplicate> &q, 
     size_t &retainedStateCount,
-    vector<initialDagLevel> &tempDag)
+    vector<initialDagLevel> &tempDag,
+    const vector<EdgeMask> &fragmentMasks,
+    const initialIncidentEdgeIndex &incidentEdges)
     {
         bool output = 0;
         const bool allAlive = occurrencesSpanMultipleFragments();
@@ -429,8 +565,18 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
 
         auto populateDAG = [&](initialPotentialDuplicate &duplicate)
         {
-            if (!duplicate.generateDAG(q, retainedStateCount, tempDag))
-                return false;
+            const bool completed = duplicate.generateDAG(
+                q,
+                retainedStateCount,
+                tempDag,
+                fragmentMasks[duplicate.fragment],
+                incidentEdges
+            );
+            // Each retained initial occurrence is expanded at most once. Its
+            // frontier is not needed by matching, so release the wide mask for
+            // reuse while keeping the occurrence mask and fragment identity.
+            duplicate.frontier.reset();
+            if (!completed) return false;
             output = 1;
             return true;
         };
@@ -470,6 +616,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
             {
                 if (!populateDAG(list[i])) return output;
             }
+            else list[i].frontier.reset();
         }
         return output;
     }

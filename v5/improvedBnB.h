@@ -14,6 +14,7 @@ bool initialRecursiveEnumeration(
 {
     vector<initialDagLevel> tempDag(2);
     vector<EdgeMask> &masks = _target.masks;
+    const initialIncidentEdgeIndex incidentEdges;
     bool alive = 0;
     size_t currSize = 1;
     vector<initialPotentialDuplicate> prevML;
@@ -57,10 +58,17 @@ bool initialRecursiveEnumeration(
             initialPotentialDuplicate m(
                 j,
                 masks[i],
+                incidentEdges,
                 i,
                 rootNodeIndices[j]
             );
-            if (!m.generateDAG(prevML, retainedStateCount, tempDag))
+            if (!m.generateDAG(
+                prevML,
+                retainedStateCount,
+                tempDag,
+                masks[i],
+                incidentEdges
+            ))
             {
                 return false;
             }
@@ -88,7 +96,7 @@ bool initialRecursiveEnumeration(
                 s,
                 currSize + 1,
                 masks.size()
-            ).insert(m);
+            ).insert(std::move(m));
         }
         stmap.seal();
         tempDag.resize(tempDag.size() + 1);
@@ -103,7 +111,9 @@ bool initialRecursiveEnumeration(
                 alive |= ss.dagPopulator(
                     currML,
                     retainedStateCount,
-                    tempDag
+                    tempDag,
+                    masks,
+                    incidentEdges
                 );
                 if (enumerationLimitReached)
                 {
