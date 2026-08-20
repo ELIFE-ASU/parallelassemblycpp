@@ -245,6 +245,7 @@ bool maxMemoryUsage(const string& outputFilename)
 
 int main(int argc, char** argv)
 {
+    ios::sync_with_stdio(false);
     #ifdef _WIN32
         static_cast<void>(SetConsoleCtrlHandler((PHANDLER_ROUTINE)CtrlHandler, TRUE));
     #else

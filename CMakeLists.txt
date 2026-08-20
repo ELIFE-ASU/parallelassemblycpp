@@ -64,6 +64,15 @@ function(assemblycpp_configure_target target)
         )
       endif()
       target_compile_options(${target} PRIVATE -march=x86-64-v3 -mpopcnt)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # The search is intentionally template-heavy. Its filtered and plain
+        # matching loops benefit from a slightly larger whole-unit inlining
+        # budget in the performance preset.
+        target_compile_options(
+          ${target}
+          PRIVATE --param=inline-unit-growth=100
+        )
+      endif()
     else()
       message(
         FATAL_ERROR

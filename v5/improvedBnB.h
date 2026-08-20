@@ -175,6 +175,79 @@ int dagRecursiveEnumeration(assemblyState &_target, vector<map<int, dagDuplicate
     return currSize;
 }
 
+/**
+ * @brief Record a stable edge order for uniformly labelled path molecules.
+ *
+ * On such a graph, a connected fragment's canonical class is determined by
+ * its edge count. The order lets matching-pair filtering describe residual
+ * components without running union-find first.
+ */
+void configureHomogeneousPathEdgePositions(vector<int> &edgePositions)
+{
+    edgePositions.clear();
+    const size_t atomCount = targetMolecule.mg.size();
+    const size_t edgeCount = univEdgeList.size();
+    if (edgeCount < 2 || atomCount != edgeCount + 1) return;
+
+    const string &atomType = targetMolecule.mg.front().type;
+    for (const atom &candidate : targetMolecule.mg)
+    {
+        if (candidate.type != atomType) return;
+    }
+
+    vector<vector<pair<int, int>>> adjacency(atomCount);
+    short bondType = 0;
+    bool foundBondType = false;
+    for (size_t edge = 0; edge < edgeCount; edge++)
+    {
+        const edgeL &entry = univEdgeList[edge];
+        const short candidateBondType = targetMolecule.btypeS(entry.a, entry.c);
+        if (!foundBondType)
+        {
+            bondType = candidateBondType;
+            foundBondType = true;
+        }
+        else if (candidateBondType != bondType)
+            return;
+        adjacency[entry.a].emplace_back(entry.b, static_cast<int>(edge));
+        adjacency[entry.b].emplace_back(entry.a, static_cast<int>(edge));
+    }
+
+    size_t endpoint = atomCount;
+    size_t endpointCount = 0;
+    for (size_t atomIndex = 0; atomIndex < atomCount; atomIndex++)
+    {
+        const size_t degree = adjacency[atomIndex].size();
+        if (degree == 1)
+        {
+            endpoint = atomIndex;
+            ++endpointCount;
+        }
+        else if (degree != 2)
+        {
+            return;
+        }
+    }
+    if (endpointCount != 2) return;
+
+    vector<int> candidatePositions(edgeCount, -1);
+    size_t previous = atomCount;
+    size_t current = endpoint;
+    for (size_t position = 0; position < edgeCount; position++)
+    {
+        const auto &neighbours = adjacency[current];
+        const auto next = neighbours.front().first != static_cast<int>(previous)
+            ? neighbours.front()
+            : neighbours.back();
+        if (candidatePositions[next.second] != -1) return;
+        candidatePositions[next.second] = static_cast<int>(position);
+        previous = current;
+        current = static_cast<size_t>(next.first);
+    }
+    if (adjacency[current].size() != 1) return;
+    edgePositions = std::move(candidatePositions);
+}
+
 
 /**
  * @brief Compute the targeted and unrestricted post-fragment bounds together
@@ -436,7 +509,253 @@ struct assemblySearchStorage
     }
 };
 
+struct homogeneousPathResidualKey
+{
+    // At most two removed parents and four residual path components.
+    array<int, 12> values{};
+    unsigned char used = 0;
+
+    bool operator==(const homogeneousPathResidualKey &other) const
+    {
+        return
+            used == other.used &&
+            equal(values.begin(), values.begin() + used, other.values.begin());
+    }
+};
+
+struct homogeneousPathResidualKeyHash
+{
+    size_t operator()(const homogeneousPathResidualKey &key) const
+    {
+        size_t result = key.used;
+        for (size_t i = 0; i < key.used; i++)
+        {
+            result ^= static_cast<size_t>(key.values[i]) + 0x9e3779b9 +
+                (result << 6) + (result >> 2);
+        }
+        return result;
+    }
+};
+
+/**
+ * @brief Quotient matching pairs on a uniformly labelled path by child state.
+ *
+ * Every connected fragment is an interval in the molecule-wide edge order.
+ * Its canonical class is therefore determined solely by its edge count. A
+ * pair's exact child is represented by the small multiset delta obtained by
+ * removing its parent path(s) and adding the residual intervals.
+ */
+template<typename DuplicateSet>
+struct homogeneousPathEquivalentMatchings
+{
+    const assemblyState &input;
+    const DuplicateSet &duplicates;
+    const vector<int> &edgePositions;
+    bool enabled = false;
+    vector<int> fragmentStarts;
+    vector<int> occurrenceStarts;
+    unordered_set<
+        homogeneousPathResidualKey,
+        homogeneousPathResidualKeyHash
+    > seen;
+
+    homogeneousPathEquivalentMatchings(
+        const assemblyState &_input,
+        const DuplicateSet &_duplicates,
+        const vector<int> &_edgePositions
+    ):
+        input(_input),
+        duplicates(_duplicates),
+        edgePositions(_edgePositions)
+    {
+        constexpr uint64_t minimumValidPairs = 16;
+        if (
+            edgePositions.empty() ||
+            duplicates.list.size() < 2 ||
+            duplicates.size > static_cast<size_t>(numeric_limits<int>::max())
+        ) return;
+
+        fragmentStarts.resize(input.masks.size());
+        for (size_t fragment = 0; fragment < input.masks.size(); fragment++)
+        {
+            if (!intervalStart(
+                input.masks[fragment],
+                input.edgeCounts[fragment],
+                fragmentStarts[fragment]
+            )) return;
+        }
+
+        occurrenceStarts.resize(duplicates.list.size());
+        vector<vector<int>> startsByFragment(input.masks.size());
+        for (size_t occurrence = 0;
+             occurrence < duplicates.list.size();
+             occurrence++)
+        {
+            const auto &candidate = duplicates.list[occurrence];
+            if (
+                candidate.fragment < 0 ||
+                static_cast<size_t>(candidate.fragment) >= input.masks.size() ||
+                !input.masks[candidate.fragment].contains(candidate.mask) ||
+                !intervalStart(
+                    candidate.mask,
+                    static_cast<int>(duplicates.size),
+                    occurrenceStarts[occurrence]
+                )
+            ) return;
+            startsByFragment[candidate.fragment].push_back(
+                occurrenceStarts[occurrence]
+            );
+        }
+
+        uint64_t validPairs = 0;
+        uint64_t priorOccurrences = 0;
+        const int duplicateSize = static_cast<int>(duplicates.size);
+        for (vector<int> &starts : startsByFragment)
+        {
+            if (starts.empty()) continue;
+            validPairs += min<uint64_t>(
+                minimumValidPairs - min(validPairs, minimumValidPairs),
+                priorOccurrences * starts.size()
+            );
+            if (validPairs >= minimumValidPairs) break;
+            priorOccurrences += starts.size();
+
+            sort(starts.begin(), starts.end());
+            for (size_t first = 0; first + 1 < starts.size(); first++)
+            {
+                const auto second = lower_bound(
+                    starts.begin() + first + 1,
+                    starts.end(),
+                    starts[first] + duplicateSize
+                );
+                validPairs += static_cast<uint64_t>(starts.end() - second);
+                if (validPairs >= minimumValidPairs) break;
+            }
+            if (validPairs >= minimumValidPairs) break;
+        }
+        if (validPairs < minimumValidPairs) return;
+        seen.reserve(256);
+        enabled = true;
+    }
+
+    bool skip(
+        const validMatchings &matching,
+        size_t firstOccurrence,
+        size_t secondOccurrence
+    )
+    {
+        if (!enabled) return false;
+        array<pair<int, int>, 6> changes;
+        size_t changeCount = 0;
+        const int duplicateSize = static_cast<int>(duplicates.size);
+        const auto addChange = [&](int edgeCount, int delta)
+        {
+            if (edgeCount >= 2)
+                changes[changeCount++] = {edgeCount, delta};
+        };
+
+        if (matching.frag1 == matching.frag2)
+        {
+            const int fragment = matching.frag1;
+            int firstStart = occurrenceStarts[firstOccurrence] -
+                fragmentStarts[fragment];
+            int secondStart = occurrenceStarts[secondOccurrence] -
+                fragmentStarts[fragment];
+            if (secondStart < firstStart) swap(firstStart, secondStart);
+            if (secondStart < firstStart + duplicateSize) return false;
+
+            const int parentEdges = input.edgeCounts[fragment];
+            addChange(parentEdges, -1);
+            addChange(firstStart, 1);
+            addChange(secondStart - firstStart - duplicateSize, 1);
+            addChange(parentEdges - secondStart - duplicateSize, 1);
+        }
+        else
+        {
+            const int fragments[2] = {matching.frag1, matching.frag2};
+            const size_t occurrences[2] = {
+                firstOccurrence,
+                secondOccurrence
+            };
+            for (size_t selected = 0; selected < 2; selected++)
+            {
+                const int fragment = fragments[selected];
+                const int start = occurrenceStarts[occurrences[selected]] -
+                    fragmentStarts[fragment];
+                const int parentEdges = input.edgeCounts[fragment];
+                addChange(parentEdges, -1);
+                addChange(start, 1);
+                addChange(parentEdges - start - duplicateSize, 1);
+            }
+        }
+
+        sort(changes.begin(), changes.begin() + changeCount);
+        homogeneousPathResidualKey key;
+        for (size_t index = 0; index < changeCount;)
+        {
+            const int edgeCount = changes[index].first;
+            int delta = 0;
+            do
+            {
+                delta += changes[index].second;
+                ++index;
+            }
+            while (
+                index < changeCount &&
+                changes[index].first == edgeCount
+            );
+            if (delta == 0) continue;
+            key.values[key.used++] = edgeCount;
+            key.values[key.used++] = delta;
+        }
+        return !seen.insert(key).second;
+    }
+
+private:
+    bool intervalStart(
+        const EdgeMask &mask,
+        int expectedEdgeCount,
+        int &start
+    ) const
+    {
+        if (expectedEdgeCount < 1) return false;
+        int minimum = numeric_limits<int>::max();
+        int maximum = -1;
+        int visited = 0;
+        for (size_t edge = mask.findFirst();
+             edge < edgePositions.size();
+             edge = mask.findNext(edge))
+        {
+            const int position = edgePositions[edge];
+            if (position < 0) return false;
+            minimum = min(minimum, position);
+            maximum = max(maximum, position);
+            ++visited;
+        }
+        if (
+            visited != expectedEdgeCount ||
+            maximum - minimum + 1 != expectedEdgeCount
+        ) return false;
+        start = minimum;
+        return true;
+    }
+};
+
+enum class matchingEquivalenceMode
+{
+    none,
+    homogeneousPath
+};
+
 void dagRecursiveAssemblyWithWorkspace(
+    assemblyState &input,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
+);
+
+template<matchingEquivalenceMode equivalenceMode>
+void dagRecursiveAssemblyWithWorkspaceImpl(
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -470,6 +789,7 @@ void setAssemblyPathStep(
     path.duplicate = bitsetHashTable.find(matching.second)->second.second;
 }
 
+template<matchingEquivalenceMode equivalenceMode>
 bool continueAssemblySearchWithWorkspace(
     assemblyState &parent,
     assemblyState &candidate,
@@ -564,7 +884,7 @@ bool continueAssemblySearchWithWorkspace(
         }
     }
 
-    dagRecursiveAssemblyWithWorkspace(
+    dagRecursiveAssemblyWithWorkspaceImpl<equivalenceMode>(
         candidate,
         AI,
         fragmentationWorkspace,
@@ -581,7 +901,8 @@ bool continueAssemblySearchWithWorkspace(
  * @param AI The global minimum assembly index found
  * @param fragmentationWorkspace Buffers reused across the search
  */
-void dagRecursiveAssemblyWithWorkspace(
+template<matchingEquivalenceMode equivalenceMode>
+void dagRecursiveAssemblyWithWorkspaceImpl(
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -647,8 +968,27 @@ void dagRecursiveAssemblyWithWorkspace(
             if (earlyAIBound < AI)
             {
                 int matchingClassBound = numeric_limits<int>::min();
-                const bool completed = ss.visitMatchingsInReverse(
-                [&](validMatchings &matching)
+                if (usePairBound && ss.size == 2 && ss.list.size() >= 48)
+                {
+                    const int pairBoundLimit = static_cast<int>(totalBonds) -
+                        input.sumDupBonds - 1 - AI;
+                    if (dupBondsMaxFrag - 1 <= pairBoundLimit)
+                    {
+                        if (
+                            dupBondsMaxFrag <= pairBoundLimit ||
+                            (
+                                matchingClassBound = input.maxDupBonds(
+                                    ss.size,
+                                    ss.maskList
+                                )
+                            ) <= pairBoundLimit
+                        )
+                        {
+                            continue;
+                        }
+                    }
+                }
+                auto pairBoundFiltersMatching = [&](validMatchings &matching)
                 {
                     if (usePairBound)
                     {
@@ -744,7 +1084,16 @@ void dagRecursiveAssemblyWithWorkspace(
                             }
                         }
                     }
-
+                    return false;
+                };
+                auto matchingVisitor = [&](validMatchings &matching)
+                {
+                    if constexpr (
+                        equivalenceMode != matchingEquivalenceMode::none
+                    )
+                    {
+                        if (pairBoundFiltersMatching(matching)) return true;
+                    }
                     candidate.clearFragments();
                     fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                         input,
@@ -754,7 +1103,8 @@ void dagRecursiveAssemblyWithWorkspace(
                     );
                     if (searchShouldStop()) return false;
 
-                    int sumDupBonds = input.sumDupBonds + matching.maxFragSize - 1;
+                    int sumDupBonds =
+                        input.sumDupBonds + matching.maxFragSize - 1;
                     candidate.sumDupBonds = sumDupBonds;
                     int fragmentationCutoff = postFragmentationCutoff(
                         candidate,
@@ -769,9 +1119,13 @@ void dagRecursiveAssemblyWithWorkspace(
                     if (candidateAIBound < AI)
                     {
                         vi candidateKey;
-                        if (!canoniseAssemblyStateAndBuildKey(candidate, candidateKey))
-                            return false;
-                        if (!continueAssemblySearchWithWorkspace(
+                        if (!canoniseAssemblyStateAndBuildKey(
+                            candidate,
+                            candidateKey
+                        )) return false;
+                        if (!continueAssemblySearchWithWorkspace<
+                            equivalenceMode
+                        >(
                             input,
                             candidate,
                             matching,
@@ -783,11 +1137,76 @@ void dagRecursiveAssemblyWithWorkspace(
                         )) return false;
                     }
                     return true;
-                });
+                };
+                bool completed;
+                if constexpr (
+                    equivalenceMode ==
+                    matchingEquivalenceMode::homogeneousPath
+                )
+                {
+                    homogeneousPathEquivalentMatchings equivalentMatchings(
+                        input,
+                        ss,
+                        fragmentationWorkspace.homogeneousPathEdgePositions
+                    );
+                    if (equivalentMatchings.enabled)
+                    {
+                        completed = ss.visitMatchingsInReverse(
+                            [&](validMatchings &matching,
+                                size_t firstOccurrence,
+                                size_t secondOccurrence)
+                            {
+                                return equivalentMatchings.skip(
+                                    matching,
+                                    firstOccurrence,
+                                    secondOccurrence
+                                );
+                            },
+                            matchingVisitor
+                        );
+                    }
+                    else
+                    {
+                        completed = ss.visitMatchingsInReverse(
+                            matchingVisitor
+                        );
+                    }
+                }
+                else
+                {
+                    completed = ss.visitMatchingsInReverse(
+                        [&](validMatchings &matching, size_t, size_t)
+                        {
+                            return pairBoundFiltersMatching(matching);
+                        },
+                        matchingVisitor
+                    );
+                }
                 if (!completed) return;
             }
             }
         }
+    }
+}
+
+void dagRecursiveAssemblyWithWorkspace(
+    assemblyState &input,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
+)
+{
+    if (!fragmentationWorkspace.homogeneousPathEdgePositions.empty())
+    {
+        dagRecursiveAssemblyWithWorkspaceImpl<
+            matchingEquivalenceMode::homogeneousPath
+        >(input, AI, fragmentationWorkspace, searchStorage);
+    }
+    else
+    {
+        dagRecursiveAssemblyWithWorkspaceImpl<
+            matchingEquivalenceMode::none
+        >(input, AI, fragmentationWorkspace, searchStorage);
     }
 }
 
@@ -799,7 +1218,8 @@ void dagRecursiveAssemblyWithWorkspace(
  * @param AI The global minimum assembly index found
  * @param fragmentationWorkspace Buffers reused across the search
  */
-void initialRecursiveAssemblyWithWorkspace(
+template<matchingEquivalenceMode equivalenceMode>
+void initialRecursiveAssemblyWithWorkspaceImpl(
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -830,8 +1250,7 @@ void initialRecursiveAssemblyWithWorkspace(
         {
             if (searchShouldStop()) return;
             initialDuplicateSet &ss = it->second;
-            const bool completed = ss.visitMatchingsInReverse(
-            [&](validMatchings &matching)
+            auto matchingVisitor = [&](validMatchings &matching)
             {
                 candidate.clearFragments();
                 fragmentAssemblyStateWithoutCanonisationWithWorkspace(
@@ -841,14 +1260,19 @@ void initialRecursiveAssemblyWithWorkspace(
                     fragmentationWorkspace
                 );
                 if (searchShouldStop()) return false;
-                int sumDupBonds = input.sumDupBonds + matching.maxFragSize - 1;
+                int sumDupBonds =
+                    input.sumDupBonds + matching.maxFragSize - 1;
                 candidate.sumDupBonds = sumDupBonds;
                 if (candidate.lowBoundAI() < AI)
                 {
                     vi candidateKey;
-                    if (!canoniseAssemblyStateAndBuildKey(candidate, candidateKey))
-                        return false;
-                    if (!continueAssemblySearchWithWorkspace(
+                    if (!canoniseAssemblyStateAndBuildKey(
+                        candidate,
+                        candidateKey
+                    )) return false;
+                    if (!continueAssemblySearchWithWorkspace<
+                        equivalenceMode
+                    >(
                         input,
                         candidate,
                         matching,
@@ -860,9 +1284,66 @@ void initialRecursiveAssemblyWithWorkspace(
                     )) return false;
                 }
                 return true;
-            });
+            };
+            bool completed;
+            if constexpr (
+                equivalenceMode ==
+                matchingEquivalenceMode::homogeneousPath
+            )
+            {
+                homogeneousPathEquivalentMatchings equivalentMatchings(
+                    input,
+                    ss,
+                    fragmentationWorkspace.homogeneousPathEdgePositions
+                );
+                if (equivalentMatchings.enabled)
+                {
+                    completed = ss.visitMatchingsInReverse(
+                        [&](validMatchings &matching,
+                            size_t firstOccurrence,
+                            size_t secondOccurrence)
+                        {
+                            return equivalentMatchings.skip(
+                                matching,
+                                firstOccurrence,
+                                secondOccurrence
+                            );
+                        },
+                        matchingVisitor
+                    );
+                }
+                else
+                {
+                    completed = ss.visitMatchingsInReverse(matchingVisitor);
+                }
+            }
+            else
+            {
+                completed = ss.visitMatchingsInReverse(matchingVisitor);
+            }
             if (!completed) return;
         }
+    }
+}
+
+void initialRecursiveAssemblyWithWorkspace(
+    assemblyState &input,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
+)
+{
+    if (!fragmentationWorkspace.homogeneousPathEdgePositions.empty())
+    {
+        initialRecursiveAssemblyWithWorkspaceImpl<
+            matchingEquivalenceMode::homogeneousPath
+        >(input, AI, fragmentationWorkspace, searchStorage);
+    }
+    else
+    {
+        initialRecursiveAssemblyWithWorkspaceImpl<
+            matchingEquivalenceMode::none
+        >(input, AI, fragmentationWorkspace, searchStorage);
     }
 }
 
@@ -965,6 +1446,9 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     ufdsMaskWorkspace fragmentationWorkspace(
         targetMolecule.mg.size(),
         univEdgeList.size()
+    );
+    configureHomogeneousPathEdgePositions(
+        fragmentationWorkspace.homogeneousPathEdgePositions
     );
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     configureSearchTelemetryGraph(

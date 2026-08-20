@@ -197,7 +197,8 @@ struct validMatchings
         int _frag2,
         int _maxFragSize
     ):
-    first(_first), second(_second), frag1(_frag1), frag2(_frag2), maxFragSize(_maxFragSize){}
+    first(_first), second(_second), frag1(_frag1), frag2(_frag2),
+    maxFragSize(_maxFragSize) {}
 };
 
 template<typename potentialDuplicate>
@@ -252,9 +253,50 @@ struct duplicateSet
      * @param visitor Called for each valid matching; false stops iteration
      * @return true if every matching was visited
      * @return false if the visitor stopped iteration or the search should stop
-     */
+    */
+    template<typename Filter, typename Visitor>
+    [[gnu::noinline]] bool visitMatchingsInReverse(
+        Filter &&filter,
+        Visitor &&visitor
+    )
+    {
+        if (list.size() < 2) return true;
+
+        for (size_t firstIndex = list.size() - 1; firstIndex > 0;)
+        {
+            --firstIndex;
+            if (searchShouldStop()) return false;
+            int frag = list[firstIndex].fragment;
+            for (size_t secondIndex = list.size();
+                 secondIndex > firstIndex + 1;)
+            {
+                --secondIndex;
+                if (searchShouldStopPeriodically()) return false;
+                if (
+                    frag == list[secondIndex].fragment &&
+                    !list[firstIndex].mask.disjoint(list[secondIndex].mask)
+                ) continue;
+
+                validMatchings matching(
+                    list[firstIndex].mask,
+                    list[secondIndex].mask,
+                    frag,
+                    list[secondIndex].fragment,
+                    size
+                );
+                if (filter(matching, firstIndex, secondIndex)) continue;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                if (searchTelemetryEnabled) [[unlikely]]
+                    ++searchTelemetry.counters.matchingVisits;
+#endif
+                if (!visitor(matching)) return false;
+            }
+        }
+        return true;
+    }
+
     template<typename Visitor>
-    bool visitMatchingsInReverse(Visitor &&visitor)
+    [[gnu::always_inline]] bool visitMatchingsInReverse(Visitor &&visitor)
     {
         if (list.size() < 2) return true;
 

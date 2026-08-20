@@ -556,6 +556,9 @@ struct ufdsMaskWorkspace
     size_t wideDecompositionFirstRepeatProbe = 0;
     size_t wideDecompositionFirstHitProbe = 0;
 #endif
+    // Non-empty only when the processed molecule is one uniformly labelled
+    // path. Values map universe edge indices to positions along that path.
+    vector<int> homogeneousPathEdgePositions;
 
     ufdsMaskWorkspace(size_t atomCount, size_t _edgeCount):
         edgeCount(_edgeCount),
