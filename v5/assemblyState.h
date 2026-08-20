@@ -1,12 +1,10 @@
 /**
- * @brief Struct which is inserted into the hash table to store assembly states and recover the pathway
+ * @brief Compact parent-link record used only to recover a requested pathway.
  */
 struct assemblyPath
 {
-    /// vi represneting canonical indices of the fragments of the assembly state
-    vi key;
-    /// @brief number of duplicated bonds found so far
-    int sumDupBonds;
+    /// Canonical class of the retained fragment used by this duplication.
+    int retainedFragmentClass;
     /// @brief needed to reconstruct the pathway
     unsigned short match, duplicate;
     /// @brief Assembly state from which this state is generated. needed to reconstruct the pathway
@@ -15,40 +13,6 @@ struct assemblyPath
 
 /// Pointer for the minimum assembly path
 assemblyPath * minAssemblyPath = nullptr;
-
-/**
- * @brief Wrapper for pathway hash table because C++ unordered_map does not guarantee pointer will remain unchanged
- * 
- */
-struct apWrapper
-{
-    mutable assemblyPath * ap;
-
-    bool operator == (const apWrapper&ap2) const
-    {
-        return ap->key == ap2.ap->key;
-    }
-};
-
-/**
- * @brief vi hash called by apWrapper
- * 
- */
-template<>
-struct std::hash<apWrapper>
-{
-    size_t operator()(const apWrapper &ap) const
-    {
-        std::size_t seed = ap.ap->key.size();
-        for(auto& i : ap.ap->key) {
-            seed ^= i + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        }
-        return seed;
-    }
-};
-
-/// Hash table for assembly states for pathway algorithm
-std::unordered_set<apWrapper> pathAssemblyMap;
 
 /**
  * @brief Assembly state data structure. Records the current state of this assembly pathway
@@ -239,7 +203,7 @@ struct assemblyState
     }
 
     /**
-     * @brief Build the canonical fragment key used by apWrapper's hash
+     * @brief Build the canonical fragment key used by the transposition table.
      *
      * @return vi The vector<int> to be hashed
      */

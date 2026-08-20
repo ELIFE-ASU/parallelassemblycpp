@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <memory_resource>
 #include <sstream>
 #include <stdexcept>
 #include <string>

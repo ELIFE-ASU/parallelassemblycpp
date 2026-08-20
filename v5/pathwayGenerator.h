@@ -206,8 +206,10 @@ bool recoverPathway2(vector<edgeL> &removedEdges)
     vector<vector<EdgeMask>> matchings;
     for (size_t i = 1; i < minPath.size(); i++)
     {
-        EdgeMask mask = maskList[minPath[i]->key[0]][minPath[i]->match],
-        duplicate = maskList[minPath[i]->key[0]][minPath[i]->duplicate];
+        EdgeMask mask =
+            maskList[minPath[i]->retainedFragmentClass][minPath[i]->match],
+        duplicate =
+            maskList[minPath[i]->retainedFragmentClass][minPath[i]->duplicate];
         allTakenEdges |= duplicate;
         matchings.push_back({mask, duplicate});
     }

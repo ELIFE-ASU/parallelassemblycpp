@@ -354,38 +354,120 @@ int pairSpecificGenericBound(
     return result;
 }
 
+struct assemblyStateKeyHash
+{
+    size_t operator()(const vi &key) const
+    {
+        size_t seed = key.size();
+        for (const int value : key)
+        {
+            seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
+
+struct pathwayTransposition
+{
+    int bestSumDupBonds;
+    assemblyPath *path;
+};
+
+constexpr std::pmr::pool_options assemblyStatePoolOptions()
+{
+    return {
+        .max_blocks_per_chunk = 4096,
+        .largest_required_pool_block = 128
+    };
+}
+
+struct scoreOnlyAssemblySearchStorage
+{
+    // Deliberately keep the no-path table to the state key and duplicate score.
+    std::pmr::unsynchronized_pool_resource statePool{
+        assemblyStatePoolOptions()
+    };
+    std::pmr::unordered_map<vi, int, assemblyStateKeyHash> states{&statePool};
+};
+
+struct pathwayAssemblySearchStorage
+{
+    static_assert(std::is_trivially_destructible_v<assemblyPath>);
+
+    std::pmr::unsynchronized_pool_resource statePool{
+        assemblyStatePoolOptions()
+    };
+    // Parent-link records have stable addresses and are released as one arena.
+    std::pmr::monotonic_buffer_resource pathArena;
+    std::pmr::unordered_map<vi, pathwayTransposition, assemblyStateKeyHash>
+        states{&statePool};
+
+    assemblyPath *createPath(
+        int retainedFragmentClass,
+        assemblyPath *parent,
+        unsigned short match,
+        unsigned short duplicate
+    )
+    {
+        void *memory = pathArena.allocate(
+            sizeof(assemblyPath),
+            alignof(assemblyPath)
+        );
+        return std::construct_at(
+            static_cast<assemblyPath *>(memory),
+            assemblyPath{
+                retainedFragmentClass,
+                match,
+                duplicate,
+                parent
+            }
+        );
+    }
+};
+
+struct assemblySearchStorage
+{
+    scoreOnlyAssemblySearchStorage *scoreOnly = nullptr;
+    pathwayAssemblySearchStorage *pathway = nullptr;
+
+    bool tracksPath() const noexcept
+    {
+        return pathway != nullptr;
+    }
+};
+
 void dagRecursiveAssemblyWithWorkspace(
     assemblyState &input,
     int &AI,
-    ufdsMaskWorkspace &fragmentationWorkspace
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
 );
 
-void recordImprovedAssemblyIndex(assemblyState &input, int &AI)
+void recordImprovedAssemblyIndex(
+    assemblyState &input,
+    int &AI,
+    const assemblySearchStorage &searchStorage
+)
 {
     const int candidate = input.AI();
     if (candidate >= AI) return;
 
     AI = candidate;
-    minAssemblyPath = input.apPtr;
+    if (searchStorage.tracksPath()) minAssemblyPath = input.apPtr;
     const unsigned long long time = elapsedClockTicks();
     cout << "time: " << time << " min AI found so far: " << AI << '\n';
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
 
-static std::unique_ptr<assemblyPath> createAssemblyPath(
-    vi key,
+void setAssemblyPathStep(
+    assemblyPath &path,
     assemblyPath *parent,
-    validMatchings &matching,
-    int sumDupBonds
+    validMatchings &matching
 )
 {
-    auto path = std::make_unique<assemblyPath>();
-    path->key = std::move(key);
-    path->parent = parent;
-    path->sumDupBonds = sumDupBonds;
-    path->match = bitsetHashTable[matching.first].second;
-    path->duplicate = bitsetHashTable[matching.second].second;
-    return path;
+    path.parent = parent;
+    path.match = bitsetHashTable.find(matching.first)->second.second;
+    path.duplicate = bitsetHashTable.find(matching.second)->second.second;
 }
 
 bool continueAssemblySearchWithWorkspace(
@@ -395,108 +477,98 @@ bool continueAssemblySearchWithWorkspace(
     vi candidateKey,
     int sumDupBonds,
     int &AI,
-    ufdsMaskWorkspace &fragmentationWorkspace
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
 )
 {
-    // For larger keys, one lookup plus a miss-only copy beats hashing twice.
-    constexpr size_t singleInsertMinFragments = 5;
+    if (searchShouldStop()) return false;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.assemblyCacheLookups;
+#endif
+
+    bool inserted = false;
+    int *bestSumDupBonds = nullptr;
     assemblyPath *existingPath = nullptr;
+
+    if (!searchStorage.tracksPath())
     {
-        assemblyPath probe{};
-        probe.key = std::move(candidateKey);
-        if (searchShouldStop()) return false;
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-        if (searchTelemetryEnabled) [[unlikely]]
-            ++searchTelemetry.counters.assemblyCacheLookups;
-#endif
+        auto result = searchStorage.scoreOnly->states.try_emplace(
+            std::move(candidateKey),
+            sumDupBonds
+        );
+        inserted = result.second;
+        bestSumDupBonds = &result.first->second;
+    }
+    else
+    {
+        pathwayAssemblySearchStorage &pathwayStorage = *searchStorage.pathway;
+        const int retainedFragmentClass = candidateKey.front();
+        auto result = pathwayStorage.states.try_emplace(
+            std::move(candidateKey),
+            pathwayTransposition{sumDupBonds, nullptr}
+        );
+        inserted = result.second;
+        bestSumDupBonds = &result.first->second.bestSumDupBonds;
 
-        if (probe.key.size() < singleInsertMinFragments)
+        if (inserted)
         {
-            auto entry = pathAssemblyMap.find(apWrapper{&probe});
-            if (entry == pathAssemblyMap.end())
+            try
             {
-                auto path = createAssemblyPath(
-                    std::move(probe.key),
+                existingPath = pathwayStorage.createPath(
+                    retainedFragmentClass,
                     parent.apPtr,
-                    matching,
-                    sumDupBonds
+                    bitsetHashTable.find(matching.first)->second.second,
+                    bitsetHashTable.find(matching.second)->second.second
                 );
-                auto [position, inserted] =
-                    pathAssemblyMap.insert(apWrapper{path.get()});
-                if (inserted)
-                {
-                    candidate.apPtr = path.get();
-                    path.release();
-                }
-                else existingPath = position->ap;
             }
-            else existingPath = entry->ap;
-        }
-        else
-        {
-            auto [entry, inserted] = pathAssemblyMap.insert(apWrapper{&probe});
-            if (inserted)
+            catch (...)
             {
-                std::unique_ptr<assemblyPath> path;
-                try
-                {
-                    path = createAssemblyPath(
-                        probe.key,
-                        parent.apPtr,
-                        matching,
-                        sumDupBonds
-                    );
-                }
-                catch (...)
-                {
-                    pathAssemblyMap.erase(entry);
-                    throw;
-                }
-
-                // The copied key keeps the set's hash and equality unchanged.
-                entry->ap = path.get();
-                candidate.apPtr = path.get();
-                path.release();
+                pathwayStorage.states.erase(result.first);
+                throw;
             }
-            else existingPath = entry->ap;
+            result.first->second.path = existingPath;
+            candidate.apPtr = existingPath;
         }
+        else existingPath = result.first->second.path;
+    }
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
-        if (searchTelemetryEnabled) [[unlikely]]
-        {
-            if (existingPath != nullptr)
-                ++searchTelemetry.counters.assemblyCacheHits;
-            else
-                ++searchTelemetry.counters.assemblyCacheMisses;
-        }
+    if (searchTelemetryEnabled) [[unlikely]]
+    {
+        if (inserted) ++searchTelemetry.counters.assemblyCacheMisses;
+        else ++searchTelemetry.counters.assemblyCacheHits;
+    }
 #endif
-        if (existingPath != nullptr)
-        {
-            if (sumDupBonds <= existingPath->sumDupBonds)
-            {
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-                if (searchTelemetryEnabled) [[unlikely]]
-                    ++searchTelemetry.counters.assemblyCachePrunedHits;
-#endif
-                return true;
-            }
 
+    if (!inserted)
+    {
+        if (sumDupBonds <= *bestSumDupBonds)
+        {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
             if (searchTelemetryEnabled) [[unlikely]]
-                ++searchTelemetry.counters.assemblyCacheUpdatedHits;
+                ++searchTelemetry.counters.assemblyCachePrunedHits;
 #endif
+            return true;
+        }
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled) [[unlikely]]
+            ++searchTelemetry.counters.assemblyCacheUpdatedHits;
+#endif
+        *bestSumDupBonds = sumDupBonds;
+        if (searchStorage.tracksPath())
+        {
             candidate.apPtr = existingPath;
-            existingPath->sumDupBonds = sumDupBonds;
-            existingPath->match = bitsetHashTable[matching.first].second;
-            existingPath->duplicate = bitsetHashTable[matching.second].second;
-            existingPath->parent = parent.apPtr;
+            setAssemblyPathStep(*existingPath, parent.apPtr, matching);
         }
     }
 
     dagRecursiveAssemblyWithWorkspace(
         candidate,
         AI,
-        fragmentationWorkspace
+        fragmentationWorkspace,
+        searchStorage
     );
     return !searchShouldStop();
 }
@@ -512,7 +584,8 @@ bool continueAssemblySearchWithWorkspace(
 void dagRecursiveAssemblyWithWorkspace(
     assemblyState &input,
     int &AI,
-    ufdsMaskWorkspace &fragmentationWorkspace
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
 )
 {
     // Count-only pair pruning pays for itself once residual splitting is no
@@ -520,7 +593,7 @@ void dagRecursiveAssemblyWithWorkspace(
     constexpr size_t pairBoundMinimumMoleculeEdges = 27;
     const bool usePairBound =
         fragmentationWorkspace.edgeCount >= pairBoundMinimumMoleculeEdges;
-    recordImprovedAssemblyIndex(input, AI);
+    recordImprovedAssemblyIndex(input, AI, searchStorage);
     if (searchShouldStop()) return;
 
     vector<map<int, dagDuplicateSet> > stmapVector;
@@ -705,7 +778,8 @@ void dagRecursiveAssemblyWithWorkspace(
                             std::move(candidateKey),
                             sumDupBonds,
                             AI,
-                            fragmentationWorkspace
+                            fragmentationWorkspace,
+                            searchStorage
                         )) return false;
                     }
                     return true;
@@ -728,10 +802,11 @@ void dagRecursiveAssemblyWithWorkspace(
 void initialRecursiveAssemblyWithWorkspace(
     assemblyState &input,
     int &AI,
-    ufdsMaskWorkspace &fragmentationWorkspace
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
 )
 {
-    recordImprovedAssemblyIndex(input, AI);
+    recordImprovedAssemblyIndex(input, AI, searchStorage);
     if (searchShouldStop()) return;
 
     vector<map<int, initialDuplicateSet> > stmapVector;
@@ -780,7 +855,8 @@ void initialRecursiveAssemblyWithWorkspace(
                         std::move(candidateKey),
                         sumDupBonds,
                         AI,
-                        fragmentationWorkspace
+                        fragmentationWorkspace,
+                        searchStorage
                     )) return false;
                 }
                 return true;
@@ -788,6 +864,68 @@ void initialRecursiveAssemblyWithWorkspace(
             if (!completed) return;
         }
     }
+}
+
+bool runImprovedAssemblySearch(
+    assemblyState &root,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    vector<edgeL> &removedEdges,
+    ofstream &ofs,
+    assemblySearchStorage &searchStorage
+)
+{
+    vi rootKey = root.assemblyHashCalculator();
+    if (searchStorage.tracksPath())
+    {
+        pathwayAssemblySearchStorage &pathwayStorage = *searchStorage.pathway;
+        assemblyPath *rootPath = pathwayStorage.createPath(
+            rootKey.front(),
+            nullptr,
+            0,
+            0
+        );
+        pathwayStorage.states.emplace(
+            std::move(rootKey),
+            pathwayTransposition{0, rootPath}
+        );
+        root.apPtr = rootPath;
+    }
+    else
+    {
+        searchStorage.scoreOnly->states.emplace(std::move(rootKey), 0);
+    }
+
+    initialRecursiveAssemblyWithWorkspace(
+        root,
+        AI,
+        fragmentationWorkspace,
+        searchStorage
+    );
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    setSearchTelemetryPhase(SearchTelemetryPhase::output);
+#endif
+    // Keep the primary result line machine-readable even for partial searches.
+    ofs << compensateDisjointAssemblyIndex(AI) << '\n';
+    if (runtimeLimitReached)
+    {
+        cout << "status: runtime limit reached\n";
+        ofs << "status: runtime limit reached\n";
+    }
+    if (enumerationLimitReached)
+    {
+        cout << "status: enumeration limit reached\n";
+        ofs << "status: enumeration limit reached\n";
+    }
+
+    if (searchStorage.tracksPath())
+    {
+        const bool recovered = recoverPathway2(removedEdges);
+        minAssemblyPath = nullptr;
+        return recovered;
+    }
+    return true;
 }
 
 /**
@@ -804,7 +942,6 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     searchStopInnerPollCountdown = 0;
     runtimeLimitReached = false;
     enumerationLimitReached = false;
-    clearPathMap();
     minAssemblyPath = nullptr;
     bitsetHashTable.clear();
     graphHashMap.clear();
@@ -840,31 +977,28 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
     assemblyState as;
     as.appendFragment(allEdges, static_cast<int>(univEdgeList.size()));
-    auto rootPath = std::make_unique<assemblyPath>();
-    apWrapper ap{rootPath.get()};
-    ap.ap->parent = nullptr;
-    ap.ap->key = as.assemblyHashCalculator();
-    ap.ap->sumDupBonds = 0;
-    pathAssemblyMap.insert(ap);
-    as.apPtr = rootPath.release();
     int AI = std::numeric_limits<int>::max();
-    initialRecursiveAssemblyWithWorkspace(as, AI, fragmentationWorkspace);
-
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-    setSearchTelemetryPhase(SearchTelemetryPhase::output);
-#endif
-    // Keep the primary result line machine-readable even for partial searches.
-    ofs << compensateDisjointAssemblyIndex(AI) << '\n';
-    if (runtimeLimitReached)
+    if (isPathway)
     {
-        cout << "status: runtime limit reached\n";
-        ofs << "status: runtime limit reached\n";
+        pathwayAssemblySearchStorage pathwayStorage;
+        assemblySearchStorage searchStorage{nullptr, &pathwayStorage};
+        return runImprovedAssemblySearch(
+            as,
+            AI,
+            fragmentationWorkspace,
+            removedEdges,
+            ofs,
+            searchStorage
+        );
     }
-    if (enumerationLimitReached)
-    {
-        cout << "status: enumeration limit reached\n";
-        ofs << "status: enumeration limit reached\n";
-    }
-    if (isPathway) return recoverPathway2(removedEdges);
-    return true;
+    scoreOnlyAssemblySearchStorage scoreOnlyStorage;
+    assemblySearchStorage searchStorage{&scoreOnlyStorage, nullptr};
+    return runImprovedAssemblySearch(
+        as,
+        AI,
+        fragmentationWorkspace,
+        removedEdges,
+        ofs,
+        searchStorage
+    );
 }

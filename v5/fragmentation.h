@@ -94,16 +94,3 @@ bool canoniseAssemblyStateAndBuildKey(assemblyState &target, vi &key)
     if (key.size() > 1) sort(key.begin() + 1, key.end());
     return true;
 }
-
-/**
- * @brief Empty the hash table
- * 
- */
-void clearPathMap()
-{
-    for (const apWrapper &wrapper : pathAssemblyMap)
-    {
-        delete wrapper.ap;
-    }
-    pathAssemblyMap.clear();
-}

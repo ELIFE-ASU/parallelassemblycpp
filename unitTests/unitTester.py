@@ -591,6 +591,47 @@ def run_cli_checks(executable: Path) -> int:
         )
         scenarios += 1
 
+        parity_indices: list[int | None] = []
+        for pathway_enabled in (False, True):
+            mode = int(pathway_enabled)
+            case_directory = working_directory / f"pathway-parity-{mode}"
+            case_directory.mkdir()
+            shutil.copy2(
+                TEST_DIRECTORY / "ketoconazole.mol",
+                case_directory / "input.mol",
+            )
+            parity_options = [
+                "input.mol",
+                f"--pathway={mode}",
+                "--memory-report=0",
+                "--write-intermediate-mas=0",
+            ]
+            if telemetry_supported:
+                parity_options.append("--telemetry=0")
+            completed = run_cli_command(
+                executable,
+                parity_options,
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"ketoconazole pathway={mode} parity run should succeed",
+                completed,
+            )
+            parity_indices.append(
+                read_first_line_assembly_index(case_directory / "inputOut")
+            )
+            require_cli(
+                (case_directory / "inputPathway").is_file() == pathway_enabled,
+                f"ketoconazole pathway={mode} created unexpected pathway output",
+                completed,
+            )
+        require_cli(
+            parity_indices == [22, 22],
+            "ketoconazole should have assembly index 22 in both pathway modes",
+        )
+        scenarios += 1
+
         dash_input = working_directory / "-dash-input.mol"
         shutil.copy2(source, dash_input)
         completed = run_cli_command(
