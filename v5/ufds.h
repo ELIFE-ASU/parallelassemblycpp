@@ -332,13 +332,12 @@ struct ufdsSplit
     /**
      * @brief The splitting function used during the fragmentation
      *
-     * @param maskList The output
-     * @param edgeCounts Edge counts parallel to the appended output masks
-     * @param tempMaskList Reusable component-mask buffer; must not alias maskList
+     * @param fragmentList Connected output fragments
+     * @param tempMaskList Reusable component-mask buffer; must not alias
+     * fragmentList
      */
     [[gnu::noinline]] void splitSmallWithBuffers(
-        vector<EdgeMask> &maskList,
-        vi &edgeCounts,
+        vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
     {
@@ -410,34 +409,36 @@ struct ufdsSplit
             const int edgeCount = static_cast<int>(std::popcount(word));
             if (edgeCount > 1)
             {
-                maskList.emplace_back(word);
-                edgeCounts.push_back(edgeCount);
+                fragmentList.emplace_back(
+                    EdgeMask(word),
+                    edgeCount,
+                    unknownCanonicalId,
+                    true
+                );
             }
         }
     }
 
     [[gnu::always_inline]] void splitWithBuffers(
-        vector<EdgeMask> &maskList,
-        vi &edgeCounts,
+        vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
     {
         if (EdgeMask::activeWordCount() <= 1) [[likely]]
         {
-            splitSmallWithBuffers(maskList, edgeCounts, tempMaskList);
+            splitSmallWithBuffers(fragmentList, tempMaskList);
             return;
         }
         if (EdgeMask::activeWordCount() == 2) [[likely]]
         {
-            splitTwoWordWithBuffers(maskList, edgeCounts, tempMaskList);
+            splitTwoWordWithBuffers(fragmentList, tempMaskList);
             return;
         }
-        splitWideWithBuffers(maskList, edgeCounts, tempMaskList);
+        splitWideWithBuffers(fragmentList, tempMaskList);
     }
 
     [[gnu::noinline]] void splitTwoWordWithBuffers(
-        vector<EdgeMask> &maskList,
-        vi &edgeCounts,
+        vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
     {
@@ -517,15 +518,18 @@ struct ufdsSplit
             );
             if (edgeCount > 1)
             {
-                maskList.push_back(EdgeMask::fromActiveWords(words));
-                edgeCounts.push_back(edgeCount);
+                fragmentList.emplace_back(
+                    EdgeMask::fromActiveWords(words),
+                    edgeCount,
+                    unknownCanonicalId,
+                    true
+                );
             }
         }
     }
 
     [[gnu::noinline]] void splitWideWithBuffers(
-        vector<EdgeMask> &maskList,
-        vi &edgeCounts,
+        vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
     {
@@ -616,8 +620,12 @@ struct ufdsSplit
             }
             if (edgeCount > 1)
             {
-                maskList.push_back(EdgeMask::fromActiveWords(words));
-                edgeCounts.push_back(edgeCount);
+                fragmentList.emplace_back(
+                    EdgeMask::fromActiveWords(words),
+                    edgeCount,
+                    unknownCanonicalId,
+                    true
+                );
             }
         }
     }

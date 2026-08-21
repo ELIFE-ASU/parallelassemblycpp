@@ -13,7 +13,7 @@ bool initialRecursiveEnumeration(
 )
 {
     vector<initialDagLevel> tempDag(2);
-    vector<EdgeMask> &masks = _target.masks;
+    vector<assemblyFragment> &fragments = _target.fragments;
     const initialIncidentEdgeIndex incidentEdges;
     bool alive = 0;
     size_t currSize = 1;
@@ -22,13 +22,13 @@ bool initialRecursiveEnumeration(
     size_t retainedStateCount = 0;
 
     // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
-    for (size_t i = 0; i < masks.size(); i++)
+    for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return false;
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
             if (searchShouldStopPeriodically()) return false;
-            if (masks[i][j] != 0)
+            if (fragments[i].mask[j] != 0)
             {
                 EdgeMask b = 0; b.set(j);
                 const initialDagInsertion insertion =
@@ -45,19 +45,19 @@ bool initialRecursiveEnumeration(
     }
 
     // Generate the first multi-edge frontier only after all base states exist.
-    for (size_t i = 0; i < masks.size(); i++)
+    for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return false;
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
             if (searchShouldStopPeriodically()) return false;
-            if (masks[i][j] == 0) continue;
+            if (fragments[i].mask[j] == 0) continue;
 
             if (rootNodeIndices[j] < 0)
                 throw logic_error("initial DAG root was not retained");
             initialPotentialDuplicate m(
                 j,
-                masks[i],
+                fragments[i].mask,
                 incidentEdges,
                 i,
                 rootNodeIndices[j]
@@ -66,7 +66,7 @@ bool initialRecursiveEnumeration(
                 prevML,
                 retainedStateCount,
                 tempDag,
-                masks[i],
+                fragments[i].mask,
                 incidentEdges
             ))
             {
@@ -95,7 +95,7 @@ bool initialRecursiveEnumeration(
                 stmap,
                 s,
                 currSize + 1,
-                masks.size()
+                fragments.size()
             ).insert(std::move(m));
         }
         stmap.seal();
@@ -112,7 +112,7 @@ bool initialRecursiveEnumeration(
                     currML,
                     retainedStateCount,
                     tempDag,
-                    masks,
+                    fragments,
                     incidentEdges
                 );
                 if (enumerationLimitReached)
@@ -150,20 +150,20 @@ int dagRecursiveEnumeration(
 {
     if (searchShouldStop()) return 0;
     int ordinal = std::numeric_limits<int>::max();
-    const auto ordinalEntry = bitsetHashTable.find(_target.masks.front());
-    if (ordinalEntry != bitsetHashTable.end()) ordinal = ordinalEntry->second.first;
-    vector<EdgeMask> &masks = _target.masks;
+    if (_target.fragments.front().canonicalId >= 0)
+        ordinal = _target.fragments.front().canonicalId;
+    vector<assemblyFragment> &fragments = _target.fragments;
     size_t currSize = 1;
     
     stmapVector.resize(1);
     classIndex.beginLevel();
-    for (size_t i = 0; i < masks.size(); i++)
+    for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return 0;
         for (size_t j = 0; j < univEdgeList.size(); j++)
         {
             if (searchShouldStopPeriodically()) return 0;
-            if (masks[i][j] != 0)
+            if (fragments[i].mask[j] != 0)
             {
                 EdgeMask b = 0; b.set(j);
                 potentialDuplicate m(std::move(b), i, j);
@@ -171,10 +171,10 @@ int dagRecursiveEnumeration(
                     m,
                     stmapVector[0],
                     classIndex,
-                    masks[i],
+                    fragments[i].mask,
                     currSize,
                     ordinal,
-                    masks.size()
+                    fragments.size()
                 );
                 if (searchShouldStop()) return 0;
             }
@@ -185,7 +185,7 @@ int dagRecursiveEnumeration(
     while (active)
     {
         if (searchShouldStop()) return 0;
-        vector<EdgeMask> targetMask(masks.size(), 0);
+        vector<EdgeMask> targetMask(fragments.size(), 0);
         active = 0;
         stmapVector.emplace_back();
         classIndex.beginLevel();
@@ -203,7 +203,7 @@ int dagRecursiveEnumeration(
                     stmapVector.back(),
                     classIndex,
                     targetMask,
-                    masks,
+                    fragments,
                     ordinal,
                     overweight,
                     last
@@ -217,11 +217,11 @@ int dagRecursiveEnumeration(
         currSize++;
     }
     if (stmapVector.back().size() == 0) stmapVector.pop_back();
-    for (size_t i = 0; i < masks.size(); i++)
+    for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return 0;
-        masks[i] &= targetMasks[0][i];
-        _target.edgeCounts[i] = static_cast<int>(masks[i].count());
+        assemblyFragment &fragment = fragments[i];
+        fragment.retainEdges(targetMasks[0][i]);
     }
     return currSize;
 }
@@ -316,26 +316,27 @@ int postFragmentationCutoff(
     vi &boundTotals
 )
 {
-    const int maxFragSize = target.edgeCounts[0];
-    const bool useTargetedBounds = target.masks.size() >= 2;
+    const int maxFragSize = target.fragments[0].edgeCount;
+    const bool useTargetedBounds = target.fragments.size() >= 2;
     int matchDB = 0;
     int maxFragDB = 0;
     boundTotals.assign(max(maxFragSize - 2, 0), 0);
 
-    for (size_t i = 0; i < target.masks.size(); i++)
+    for (size_t i = 0; i < target.fragments.size(); i++)
     {
-        const int edgeCount = target.edgeCounts[i];
+        const assemblyFragment &fragment = target.fragments[i];
+        const int edgeCount = fragment.edgeCount;
         if (useTargetedBounds)
         {
             const int matchingEdges = i == 0
                 ? maxFragSize
                 : static_cast<int>(
-                    target.masks[i].intersectionCount(matchMask)
+                    fragment.mask.intersectionCount(matchMask)
                 );
             const int maximalEdges = i == 0
                 ? maxFragSize
                 : static_cast<int>(
-                    target.masks[i].intersectionCount(maxFragMask)
+                    fragment.mask.intersectionCount(maxFragMask)
                 );
             matchDB += assemblyState::fixedSizeDupBondsForFragment(
                 edgeCount,
@@ -392,8 +393,9 @@ void buildUnrestrictedDupBondTotals(
 )
 {
     totals.assign(max(maxDuplicateSize - 1, 0), 0);
-    for (const int edgeCount : target.edgeCounts)
+    for (const assemblyFragment &fragment : target.fragments)
     {
+        const int edgeCount = fragment.edgeCount;
         if (!totals.empty()) totals[0] += edgeCount / 2;
         for (int duplicateSize = 3;
              duplicateSize <= maxDuplicateSize;
@@ -422,13 +424,16 @@ int pairSpecificGenericBound(
     int total = parentTotals[0] + selectedSize / 2;
     if (matching.frag1 == matching.frag2)
     {
-        const int parentEdges = target.edgeCounts[matching.frag1];
+        const int parentEdges =
+            target.fragments[matching.frag1].edgeCount;
         total += (parentEdges - 2 * selectedSize) / 2 - parentEdges / 2;
     }
     else
     {
-        const int firstParentEdges = target.edgeCounts[matching.frag1];
-        const int secondParentEdges = target.edgeCounts[matching.frag2];
+        const int firstParentEdges =
+            target.fragments[matching.frag1].edgeCount;
+        const int secondParentEdges =
+            target.fragments[matching.frag2].edgeCount;
         total += (firstParentEdges - selectedSize) / 2 - firstParentEdges / 2;
         total += (secondParentEdges - selectedSize) / 2 - secondParentEdges / 2;
     }
@@ -445,7 +450,8 @@ int pairSpecificGenericBound(
             );
         if (matching.frag1 == matching.frag2)
         {
-            const int parentEdges = target.edgeCounts[matching.frag1];
+            const int parentEdges =
+                target.fragments[matching.frag1].edgeCount;
             total += assemblyState::unrestrictedDupBondsForFragment(
                 parentEdges - 2 * selectedSize,
                 duplicateSize
@@ -456,8 +462,10 @@ int pairSpecificGenericBound(
         }
         else
         {
-            const int firstParentEdges = target.edgeCounts[matching.frag1];
-            const int secondParentEdges = target.edgeCounts[matching.frag2];
+            const int firstParentEdges =
+                target.fragments[matching.frag1].edgeCount;
+            const int secondParentEdges =
+                target.fragments[matching.frag2].edgeCount;
             total += assemblyState::unrestrictedDupBondsForFragment(
                 firstParentEdges - selectedSize,
                 duplicateSize
@@ -572,18 +580,18 @@ struct homogeneousPathEquivalentMatchings
             duplicates.size > static_cast<size_t>(numeric_limits<int>::max())
         ) return;
 
-        fragmentStarts.resize(input.masks.size());
-        for (size_t fragment = 0; fragment < input.masks.size(); fragment++)
+        fragmentStarts.resize(input.fragments.size());
+        for (size_t fragment = 0; fragment < input.fragments.size(); fragment++)
         {
             if (!intervalStart(
-                input.masks[fragment],
-                input.edgeCounts[fragment],
+                input.fragments[fragment].mask,
+                input.fragments[fragment].edgeCount,
                 fragmentStarts[fragment]
             )) return;
         }
 
         occurrenceStarts.resize(duplicates.list.size());
-        vector<vector<int>> startsByFragment(input.masks.size());
+        vector<vector<int>> startsByFragment(input.fragments.size());
         for (size_t occurrence = 0;
              occurrence < duplicates.list.size();
              occurrence++)
@@ -591,8 +599,11 @@ struct homogeneousPathEquivalentMatchings
             const auto &candidate = duplicates.list[occurrence];
             if (
                 candidate.fragment < 0 ||
-                static_cast<size_t>(candidate.fragment) >= input.masks.size() ||
-                !input.masks[candidate.fragment].contains(candidate.mask) ||
+                static_cast<size_t>(candidate.fragment) >=
+                    input.fragments.size() ||
+                !input.fragments[candidate.fragment].mask.contains(
+                    candidate.mask
+                ) ||
                 !intervalStart(
                     candidate.mask,
                     static_cast<int>(duplicates.size),
@@ -661,7 +672,7 @@ struct homogeneousPathEquivalentMatchings
             if (secondStart < firstStart) swap(firstStart, secondStart);
             if (secondStart < firstStart + duplicateSize) return false;
 
-            const int parentEdges = input.edgeCounts[fragment];
+            const int parentEdges = input.fragments[fragment].edgeCount;
             addChange(parentEdges, -1);
             addChange(firstStart, 1);
             addChange(secondStart - firstStart - duplicateSize, 1);
@@ -679,7 +690,7 @@ struct homogeneousPathEquivalentMatchings
                 const int fragment = fragments[selected];
                 const int start = occurrenceStarts[occurrences[selected]] -
                     fragmentStarts[fragment];
-                const int parentEdges = input.edgeCounts[fragment];
+                const int parentEdges = input.fragments[fragment].edgeCount;
                 addChange(parentEdges, -1);
                 addChange(start, 1);
                 addChange(parentEdges - start - duplicateSize, 1);
@@ -874,12 +885,12 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
 
     /// Begin iterating through the enumerated duplicatable fragments
     assemblyState candidate;
-    candidate.reserveFragments(input.masks.size() + 2);
+    candidate.reserveFragments(input.fragments.size() + 2);
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
         dagDuplicateClassLevel &stmap = stmapVector[j];
-        vector<EdgeMask> stmapMaskList(input.masks.size(), 0);
+        vector<EdgeMask> stmapMaskList(input.fragments.size(), 0);
         vi unrestrictedParentTotals;
         vi pairGenericBoundCache;
         EdgeMask maskM = 0;
@@ -972,7 +983,8 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                             unrestrictedParentTotals
                                         );
                                         pairGenericBoundCache.assign(
-                                            input.masks.size() * input.masks.size(),
+                                            input.fragments.size() *
+                                                input.fragments.size(),
                                             numeric_limits<int>::min()
                                         );
                                     }
@@ -985,7 +997,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                         matching.frag2
                                     );
                                     int &genericRouteBound = pairGenericBoundCache[
-                                        firstFragment * input.masks.size() +
+                                        firstFragment * input.fragments.size() +
                                         secondFragment
                                     ];
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -1042,6 +1054,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                     fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                         input,
                         matching,
+                        entry.canonicalId,
                         candidate,
                         fragmentationWorkspace
                     );
@@ -1065,7 +1078,8 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                         vi &candidateKey = searchStorage.candidateKey;
                         if (!canoniseAssemblyStateAndBuildKey(
                             candidate,
-                            candidateKey
+                            candidateKey,
+                            fragmentationWorkspace
                         )) return false;
                         if (!continueAssemblySearchWithWorkspace<
                             equivalenceMode,
@@ -1168,7 +1182,7 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
     setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
 #endif
     assemblyState candidate;
-    candidate.reserveFragments(input.masks.size() + 2);
+    candidate.reserveFragments(input.fragments.size() + 2);
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
@@ -1183,6 +1197,7 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
                 fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                     input,
                     matching,
+                    entry.canonicalId,
                     candidate,
                     fragmentationWorkspace
                 );
@@ -1195,7 +1210,8 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
                     vi &candidateKey = searchStorage.candidateKey;
                     if (!canoniseAssemblyStateAndBuildKey(
                         candidate,
-                        candidateKey
+                        candidateKey,
+                        fragmentationWorkspace
                     )) return false;
                     if (!continueAssemblySearchWithWorkspace<
                         equivalenceMode,
@@ -1373,7 +1389,12 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
 #endif
     for (size_t i = 0; i < univEdgeList.size(); i++) allEdges.set(i);
     assemblyState as;
-    as.appendFragment(allEdges, static_cast<int>(univEdgeList.size()));
+    as.appendFragment(
+        allEdges,
+        static_cast<int>(univEdgeList.size()),
+        unknownCanonicalId,
+        false
+    );
     int AI = std::numeric_limits<int>::max();
     if (isPathway)
     {

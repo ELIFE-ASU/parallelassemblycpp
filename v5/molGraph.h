@@ -443,52 +443,48 @@ molGraph originalMolecule, targetMolecule;
 struct cachedResidualDecomposition
 {
     bool isIdentity = false;
-    vector<EdgeMask> components;
-    vi edgeCounts;
+    int identityCanonicalId = unknownCanonicalId;
+    vector<assemblyFragment> components;
 
     void appendTo(
         uint64_t maskWord,
         int activeEdgeCount,
-        vector<EdgeMask> &output,
-        vi &outputEdgeCounts
+        vector<assemblyFragment> &output
     ) const
     {
         if (isIdentity)
         {
-            output.emplace_back(maskWord);
-            outputEdgeCounts.push_back(activeEdgeCount);
+            output.emplace_back(
+                EdgeMask(maskWord),
+                activeEdgeCount,
+                identityCanonicalId,
+                true
+            );
         }
         else
         {
             output.insert(output.end(), components.begin(), components.end());
-            outputEdgeCounts.insert(
-                outputEdgeCounts.end(),
-                edgeCounts.begin(),
-                edgeCounts.end()
-            );
         }
     }
 
     void appendTo(
         const EdgeMask &mask,
         int activeEdgeCount,
-        vector<EdgeMask> &output,
-        vi &outputEdgeCounts
+        vector<assemblyFragment> &output
     ) const
     {
         if (isIdentity)
         {
-            output.push_back(mask);
-            outputEdgeCounts.push_back(activeEdgeCount);
+            output.emplace_back(
+                mask,
+                activeEdgeCount,
+                identityCanonicalId,
+                true
+            );
         }
         else
         {
             output.insert(output.end(), components.begin(), components.end());
-            outputEdgeCounts.insert(
-                outputEdgeCounts.end(),
-                edgeCounts.begin(),
-                edgeCounts.end()
-            );
         }
     }
 };
@@ -496,13 +492,30 @@ struct cachedResidualDecomposition
 struct lowResidualDecompositionCacheEntry
 {
     uint64_t key = 0;
+    uint64_t generation = 0;
     bool occupied = false;
     cachedResidualDecomposition decomposition;
 };
 
 struct wideResidualDecompositionCacheEntry
 {
+    uint64_t generation = 0;
     cachedResidualDecomposition decomposition;
+};
+
+enum class residualCanonicalIdCacheKind : unsigned char
+{
+    low,
+    wide
+};
+
+/** @brief Deferred cache-ID writeback for one raw child decomposition. */
+struct residualCanonicalIdBinding
+{
+    residualCanonicalIdCacheKind kind;
+    size_t entryIndex;
+    uint64_t generation;
+    size_t outputStart;
 };
 
 struct ufdsMaskWorkspace
@@ -536,12 +549,14 @@ struct ufdsMaskWorkspace
     vector<uint64_t> decompositionSeenBits;
     unique_ptr<uint64_t[]> wideDecompositionSeenFingerprints;
     vector<uint64_t> wideDecompositionSeenOccupied;
+    vector<residualCanonicalIdBinding> residualCanonicalIdBindings;
     size_t edgeCount;
     size_t decompositionCacheKeyWordCount;
     bool reuseResidualDecompositions;
     size_t lowDecompositionCacheEntries = 0;
     size_t wideDecompositionCacheEntries = 0;
     size_t decompositionCacheComponentUnits = 0;
+    uint64_t decompositionCacheGeneration = 0;
     bool decompositionCacheDisabled = false;
     size_t wideDecompositionUnprovenProbes = 0;
     bool wideDecompositionCacheProvenUseful = false;
@@ -572,6 +587,7 @@ struct ufdsMaskWorkspace
         sets.extraVals.reserve(_edgeCount);
         components.reserve(atomCount);
         boundTotals.reserve(_edgeCount);
+        residualCanonicalIdBindings.reserve(4);
         if (reuseResidualDecompositions)
         {
             if (!usesWideDecompositionCache())
@@ -589,6 +605,19 @@ struct ufdsMaskWorkspace
     bool usesWideDecompositionCache() const
     {
         return edgeCount > numeric_limits<uint64_t>::digits;
+    }
+
+    uint64_t nextDecompositionCacheGeneration()
+    {
+        ++decompositionCacheGeneration;
+        if (decompositionCacheGeneration == 0) ++decompositionCacheGeneration;
+        return decompositionCacheGeneration;
+    }
+
+    [[gnu::always_inline]] void beginFragmentation()
+    {
+        if (!residualCanonicalIdBindings.empty()) [[unlikely]]
+            residualCanonicalIdBindings.clear();
     }
 
 #ifdef FRAGMENT_CACHE_STATS
@@ -711,8 +740,112 @@ struct ufdsMaskWorkspace
         }
     }
 
+    static bool needsCanonicalIdWriteback(
+        const cachedResidualDecomposition &decomposition
+    )
+    {
+        if (decomposition.isIdentity)
+            return decomposition.identityCanonicalId < 0;
+        // A decomposition is admitted before any of its fresh components are
+        // canonicalised, then all IDs are written back together.
+        return
+            !decomposition.components.empty() &&
+            decomposition.components.front().canonicalId < 0;
+    }
+
+    void bindLowCanonicalIds(size_t entryIndex, size_t outputStart)
+    {
+        const lowResidualDecompositionCacheEntry &entry =
+            lowDecompositionCache[entryIndex];
+        if (!needsCanonicalIdWriteback(entry.decomposition)) return;
+        residualCanonicalIdBindings.push_back({
+            residualCanonicalIdCacheKind::low,
+            entryIndex,
+            entry.generation,
+            outputStart
+        });
+    }
+
+    void bindWideCanonicalIds(size_t entryIndex, size_t outputStart)
+    {
+        const wideResidualDecompositionCacheEntry &entry =
+            wideDecompositionCache[entryIndex];
+        if (!needsCanonicalIdWriteback(entry.decomposition)) return;
+        residualCanonicalIdBindings.push_back({
+            residualCanonicalIdCacheKind::wide,
+            entryIndex,
+            entry.generation,
+            outputStart
+        });
+    }
+
+    /** Cache IDs resolved only after the raw child survives its bounds. */
+    [[gnu::always_inline]] void cacheCanonicalIds(
+        const vector<assemblyFragment> &output
+    )
+    {
+        if (residualCanonicalIdBindings.empty()) [[likely]] return;
+        cacheCanonicalIdsSlow(output);
+    }
+
+    [[gnu::noinline]] void cacheCanonicalIdsSlow(
+        const vector<assemblyFragment> &output
+    )
+    {
+        for (const residualCanonicalIdBinding &binding :
+             residualCanonicalIdBindings)
+        {
+            cachedResidualDecomposition *decomposition = nullptr;
+            if (binding.kind == residualCanonicalIdCacheKind::low)
+            {
+                if (binding.entryIndex >= lowDecompositionCache.size())
+                    continue;
+                lowResidualDecompositionCacheEntry &entry =
+                    lowDecompositionCache[binding.entryIndex];
+                if (
+                    !entry.occupied ||
+                    entry.generation != binding.generation
+                ) continue;
+                decomposition = &entry.decomposition;
+            }
+            else
+            {
+                if (binding.entryIndex >= wideDecompositionCache.size())
+                    continue;
+                wideResidualDecompositionCacheEntry &entry =
+                    wideDecompositionCache[binding.entryIndex];
+                if (entry.generation != binding.generation) continue;
+                decomposition = &entry.decomposition;
+            }
+
+            const size_t componentCount = decomposition->isIdentity
+                ? 1
+                : decomposition->components.size();
+            if (
+                binding.outputStart > output.size() ||
+                componentCount > output.size() - binding.outputStart
+            )
+            {
+                throw logic_error("residual canonical-ID binding is invalid");
+            }
+            if (decomposition->isIdentity)
+            {
+                decomposition->identityCanonicalId =
+                    output[binding.outputStart].canonicalId;
+                continue;
+            }
+            for (size_t i = 0; i < componentCount; i++)
+            {
+                decomposition->components[i].canonicalId =
+                    output[binding.outputStart + i].canonicalId;
+            }
+        }
+        residualCanonicalIdBindings.clear();
+    }
+
     void disableDecompositionCache()
     {
+        residualCanonicalIdBindings.clear();
         vector<lowResidualDecompositionCacheEntry>().swap(
             lowDecompositionCache
         );
@@ -730,8 +863,8 @@ struct ufdsMaskWorkspace
     }
 
     bool assignCachedComponents(
-        vector<EdgeMask> &stored,
-        const vector<EdgeMask> &output,
+        vector<assemblyFragment> &stored,
+        const vector<assemblyFragment> &output,
         size_t outputStart,
         size_t storedComponentCount
     )
@@ -762,7 +895,7 @@ struct ufdsMaskWorkspace
         {
             return false;
         }
-        vector<EdgeMask> replacement(
+        vector<assemblyFragment> replacement(
             output.begin() + outputStart,
             output.end()
         );
@@ -778,14 +911,13 @@ struct ufdsMaskWorkspace
  * @brief Calls the disjoint-set data structure for the fragmentation function. See Seet et al. section 4.5 for details
  *
  * @param mask Target bitset as input
- * @param maskList List of disjoint bitsets returned
+ * @param fragmentList Connected residual fragments returned
  * @param workspace Reusable disjoint-set and component buffers. Its component
- * buffer must not alias maskList.
+ * buffer must not alias fragmentList.
  */
 void ufdsMaskConstructWithoutCacheWithWorkspace(
     const EdgeMask &mask,
-    vector<EdgeMask> &maskList,
-    vi &edgeCounts,
+    vector<assemblyFragment> &fragmentList,
     ufdsMaskWorkspace &workspace,
     uint64_t lowMaskWord
 )
@@ -841,7 +973,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
     }
     else forEachSetBitWithWideLimit(mask, edgeList.size(), visitEdge);
     if (!initialised) return;
-    u.splitWithBuffers(maskList, edgeCounts, workspace.components);
+    u.splitWithBuffers(fragmentList, workspace.components);
 }
 
 /**
@@ -852,8 +984,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
  */
 void ufdsMaskConstructWithLowCacheWithWorkspace(
     const EdgeMask &mask,
-    vector<EdgeMask> &maskList,
-    vi &edgeCounts,
+    vector<assemblyFragment> &fragmentList,
     ufdsMaskWorkspace &workspace
 )
 {
@@ -863,8 +994,7 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
     auto constructWithoutCache = [&]() {
         ufdsMaskConstructWithoutCacheWithWorkspace(
             mask,
-            maskList,
-            edgeCounts,
+            fragmentList,
             workspace,
             lowMaskWord
         );
@@ -919,6 +1049,8 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
         return;
     }
 
+    const size_t index = fingerprint &
+        (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
     const cachedResidualDecomposition *cachedDecomposition = nullptr;
     if (!workspace.decompositionCacheDisabled)
     {
@@ -928,8 +1060,6 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
 #endif
         if (!workspace.lowDecompositionCache.empty())
         {
-            const size_t index = fingerprint &
-                (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
             const lowResidualDecompositionCacheEntry &cached =
                 workspace.lowDecompositionCache[index];
             if (cached.occupied && cached.key == lowMaskWord)
@@ -946,12 +1076,13 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
 #ifdef FRAGMENT_CACHE_STATS
             workspace.decompositionCacheHits++;
 #endif
+            const size_t outputStart = fragmentList.size();
             cachedDecomposition->appendTo(
                 lowMaskWord,
                 static_cast<int>(activeEdgeCount),
-                maskList,
-                edgeCounts
+                fragmentList
             );
+            workspace.bindLowCanonicalIds(index, outputStart);
             return;
         }
 #ifdef FRAGMENT_CACHE_STATS
@@ -963,7 +1094,7 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
 #endif
     }
 
-    const size_t outputStart = maskList.size();
+    const size_t outputStart = fragmentList.size();
     constructWithoutCache();
 
     if (
@@ -973,10 +1104,10 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
         return;
     }
 
-    const size_t componentCount = maskList.size() - outputStart;
+    const size_t componentCount = fragmentList.size() - outputStart;
     const bool isIdentity =
         componentCount == 1 &&
-        maskList[outputStart] == EdgeMask(lowMaskWord);
+        fragmentList[outputStart].mask == EdgeMask(lowMaskWord);
     const size_t storedComponentCount = isIdentity ? 0 : componentCount;
 
     try
@@ -987,26 +1118,24 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
                 ufdsMaskWorkspace::decompositionCacheEntryLimit
             );
         }
-        const size_t index = fingerprint &
-            (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
         lowResidualDecompositionCacheEntry &entry =
             workspace.lowDecompositionCache[index];
-        vector<EdgeMask> &stored = entry.decomposition.components;
+        vector<assemblyFragment> &stored = entry.decomposition.components;
         if (!workspace.assignCachedComponents(
             stored,
-            maskList,
+            fragmentList,
             outputStart,
             storedComponentCount
         ))
         {
             return;
         }
-        entry.decomposition.edgeCounts.assign(
-            edgeCounts.begin() + outputStart,
-            edgeCounts.end()
-        );
         entry.decomposition.isIdentity = isIdentity;
+        entry.decomposition.identityCanonicalId = isIdentity
+            ? fragmentList[outputStart].canonicalId
+            : unknownCanonicalId;
         entry.key = lowMaskWord;
+        entry.generation = workspace.nextDecompositionCacheGeneration();
         if (!entry.occupied)
         {
             entry.occupied = true;
@@ -1038,8 +1167,7 @@ void ufdsMaskConstructWithLowCacheWithWorkspace(
  */
 void ufdsMaskConstructWithWideCacheWithWorkspace(
     const EdgeMask &mask,
-    vector<EdgeMask> &maskList,
-    vi &edgeCounts,
+    vector<assemblyFragment> &fragmentList,
     ufdsMaskWorkspace &workspace
 )
 {
@@ -1047,8 +1175,7 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
     auto constructWithoutCache = [&]() {
         ufdsMaskConstructWithoutCacheWithWorkspace(
             mask,
-            maskList,
-            edgeCounts,
+            fragmentList,
             workspace,
             0
         );
@@ -1143,6 +1270,7 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
     }
 
     const cachedResidualDecomposition *cachedDecomposition = nullptr;
+    size_t matchedEntryIndex = numeric_limits<size_t>::max();
     const size_t index = fingerprint &
         (ufdsMaskWorkspace::decompositionCacheEntryLimit - 1);
     if (!workspace.decompositionCacheDisabled)
@@ -1160,6 +1288,7 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
                 workspace.wideDecompositionKeyEquals(entryIndex, mask)
             )
             {
+                matchedEntryIndex = entryIndex;
                 cachedDecomposition =
                     &workspace.wideDecompositionCache[entryIndex].decomposition;
             }
@@ -1179,12 +1308,13 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
                     workspace.wideDecompositionFingerprintProbes;
             }
 #endif
+            const size_t outputStart = fragmentList.size();
             cachedDecomposition->appendTo(
                 mask,
                 static_cast<int>(activeEdgeCount),
-                maskList,
-                edgeCounts
+                fragmentList
             );
+            workspace.bindWideCanonicalIds(matchedEntryIndex, outputStart);
             return;
         }
 #ifdef FRAGMENT_CACHE_STATS
@@ -1196,14 +1326,14 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
 #endif
     }
 
-    const size_t outputStart = maskList.size();
+    const size_t outputStart = fragmentList.size();
     constructWithoutCache();
 
     if (workspace.decompositionCacheDisabled) return;
 
-    const size_t componentCount = maskList.size() - outputStart;
+    const size_t componentCount = fragmentList.size() - outputStart;
     const bool isIdentity =
-        componentCount == 1 && maskList[outputStart] == mask;
+        componentCount == 1 && fragmentList[outputStart].mask == mask;
     const size_t storedComponentCount = isIdentity ? 0 : componentCount;
 
     try
@@ -1228,10 +1358,10 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
         }
         wideResidualDecompositionCacheEntry &entry =
             workspace.wideDecompositionCache[entryIndex];
-        vector<EdgeMask> &stored = entry.decomposition.components;
+        vector<assemblyFragment> &stored = entry.decomposition.components;
         if (!workspace.assignCachedComponents(
             stored,
-            maskList,
+            fragmentList,
             outputStart,
             storedComponentCount
         ))
@@ -1245,11 +1375,11 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
             }
             return;
         }
-        entry.decomposition.edgeCounts.assign(
-            edgeCounts.begin() + outputStart,
-            edgeCounts.end()
-        );
         entry.decomposition.isIdentity = isIdentity;
+        entry.decomposition.identityCanonicalId = isIdentity
+            ? fragmentList[outputStart].canonicalId
+            : unknownCanonicalId;
+        entry.generation = workspace.nextDecompositionCacheGeneration();
         workspace.assignWideDecompositionKey(entryIndex, mask);
         if (newEntry)
         {
@@ -1277,8 +1407,7 @@ void ufdsMaskConstructWithWideCacheWithWorkspace(
  */
 inline void ufdsMaskConstructWithWorkspace(
     const EdgeMask &mask,
-    vector<EdgeMask> &maskList,
-    vi &edgeCounts,
+    vector<assemblyFragment> &fragmentList,
     ufdsMaskWorkspace &workspace
 )
 {
@@ -1311,8 +1440,7 @@ inline void ufdsMaskConstructWithWorkspace(
 #endif
             ufdsMaskConstructWithoutCacheWithWorkspace(
                 mask,
-                maskList,
-                edgeCounts,
+                fragmentList,
                 workspace,
                 workspace.usesWideDecompositionCache()
                     ? 0
@@ -1324,8 +1452,7 @@ inline void ufdsMaskConstructWithWorkspace(
         {
             ufdsMaskConstructWithWideCacheWithWorkspace(
                 mask,
-                maskList,
-                edgeCounts,
+                fragmentList,
                 workspace
             );
         }
@@ -1333,8 +1460,7 @@ inline void ufdsMaskConstructWithWorkspace(
         {
             ufdsMaskConstructWithLowCacheWithWorkspace(
                 mask,
-                maskList,
-                edgeCounts,
+                fragmentList,
                 workspace
             );
         }
@@ -1358,8 +1484,7 @@ inline void ufdsMaskConstructWithWorkspace(
 #endif
     ufdsMaskConstructWithoutCacheWithWorkspace(
         mask,
-        maskList,
-        edgeCounts,
+        fragmentList,
         workspace,
         workspace.edgeCount <= numeric_limits<uint64_t>::digits
             ? bitsetLowWordBelow(mask, workspace.edgeCount)

@@ -9,6 +9,54 @@ struct triple
     triple(T1 &_a, T2 &_b, T3 &_c): a(_a), b(_b), c(_c) {}
 };
 
+constexpr int unknownCanonicalId = -1;
+
+/** @brief One assembly fragment and the metadata proved for its exact mask. */
+struct assemblyFragment
+{
+    EdgeMask mask;
+    int32_t canonicalId = unknownCanonicalId;
+    uint32_t edgeCount : 31 = 0;
+    uint32_t connected : 1 = false;
+
+    assemblyFragment() = default;
+
+    assemblyFragment(
+        const EdgeMask &_mask,
+        int _edgeCount,
+        int _canonicalId = unknownCanonicalId,
+        bool _connected = false
+    ):
+        mask(_mask),
+        canonicalId(_canonicalId),
+        edgeCount(static_cast<uint32_t>(_edgeCount)),
+        connected(_connected) {}
+
+    assemblyFragment(
+        EdgeMask &&_mask,
+        int _edgeCount,
+        int _canonicalId = unknownCanonicalId,
+        bool _connected = false
+    ):
+        mask(std::move(_mask)),
+        canonicalId(_canonicalId),
+        edgeCount(static_cast<uint32_t>(_edgeCount)),
+        connected(_connected) {}
+
+    /** Retain allowed edges, invalidating metadata only when the mask changes. */
+    [[gnu::always_inline]] bool retainEdges(const EdgeMask &allowedMask)
+    {
+        if (allowedMask.contains(mask)) return false;
+        mask &= allowedMask;
+        edgeCount = static_cast<uint32_t>(mask.count());
+        canonicalId = unknownCanonicalId;
+        connected = false;
+        return true;
+    }
+};
+
+static_assert(sizeof(assemblyFragment) == 2 * sizeof(uint64_t));
+
 int ENUM_MAX = 50000000;
 
 string moleculeName;

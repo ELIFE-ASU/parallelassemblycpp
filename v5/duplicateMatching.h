@@ -556,7 +556,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
     bool dagPopulator(vector<initialPotentialDuplicate> &q, 
     size_t &retainedStateCount,
     vector<initialDagLevel> &tempDag,
-    const vector<EdgeMask> &fragmentMasks,
+    const vector<assemblyFragment> &fragments,
     const initialIncidentEdgeIndex &incidentEdges)
     {
         bool output = 0;
@@ -569,7 +569,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
                 q,
                 retainedStateCount,
                 tempDag,
-                fragmentMasks[duplicate.fragment],
+                fragments[duplicate.fragment].mask,
                 incidentEdges
             );
             // Each retained initial occurrence is expanded at most once. Its
@@ -780,7 +780,7 @@ bool dagGenerate(
     potentialDuplicate &d,
     dagDuplicateClassLevel &stmap,
     duplicateClassIndexWorkspace &classIndex,
-    EdgeMask &fragment,
+    const EdgeMask &fragment,
     size_t size,
     int ordinal,
     size_t frags
@@ -840,7 +840,7 @@ bool dagDuplicateGenerator(
     dagDuplicateClassLevel &stmap,
     duplicateClassIndexWorkspace &classIndex,
     vector<EdgeMask> &takenMasks,
-    vector<EdgeMask> &stateMasks,
+    const vector<assemblyFragment> &stateFragments,
     int ordinal,
     bool &overweight,
     bool last
@@ -861,7 +861,7 @@ bool dagDuplicateGenerator(
                     duplicate,
                     stmap,
                     classIndex,
-                    stateMasks[frag],
+                    stateFragments[frag].mask,
                     ds.size,
                     ordinal,
                     ds.maskList.size()

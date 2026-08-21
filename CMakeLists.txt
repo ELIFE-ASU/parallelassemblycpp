@@ -156,6 +156,12 @@ if(BUILD_TESTING)
   )
   assemblycpp_configure_target(assemblycpp_search_stop_poll_tests)
 
+  add_executable(
+    assemblycpp_fragmentation_metadata_tests
+    unitTests/fragmentationMetadataTester.cpp
+  )
+  assemblycpp_configure_target(assemblycpp_fragmentation_metadata_tests)
+
   add_test(
     NAME unit.active-word-mask
     COMMAND assemblycpp_active_word_mask_tests
@@ -185,12 +191,17 @@ if(BUILD_TESTING)
     NAME unit.search-stop-polling
     COMMAND assemblycpp_search_stop_poll_tests
   )
+  add_test(
+    NAME unit.fragmentation-metadata
+    COMMAND assemblycpp_fragmentation_metadata_tests
+  )
   set_tests_properties(
     unit.active-word-mask
     unit.assembly-transposition-table
     unit.tree-canonicalisation
     unit.cyclic-canonicalisation
     unit.search-stop-polling
+    unit.fragmentation-metadata
     PROPERTIES LABELS "unit"
   )
 

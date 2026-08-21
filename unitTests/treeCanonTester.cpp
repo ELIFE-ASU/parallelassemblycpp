@@ -255,35 +255,37 @@ void testWideUfdsSplit()
         splitter.doubleInsert(0, 1, 0);
         splitter.insert(2, 1, 1);
 
-        vector<EdgeMask> masks;
+        vector<assemblyFragment> fragments;
         vector<EdgeMask> temporaryMasks;
-        vi edgeCounts;
-        splitter.splitWithBuffers(masks, edgeCounts, temporaryMasks);
+        splitter.splitWithBuffers(fragments, temporaryMasks);
 
-        assert(masks.size() == 2);
-        assert(edgeCounts == vi({2, 2}));
-        assert(masks[0].count() == 2);
-        assert(masks[0].test(0));
-        assert(masks[0].test(1));
-        assert(masks[1].count() == 2);
-        assert(masks[1].test(511));
-        assert(masks[1].test(512));
+        assert(fragments.size() == 2);
+        assert(fragments[0].edgeCount == 2);
+        assert(fragments[1].edgeCount == 2);
+        assert(fragments[0].connected);
+        assert(fragments[1].connected);
+        assert(fragments[0].mask.count() == 2);
+        assert(fragments[0].mask.test(0));
+        assert(fragments[0].mask.test(1));
+        assert(fragments[1].mask.count() == 2);
+        assert(fragments[1].mask.test(511));
+        assert(fragments[1].mask.test(512));
 
         // Reuse the workspace to verify reset clears the sparse wide-word
         // tracking rather than leaking the preceding high component.
         splitter.reset();
-        masks.clear();
-        edgeCounts.clear();
+        fragments.clear();
         splitter.doubleInsert(512, 513, 7);
         splitter.insert(511, 512, 8);
-        splitter.splitWithBuffers(masks, edgeCounts, temporaryMasks);
-        assert(masks.size() == 1);
-        assert(edgeCounts == vi({2}));
-        assert(masks[0].count() == 2);
-        assert(masks[0].test(7));
-        assert(masks[0].test(8));
-        assert(!masks[0].test(511));
-        assert(!masks[0].test(512));
+        splitter.splitWithBuffers(fragments, temporaryMasks);
+        assert(fragments.size() == 1);
+        assert(fragments[0].edgeCount == 2);
+        assert(fragments[0].connected);
+        assert(fragments[0].mask.count() == 2);
+        assert(fragments[0].mask.test(7));
+        assert(fragments[0].mask.test(8));
+        assert(!fragments[0].mask.test(511));
+        assert(!fragments[0].mask.test(512));
     }
     EdgeMask::configure(64);
 }

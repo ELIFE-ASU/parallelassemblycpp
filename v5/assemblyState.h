@@ -2,29 +2,35 @@
  * @brief Assembly state data structure. Records the current state of this assembly pathway
  */
 struct assemblyState
-{   
-    /// @brief each mask represents a separate fragment as a boolean edge list
-    vector<EdgeMask> masks;
-    /// @brief edge count parallel to each entry in masks
-    vi edgeCounts;
+{
+    /// @brief Fragment masks and metadata kept valid as one unit
+    vector<assemblyFragment> fragments;
     /// @brief number of duplicated bonds
     int sumDupBonds = 0;
-    void appendFragment(const EdgeMask &mask, int edgeCount)
+
+    void appendFragment(
+        const EdgeMask &mask,
+        int edgeCount,
+        int canonicalId = unknownCanonicalId,
+        bool connected = false
+    )
     {
-        masks.push_back(mask);
-        edgeCounts.push_back(edgeCount);
+        fragments.emplace_back(mask, edgeCount, canonicalId, connected);
+    }
+
+    void appendFragment(const assemblyFragment &fragment)
+    {
+        fragments.push_back(fragment);
     }
 
     void reserveFragments(size_t capacity)
     {
-        masks.reserve(capacity);
-        edgeCounts.reserve(capacity);
+        fragments.reserve(capacity);
     }
 
     void clearFragments()
     {
-        masks.clear();
-        edgeCounts.clear();
+        fragments.clear();
         sumDupBonds = 0;
     }
 
@@ -60,7 +66,7 @@ struct assemblyState
      */
     int maxDupBonds()
     {
-        return maxDupBonds(edgeCounts[0]);
+        return maxDupBonds(fragments[0].edgeCount);
     }
 
     /**
@@ -74,10 +80,10 @@ struct assemblyState
     ) const
     {
         int dupBondsTotal = -ceilLog2(maxFragSize);
-        for (size_t i = 0; i < masks.size(); i++)
+        for (size_t i = 0; i < fragments.size(); i++)
         {
             dupBondsTotal += fixedSizeDupBondsForFragment(
-                edgeCounts[i],
+                fragments[i].edgeCount,
                 maxFragSize,
                 static_cast<int>(targetMasks[i].count())
             );
@@ -104,9 +110,9 @@ struct assemblyState
         }
 
         fragSizeListMax.assign(maxFragSize - 1, 0);
-        for (const int edgeCount : edgeCounts)
+        for (const assemblyFragment &fragment : fragments)
         {
-            fragSizeListMax[0] += edgeCount / 2;
+            fragSizeListMax[0] += fragment.edgeCount / 2;
         }
         fragSizeListMax[0]--;
 
@@ -117,10 +123,10 @@ struct assemblyState
             const size_t index = duplicateSize - 2;
             int bound = -ceilLog2(duplicateSize);
             const vector<EdgeMask> &duplicateMasks = targetMasks[index];
-            for (size_t i = 0; i < masks.size(); i++)
+            for (size_t i = 0; i < fragments.size(); i++)
             {
                 bound += fixedSizeDupBondsForFragment(
-                    edgeCounts[i],
+                    fragments[i].edgeCount,
                     duplicateSize,
                     static_cast<int>(duplicateMasks[i].count())
                 );
@@ -142,17 +148,18 @@ struct assemblyState
     {
         int dupBonds2 = 0, dupBondsTotal;
 
-        for (const int edgeCount : edgeCounts) dupBonds2 += edgeCount / 2;
+        for (const assemblyFragment &fragment : fragments)
+            dupBonds2 += fragment.edgeCount / 2;
         dupBonds2--;
         for (int duplicateSize = 3;
              duplicateSize <= maxFragSize;
              duplicateSize++)
         {
             dupBondsTotal = 0;
-            for (const int edgeCount : edgeCounts)
+            for (const assemblyFragment &fragment : fragments)
             {
                 dupBondsTotal += unrestrictedDupBondsForFragment(
-                    edgeCount,
+                    fragment.edgeCount,
                     duplicateSize
                 );
             }
@@ -189,12 +196,9 @@ struct assemblyState
      */
     void assemblyHashCalculator(vi &sorted)
     {
-        sorted.assign(masks.size(), -1);
-        for (size_t i = 0; i < masks.size(); i++)
-        {
-            const auto entry = bitsetHashTable.find(masks[i]);
-            if (entry != bitsetHashTable.end()) sorted[i] = entry->second.first;
-        }
-        sort(sorted.begin() + 1, sorted.end());
+        sorted.resize(fragments.size());
+        for (size_t i = 0; i < fragments.size(); i++)
+            sorted[i] = fragments[i].canonicalId;
+        if (sorted.size() > 1) sort(sorted.begin() + 1, sorted.end());
     }
 };
