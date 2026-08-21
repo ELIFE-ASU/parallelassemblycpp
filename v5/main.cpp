@@ -8,7 +8,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <memory_resource>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -47,6 +46,7 @@ constexpr int ceilLog2(int value)
 #include "dagEnumeration.h"
 #include "duplicateMatching.h"
 #include "fragmentation.h"
+#include "assemblyTranspositionTable.h"
 #include "pathwayGenerator.h"
 #include "improvedBnB.h"
 #include "signalHandler.h"

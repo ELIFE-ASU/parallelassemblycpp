@@ -1,20 +1,4 @@
 /**
- * @brief Compact parent-link record used only to recover a requested pathway.
- */
-struct assemblyPath
-{
-    /// Canonical class of the retained fragment used by this duplication.
-    int retainedFragmentClass;
-    /// @brief needed to reconstruct the pathway
-    unsigned short match, duplicate;
-    /// @brief Assembly state from which this state is generated. needed to reconstruct the pathway
-    assemblyPath * parent;
-};
-
-/// Pointer for the minimum assembly path
-assemblyPath * minAssemblyPath = nullptr;
-
-/**
  * @brief Assembly state data structure. Records the current state of this assembly pathway
  */
 struct assemblyState
@@ -25,9 +9,6 @@ struct assemblyState
     vi edgeCounts;
     /// @brief number of duplicated bonds
     int sumDupBonds = 0;
-    /// @brief path that was used to generate this state
-    assemblyPath * apPtr = nullptr;
-
     void appendFragment(const EdgeMask &mask, int edgeCount)
     {
         masks.push_back(mask);
@@ -45,7 +26,6 @@ struct assemblyState
         masks.clear();
         edgeCounts.clear();
         sumDupBonds = 0;
-        apPtr = nullptr;
     }
 
     static int fixedSizeDupBondsForFragment(
@@ -205,17 +185,16 @@ struct assemblyState
     /**
      * @brief Build the canonical fragment key used by the transposition table.
      *
-     * @return vi The vector<int> to be hashed
+     * @param sorted Reused storage populated with the canonical key
      */
-    vi assemblyHashCalculator()
+    void assemblyHashCalculator(vi &sorted)
     {
-        vi sorted(masks.size(), -1);
+        sorted.assign(masks.size(), -1);
         for (size_t i = 0; i < masks.size(); i++)
         {
             const auto entry = bitsetHashTable.find(masks[i]);
             if (entry != bitsetHashTable.end()) sorted[i] = entry->second.first;
         }
         sort(sorted.begin() + 1, sorted.end());
-        return sorted;
     }
 };

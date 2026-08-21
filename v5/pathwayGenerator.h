@@ -1,4 +1,16 @@
 /**
+ * @brief One immutable duplication retained in the best pathway witness.
+ *
+ * Path steps live only on the active DFS stack and in the winning witness;
+ * they are deliberately independent of assembly states and cache entries.
+ */
+struct assemblyPathStep
+{
+    EdgeMask match;
+    EdgeMask duplicate;
+};
+
+/**
  * @brief Subroutine of the pathway reconstruction function
  *
  * @param mask Bitset representing edges to output
@@ -66,15 +78,15 @@ void printBondColour(short type, ofstream &ofs)
 /**
  * @brief Subroutine of the pathway reconstruction function
  *
- * @param maskList List of two bitsets (matching pair)
+ * @param step Matching pair to output
  * @param ofs Output file stream
  */
-void printMatching(vector<EdgeMask> &maskList, ofstream &ofs)
+void printMatching(const assemblyPathStep &step, ofstream &ofs)
 {
     ofs << "{\"Left\":";
-    printMaskAsEdgeList(maskList[0], ofs);
+    printMaskAsEdgeList(step.match, ofs);
     ofs << ",\"Right\":";
-    printMaskAsEdgeList(maskList[1], ofs);
+    printMaskAsEdgeList(step.duplicate, ofs);
     ofs << "}";
 }
 
@@ -182,37 +194,18 @@ void printRemnantGraph(EdgeMask mask, ofstream &ofs)
  *
  * Outputs the pathway to the file named by moleculeName, normally INPUTPathway.
  *
+ * @param pathway Immutable root-to-leaf duplication witness
  * @param removedEdges Edges removed during preprocessing
  * @return true if the complete pathway output was written successfully.
  */
-bool recoverPathway2(vector<edgeL> &removedEdges)
+bool recoverPathway2(
+    const vector<assemblyPathStep> &pathway,
+    const vector<edgeL> &removedEdges
+)
 {
-    vector<assemblyPath*> minPath;
-    for (assemblyPath *current = minAssemblyPath; current != nullptr; current = current->parent)
-    {
-        minPath.push_back(current);
-    }
-    reverse(minPath.begin(), minPath.end());
-    vector<vector<EdgeMask> > maskList(graphHashMap.size());
-    for (auto it = graphHashMap.begin(); it != graphHashMap.end(); ++it)
-    {
-        maskList[it->second.first].resize(it->second.second + 1);
-    }
-    for (auto it = bitsetHashTable.begin(); it != bitsetHashTable.end(); ++it)
-    {
-        maskList[it->second.first][it->second.second] = it->first;
-    }
     EdgeMask allTakenEdges = 0;
-    vector<vector<EdgeMask>> matchings;
-    for (size_t i = 1; i < minPath.size(); i++)
-    {
-        EdgeMask mask =
-            maskList[minPath[i]->retainedFragmentClass][minPath[i]->match],
-        duplicate =
-            maskList[minPath[i]->retainedFragmentClass][minPath[i]->duplicate];
-        allTakenEdges |= duplicate;
-        matchings.push_back({mask, duplicate});
-    }
+    for (const assemblyPathStep &step : pathway)
+        allTakenEdges |= step.duplicate;
     ofstream ofs(moleculeName);
     if (!ofs.is_open())
     {
@@ -232,10 +225,10 @@ bool recoverPathway2(vector<edgeL> &removedEdges)
     ofs << "}\n";
     ofs << "],\n";
     ofs << "\"duplicates\":[\n";
-    for (size_t i = 0; i < matchings.size(); i++)
+    for (size_t i = 0; i < pathway.size(); i++)
     {
-        printMatching(matchings[i], ofs);
-        if (i < matchings.size() - 1) ofs << ",\n";
+        printMatching(pathway[i], ofs);
+        if (i < pathway.size() - 1) ofs << ",\n";
     }
     ofs << "\n],\n";
     ofs << "\"removed_edges\":[";    

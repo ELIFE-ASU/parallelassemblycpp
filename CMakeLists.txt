@@ -133,6 +133,12 @@ if(BUILD_TESTING)
   assemblycpp_configure_target(assemblycpp_active_word_mask_tests)
 
   add_executable(
+    assemblycpp_transposition_table_tests
+    unitTests/assemblyTranspositionTableTester.cpp
+  )
+  assemblycpp_configure_target(assemblycpp_transposition_table_tests)
+
+  add_executable(
     assemblycpp_tree_canon_tests
     unitTests/treeCanonTester.cpp
   )
@@ -153,6 +159,10 @@ if(BUILD_TESTING)
   add_test(
     NAME unit.active-word-mask
     COMMAND assemblycpp_active_word_mask_tests
+  )
+  add_test(
+    NAME unit.assembly-transposition-table
+    COMMAND assemblycpp_transposition_table_tests
   )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(
@@ -177,6 +187,7 @@ if(BUILD_TESTING)
   )
   set_tests_properties(
     unit.active-word-mask
+    unit.assembly-transposition-table
     unit.tree-canonicalisation
     unit.cyclic-canonicalisation
     unit.search-stop-polling
