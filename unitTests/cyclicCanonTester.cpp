@@ -709,10 +709,215 @@ void testCachedGraphHashIsSelfContained()
     );
 }
 
+void configureCanoniseMaskDomain(size_t edgeCount)
+{
+    std::destroy_at(std::addressof(allEdges));
+    EdgeMask::configure(edgeCount);
+    std::construct_at(std::addressof(allEdges));
+}
+
+EdgeMask componentMask(int firstVertex, int vertexCount)
+{
+    EdgeMask result;
+    const int lastVertex = firstVertex + vertexCount;
+    for (size_t edge = 0; edge < univEdgeList.size(); edge++)
+    {
+        if (
+            univEdgeList[edge].a >= firstVertex &&
+            univEdgeList[edge].a < lastVertex &&
+            univEdgeList[edge].b >= firstVertex &&
+            univEdgeList[edge].b < lastVertex
+        ) result.set(edge);
+    }
+    return result;
+}
+
+void testFlatCanoniseMaskPath()
+{
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+
+    const vector<string> labels{
+        "C", "C", "N",
+        "N", "C", "C",
+        "C", "C", "O"
+    };
+    const vector<edgeSpec> edges{
+        {0, 1, 1}, {1, 2, 2}, {2, 0, 1},
+        {3, 4, 2}, {4, 5, 1}, {5, 3, 1},
+        {6, 7, 1}, {7, 8, 2}, {8, 6, 1}
+    };
+    targetMolecule = makeGraph(labels, edges);
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+
+    {
+        EdgeMask first = componentMask(0, 3);
+        EdgeMask isomorphic = componentMask(3, 3);
+        EdgeMask different = componentMask(6, 3);
+        require(first.count() == 3, "first flat canonical mask is incomplete");
+        require(
+            canonise(first) == canonise(isomorphic),
+            "flat cyclic canonicalisation is vertex-order dependent"
+        );
+        require(
+            canonise(first) != canonise(different),
+            "flat cyclic canonicalisation lost an atom label"
+        );
+    }
+
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+
+    targetMolecule = makeGraph(
+        {"C", "C", "N", "O", "N", "C", "C", "O"},
+        {
+            {0, 1, 1}, {1, 2, 2}, {2, 0, 1}, {2, 3, 1},
+            {5, 6, 1}, {6, 4, 2}, {4, 5, 1}, {4, 7, 1}
+        }
+    );
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    {
+        EdgeMask first = componentMask(0, 4);
+        EdgeMask intervening = componentMask(0, 3);
+        EdgeMask isomorphic = componentMask(4, 4);
+        const int firstId = canonise(first);
+        (void)canonise(intervening);
+        require(
+            firstId == canonise(isomorphic),
+            "flat cyclic peeling lost a pendant-tree canonical form"
+        );
+    }
+
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+
+    targetMolecule = makeGraph(
+        {
+            "C", "C", "N", "O", "S",
+            "N", "C", "C", "S", "O"
+        },
+        {
+            {0, 1, 1}, {1, 2, 2}, {2, 0, 1}, {3, 4, 1},
+            {6, 7, 1}, {7, 5, 2}, {5, 6, 1}, {8, 9, 1}
+        }
+    );
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    {
+        EdgeMask first = componentMask(0, 5);
+        EdgeMask intervening = componentMask(3, 2);
+        EdgeMask isomorphic = componentMask(5, 5);
+        const int firstId = canonise(first);
+        (void)canonise(intervening);
+        require(
+            firstId == canonise(isomorphic),
+            "flat disconnected fallback retained reusable CSR storage"
+        );
+    }
+
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+
+    targetMolecule = makeGraph(
+        {"C", "N"},
+        {{0, 1, 1}, {0, 1, 2}}
+    );
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    int parallelBondId;
+    {
+        EdgeMask parallelBonds;
+        parallelBonds.set();
+        parallelBondId = canonise(parallelBonds);
+    }
+    bitsetHashTable.clear();
+    targetMolecule = makeGraph(
+        {"N", "C"},
+        {{0, 1, 1}, {0, 1, 3}}
+    );
+    univEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    {
+        EdgeMask changedParallelBond;
+        changedParallelBond.set();
+        require(
+            parallelBondId != canonise(changedParallelBond),
+            "flat cyclic canonicalisation lost a parallel bond label"
+        );
+    }
+
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+    targetMolecule = makeGraph(
+        {"C", "X", "C"},
+        {{0, 1, 1}, {1, 2, 1}}
+    );
+    univEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    {
+        EdgeMask legacyPath;
+        legacyPath.set();
+        bool isCyclic = false;
+        const flatCanonGraph &flat = canonicalisationGraphScratch.build(
+            targetMolecule,
+            univEdgeList,
+            legacyPath,
+            isCyclic
+        );
+        const graphHash hash(flat, isCyclic);
+        require(flat.hasLegacyX, "flat canonical graph lost the X sentinel");
+        require(
+            hash.treeHash.empty() && !hash.cyclicHash.empty(),
+            "flat X-sentinel graph did not use whole-graph fallback"
+        );
+    }
+
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+
+    vector<string> pathLabels(67, "C");
+    vector<edgeSpec> pathEdges;
+    pathEdges.reserve(66);
+    for (int edge = 0; edge < 66; edge++)
+        pathEdges.emplace_back(edge, edge + 1, 1);
+    targetMolecule = makeGraph(pathLabels, pathEdges);
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+
+    {
+        EdgeMask lowEdge;
+        EdgeMask highEdge;
+        lowEdge.set(0);
+        highEdge.set(65);
+        require(
+            canonise(lowEdge) == canonise(highEdge),
+            "flat canonicalisation missed a selected wide-mask bit"
+        );
+    }
+
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    configureCanoniseMaskDomain(64);
+}
+
 int main()
 {
     testAgainstExactMatcher();
     testLargeAttachedTrees();
+    testFlatCanoniseMaskPath();
     testCachedGraphHashIsSelfContained();
     graphHashMap.clear();
     clearTreeCanonInterner();

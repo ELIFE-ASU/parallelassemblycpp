@@ -73,6 +73,7 @@ void configurePathGraph(size_t edgeCount)
     for (size_t edge = 0; edge < edgeCount; edge++)
         targetMolecule.addBond(edge, edge + 1, 1);
     univEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
     AtomMask::configure(edgeCount + 1);
     totalBonds = edgeCount;
 }

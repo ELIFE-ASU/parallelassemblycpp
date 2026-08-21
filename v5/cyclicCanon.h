@@ -22,11 +22,7 @@ struct cyclicCanonVertexLabel
     bool operator==(const cyclicCanonVertexLabel &) const = default;
 };
 
-struct cyclicCanonAdjacentEdge
-{
-    std::uint32_t neighbour = 0;
-    std::uint16_t bondType = 0;
-};
+using cyclicCanonAdjacentEdge = flatCanonAdjacentEdge;
 
 struct cyclicCanonEdge
 {
@@ -521,12 +517,13 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
     return result;
 }
 
-[[nodiscard]] cyclicCanonGraph buildWholeGraphCanonRepresentation(
-    molGraph &mg,
+template<typename Graph>
+[[nodiscard]] cyclicCanonGraph buildWholeGraphCanonRepresentationImpl(
+    const Graph &input,
     std::uint64_t labelKind = 0
 )
 {
-    const std::size_t vertexCount = mg.mg.size();
+    const std::size_t vertexCount = canonGraphVertexCount(input);
     if (vertexCount > std::numeric_limits<std::uint32_t>::max())
         throw std::length_error("cyclic canonical graph has too many vertices");
 
@@ -539,20 +536,21 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
     {
         graph.labels.push_back({
             labelKind,
-            internTreeCanonAtom(mg.mg[vertex].type)
+            canonGraphAtomType(input, vertex)
         });
-        adjacencyCount += mg.mg[vertex].list.size();
+        adjacencyCount += canonGraphNeighbours(input, vertex).size();
     }
     graph.adjacency.reserve(adjacencyCount);
     graph.edges.reserve(adjacencyCount / 2);
     for (std::size_t first = 0; first < vertexCount; first++)
     {
-        for (const bond &edge : mg.mg[first].list)
+        for (const auto &edge : canonGraphNeighbours(input, first))
         {
-            if (edge.n < 0 || static_cast<std::size_t>(edge.n) >= vertexCount)
+            const int neighbour = canonGraphNeighbour(edge);
+            if (neighbour < 0 || static_cast<std::size_t>(neighbour) >= vertexCount)
                 throw std::logic_error("cyclic canonical graph edge is invalid");
-            const std::size_t second = static_cast<std::size_t>(edge.n);
-            const std::uint16_t bondType = cyclicCanonBondType(edge.type);
+            const std::size_t second = static_cast<std::size_t>(neighbour);
+            const std::uint16_t bondType = canonGraphBondType(edge);
             graph.adjacency.push_back({
                 static_cast<std::uint32_t>(second), bondType
             });
@@ -570,6 +568,40 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
     return graph;
 }
 
+/** Bulk-copy an already-flat input into the owned lazy canonical form. */
+[[nodiscard]] cyclicCanonGraph buildWholeGraphCanonRepresentationImpl(
+    const flatCanonGraph &input,
+    std::uint64_t labelKind = 0
+)
+{
+    const std::size_t vertexCount = input.labels.size();
+    if (vertexCount > std::numeric_limits<std::uint32_t>::max())
+        throw std::length_error("cyclic canonical graph has too many vertices");
+
+    cyclicCanonGraph graph;
+    graph.labels.resize(vertexCount);
+    for (std::size_t vertex = 0; vertex < vertexCount; vertex++)
+        graph.labels[vertex] = {labelKind, input.labels[vertex]};
+    graph.adjacencyOffsets = input.adjacencyOffsets;
+    graph.adjacency = input.adjacency;
+    graph.edges.reserve(input.edgeCount);
+    for (std::size_t first = 0; first < vertexCount; first++)
+    {
+        for (const flatCanonAdjacentEdge &edge : input.neighbours(first))
+        {
+            if (first < edge.neighbour)
+            {
+                graph.edges.push_back({
+                    static_cast<std::uint32_t>(first),
+                    edge.neighbour,
+                    edge.bondType
+                });
+            }
+        }
+    }
+    return graph;
+}
+
 /**
  * @brief Build the exact coloured 2-core of a connected cyclic graph.
  *
@@ -577,25 +609,21 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
  * signatures as the acyclic canonicaliser. Their rooted identity becomes the
  * integer colour of the core vertex to which they are attached.
  */
-[[nodiscard]] cyclicCanonGraph buildColouredTwoCoreRepresentation(molGraph &mg)
+template<typename Graph>
+[[nodiscard]] cyclicCanonGraph buildColouredTwoCoreRepresentationImpl(
+    const Graph &input
+)
 {
-    const std::size_t vertexCount = mg.mg.size();
+    const std::size_t vertexCount = canonGraphVertexCount(input);
     if (vertexCount > std::numeric_limits<std::uint32_t>::max())
         throw std::length_error("cyclic canonical graph has too many vertices");
 
     // The common ring/bridged-ring case is already its own 2-core. Avoid all
     // peeling scratch and rooted-tree bookkeeping when no pendant vertex can
     // be removed.
-    bool requiresPeeling = false;
-    for (const atom &vertex : mg.mg)
-    {
-        if (vertex.list.size() <= 1)
-        {
-            requiresPeeling = true;
-            break;
-        }
-    }
-    if (!requiresPeeling) return buildWholeGraphCanonRepresentation(mg, 1);
+    const bool requiresPeeling = canonGraphHasPendantVertex(input);
+    if (!requiresPeeling)
+        return buildWholeGraphCanonRepresentationImpl(input, 1);
 
     auto &degree = cyclicCanonPeelingScratch.degree;
     auto &removed = cyclicCanonPeelingScratch.removed;
@@ -609,7 +637,9 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
     if (leaves.capacity() < vertexCount) leaves.reserve(vertexCount);
     for (std::size_t vertex = 0; vertex < vertexCount; vertex++)
     {
-        degree[vertex] = static_cast<int>(mg.mg[vertex].list.size());
+        degree[vertex] = static_cast<int>(
+            canonGraphNeighbours(input, vertex).size()
+        );
         if (degree[vertex] <= 1) leaves.push_back(vertex);
     }
 
@@ -620,21 +650,24 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
         if (removed[leaf]) continue;
         removed[leaf] = 1;
         const treeCanonNodeId subtree = internTreeCanonNode(
-            mg,
-            static_cast<int>(leaf),
+            canonGraphAtomType(input, leaf),
             std::move(children[leaf])
         );
 
         std::size_t liveNeighbour = vertexCount;
         std::uint16_t liveBond = 0;
-        for (const bond &edge : mg.mg[leaf].list)
+        for (const auto &edge : canonGraphNeighbours(input, leaf))
         {
-            if (edge.n < 0 || static_cast<std::size_t>(edge.n) >= vertexCount)
+            const int neighbourIndex = canonGraphNeighbour(edge);
+            if (
+                neighbourIndex < 0 ||
+                static_cast<std::size_t>(neighbourIndex) >= vertexCount
+            )
                 throw std::logic_error("cyclic canonical graph edge is invalid");
-            const std::size_t neighbour = static_cast<std::size_t>(edge.n);
+            const std::size_t neighbour = static_cast<std::size_t>(neighbourIndex);
             if (removed[neighbour]) continue;
             liveNeighbour = neighbour;
-            liveBond = cyclicCanonBondType(edge.type);
+            liveBond = canonGraphBondType(edge);
             break;
         }
         if (liveNeighbour == vertexCount)
@@ -663,7 +696,7 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
         coreAdjacencyCount += static_cast<std::size_t>(degree[vertex]);
     }
     if (coreVertices.empty() || detachedTreeComponent)
-        return buildWholeGraphCanonRepresentation(mg);
+        return buildWholeGraphCanonRepresentationImpl(input);
 
     cyclicCanonGraph graph;
     graph.labels.reserve(coreVertices.size());
@@ -677,7 +710,7 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
         {
             graph.labels.push_back({
                 1,
-                internTreeCanonAtom(mg.mg[vertex].type)
+                canonGraphAtomType(input, vertex)
             });
         }
         else
@@ -685,8 +718,7 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
             graph.labels.push_back({
                 2,
                 internTreeCanonNode(
-                    mg,
-                    static_cast<int>(vertex),
+                    canonGraphAtomType(input, vertex),
                     std::move(children[vertex])
                 )
             });
@@ -696,16 +728,17 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
     for (std::size_t localFirst = 0; localFirst < coreVertices.size(); localFirst++)
     {
         const std::size_t first = coreVertices[localFirst];
-        for (const bond &edge : mg.mg[first].list)
+        for (const auto &edge : canonGraphNeighbours(input, first))
         {
-            if (edge.n < 0 || static_cast<std::size_t>(edge.n) >= vertexCount)
+            const int neighbour = canonGraphNeighbour(edge);
+            if (neighbour < 0 || static_cast<std::size_t>(neighbour) >= vertexCount)
                 throw std::logic_error("cyclic canonical core edge is invalid");
-            const std::size_t second = static_cast<std::size_t>(edge.n);
+            const std::size_t second = static_cast<std::size_t>(neighbour);
             if (removed[second]) continue;
             const int localSecond = localIndex[second];
             if (localSecond < 0)
                 throw std::logic_error("cyclic canonical core edge is invalid");
-            const std::uint16_t bondType = cyclicCanonBondType(edge.type);
+            const std::uint16_t bondType = canonGraphBondType(edge);
             graph.adjacency.push_back({
                 static_cast<std::uint32_t>(localSecond), bondType
             });
@@ -723,12 +756,60 @@ bool cyclicCanonForm::operator==(const cyclicCanonForm &other) const
     return graph;
 }
 
-[[nodiscard]] cyclicCanonForm canonicaliseCyclicGraph(molGraph &mg)
+[[nodiscard]] inline cyclicCanonGraph buildWholeGraphCanonRepresentation(
+    molGraph &mg,
+    std::uint64_t labelKind = 0
+)
+{
+    return buildWholeGraphCanonRepresentationImpl(mg, labelKind);
+}
+
+[[nodiscard]] inline cyclicCanonGraph buildWholeGraphCanonRepresentation(
+    const flatCanonGraph &graph,
+    std::uint64_t labelKind = 0
+)
+{
+    return buildWholeGraphCanonRepresentationImpl(graph, labelKind);
+}
+
+[[nodiscard]] inline cyclicCanonGraph buildColouredTwoCoreRepresentation(
+    molGraph &mg
+)
+{
+    return buildColouredTwoCoreRepresentationImpl(mg);
+}
+
+[[nodiscard]] inline cyclicCanonGraph buildColouredTwoCoreRepresentation(
+    const flatCanonGraph &graph
+)
+{
+    return buildColouredTwoCoreRepresentationImpl(graph);
+}
+
+[[nodiscard]] inline cyclicCanonForm canonicaliseCyclicGraph(molGraph &mg)
 {
     return canonicaliseCyclicCanonGraph(buildColouredTwoCoreRepresentation(mg));
 }
 
-[[nodiscard]] cyclicCanonForm canonicaliseWholeGraph(molGraph &mg)
+[[nodiscard]] inline cyclicCanonForm canonicaliseCyclicGraph(
+    const flatCanonGraph &graph
+)
+{
+    return canonicaliseCyclicCanonGraph(
+        buildColouredTwoCoreRepresentation(graph)
+    );
+}
+
+[[nodiscard]] inline cyclicCanonForm canonicaliseWholeGraph(molGraph &mg)
 {
     return canonicaliseCyclicCanonGraph(buildWholeGraphCanonRepresentation(mg));
+}
+
+[[nodiscard]] inline cyclicCanonForm canonicaliseWholeGraph(
+    const flatCanonGraph &graph
+)
+{
+    return canonicaliseCyclicCanonGraph(
+        buildWholeGraphCanonRepresentation(graph)
+    );
 }

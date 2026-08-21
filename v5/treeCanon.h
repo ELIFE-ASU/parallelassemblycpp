@@ -1,5 +1,50 @@
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 using treeCanonNodeId = std::uint64_t;
 using treeCanonAtomId = std::uint64_t;
+
+/** One directed edge in the reusable canonicalisation CSR input. */
+struct flatCanonAdjacentEdge
+{
+    std::uint32_t neighbour = 0;
+    std::uint16_t bondType = 0;
+};
+
+/**
+ * @brief Flat edge-induced graph passed directly to the canonicalisers.
+ *
+ * The vectors are reusable miss-path scratch. Canonical forms must therefore
+ * copy any representation retained after the current canonicalisation call.
+ */
+struct flatCanonGraph
+{
+    std::vector<treeCanonAtomId> labels;
+    std::vector<std::size_t> adjacencyOffsets;
+    std::vector<flatCanonAdjacentEdge> adjacency;
+    std::size_t edgeCount = 0;
+    bool hasLegacyX = false;
+    bool hasPendantVertex = false;
+
+    [[nodiscard]] std::span<const flatCanonAdjacentEdge> neighbours(
+        std::size_t vertex
+    ) const noexcept
+    {
+        return std::span<const flatCanonAdjacentEdge>(adjacency).subspan(
+            adjacencyOffsets[vertex],
+            adjacencyOffsets[vertex + 1] - adjacencyOffsets[vertex]
+        );
+    }
+};
 
 /**
  * @brief Canonical identity of an unrooted, labelled tree.
@@ -28,6 +73,33 @@ struct treeCanonChild
 
     bool operator==(const treeCanonChild &) const = default;
 };
+
+struct treeCanonWorkspace
+{
+    std::vector<int> remainingDegree;
+    std::vector<unsigned char> removed;
+    std::vector<std::vector<treeCanonChild>> children;
+    std::vector<int> leaves;
+    std::vector<int> nextLeaves;
+
+    void begin(std::size_t nodeCount)
+    {
+        if (remainingDegree.size() < nodeCount)
+            remainingDegree.resize(nodeCount);
+        if (removed.size() < nodeCount) removed.resize(nodeCount);
+        std::fill_n(removed.begin(), nodeCount, 0);
+        if (children.size() < nodeCount) children.resize(nodeCount);
+        for (std::size_t node = 0; node < nodeCount; node++)
+            children[node].clear();
+        leaves.clear();
+        nextLeaves.clear();
+        if (leaves.capacity() < nodeCount) leaves.reserve(nodeCount);
+        if (nextLeaves.capacity() < nodeCount) nextLeaves.reserve(nodeCount);
+    }
+};
+
+// Canonical maps and the surrounding search are already single-threaded.
+inline treeCanonWorkspace treeCanonScratch;
 
 /**
  * @brief Exact structural key for a rooted subtree.
@@ -72,12 +144,14 @@ inline std::unordered_map<
     treeCanonNodeId,
     treeCanonSignatureHash
 > treeCanonInterner;
+inline std::uint64_t treeCanonInternerGeneration = 1;
 
 void clearTreeCanonInterner()
 {
     treeCanonInterner.clear();
     treeCanonAtomInterner.clear();
     treeCanonLeafInterner.clear();
+    if (++treeCanonInternerGeneration == 0) treeCanonInternerGeneration = 1;
 }
 
 treeCanonAtomId internTreeCanonAtom(const std::string &atomType)
@@ -124,7 +198,7 @@ treeCanonNodeId internTreeCanonNode(
     return internTreeCanonSignature({atomType, std::move(children)});
 }
 
-treeCanonNodeId internTreeCanonNode(
+inline treeCanonNodeId internTreeCanonNode(
     molGraph &mg,
     int node,
     std::vector<treeCanonChild> children
@@ -134,6 +208,125 @@ treeCanonNodeId internTreeCanonNode(
         internTreeCanonAtom(mg.mg[node].type),
         std::move(children)
     );
+}
+
+[[nodiscard]] inline std::size_t canonGraphVertexCount(
+    const molGraph &graph
+) noexcept
+{
+    return graph.mg.size();
+}
+
+[[nodiscard]] inline std::size_t canonGraphVertexCount(
+    const flatCanonGraph &graph
+) noexcept
+{
+    return graph.labels.size();
+}
+
+[[nodiscard]] inline bool canonGraphHasEdgeCount(
+    const molGraph &graph,
+    std::size_t expected
+) noexcept
+{
+    return graph.totalBonds >= 0 &&
+        static_cast<std::size_t>(graph.totalBonds) == expected;
+}
+
+[[nodiscard]] inline bool canonGraphHasEdgeCount(
+    const flatCanonGraph &graph,
+    std::size_t expected
+) noexcept
+{
+    return graph.edgeCount == expected;
+}
+
+[[nodiscard]] inline bool canonGraphHasLegacyX(const molGraph &graph)
+{
+    return std::any_of(
+        graph.mg.begin(),
+        graph.mg.end(),
+        [](const atom &vertex) {return vertex.type == "X";}
+    );
+}
+
+[[nodiscard]] inline bool canonGraphHasLegacyX(
+    const flatCanonGraph &graph
+) noexcept
+{
+    return graph.hasLegacyX;
+}
+
+[[nodiscard]] inline bool canonGraphHasPendantVertex(const molGraph &graph)
+{
+    return std::any_of(
+        graph.mg.begin(),
+        graph.mg.end(),
+        [](const atom &vertex) {return vertex.list.size() <= 1;}
+    );
+}
+
+[[nodiscard]] inline bool canonGraphHasPendantVertex(
+    const flatCanonGraph &graph
+) noexcept
+{
+    return graph.hasPendantVertex;
+}
+
+[[nodiscard]] inline treeCanonAtomId canonGraphAtomType(
+    const molGraph &graph,
+    std::size_t vertex
+)
+{
+    return internTreeCanonAtom(graph.mg[vertex].type);
+}
+
+[[nodiscard]] inline treeCanonAtomId canonGraphAtomType(
+    const flatCanonGraph &graph,
+    std::size_t vertex
+) noexcept
+{
+    return graph.labels[vertex];
+}
+
+[[nodiscard]] inline const std::vector<bond> &canonGraphNeighbours(
+    const molGraph &graph,
+    std::size_t vertex
+) noexcept
+{
+    return graph.mg[vertex].list;
+}
+
+[[nodiscard]] inline std::span<const flatCanonAdjacentEdge> canonGraphNeighbours(
+    const flatCanonGraph &graph,
+    std::size_t vertex
+) noexcept
+{
+    return graph.neighbours(vertex);
+}
+
+[[nodiscard]] inline int canonGraphNeighbour(const bond &edge) noexcept
+{
+    return edge.n;
+}
+
+[[nodiscard]] inline int canonGraphNeighbour(
+    const flatCanonAdjacentEdge &edge
+) noexcept
+{
+    return static_cast<int>(edge.neighbour);
+}
+
+[[nodiscard]] inline unsigned char canonGraphBondType(const bond &edge) noexcept
+{
+    return static_cast<unsigned char>(static_cast<char>(edge.type));
+}
+
+[[nodiscard]] inline unsigned char canonGraphBondType(
+    const flatCanonAdjacentEdge &edge
+) noexcept
+{
+    return static_cast<unsigned char>(edge.bondType);
 }
 
 /**
@@ -148,30 +341,28 @@ treeCanonNodeId internTreeCanonNode(
  * @param mg Acyclic, connected molGraph
  * @param n Retained for API compatibility; centroid selection is root-free.
  */
-treeCanonForm centroidTreeCanon(molGraph &mg, int n)
+template<typename Graph>
+treeCanonForm centroidTreeCanonImpl(const Graph &graph, int n)
 {
     (void)n;
-    const std::size_t nodeCount = mg.mg.size();
+    const std::size_t nodeCount = canonGraphVertexCount(graph);
     if (nodeCount == 0) return {};
-    if (
-        mg.totalBonds < 0 ||
-        static_cast<std::size_t>(mg.totalBonds) != nodeCount - 1
-    ) return {};
+    if (!canonGraphHasEdgeCount(graph, nodeCount - 1)) return {};
+    if (canonGraphHasLegacyX(graph)) return {};
 
-    std::vector<int> remainingDegree(nodeCount, 0);
-    std::vector<unsigned char> removed(nodeCount, 0);
-    std::vector<std::vector<treeCanonChild>> children(nodeCount);
-    std::vector<int> leaves;
-    leaves.reserve(nodeCount);
-    std::size_t remaining = 0;
+    treeCanonScratch.begin(nodeCount);
+    auto &remainingDegree = treeCanonScratch.remainingDegree;
+    auto &removed = treeCanonScratch.removed;
+    auto &children = treeCanonScratch.children;
+    auto &leaves = treeCanonScratch.leaves;
+    auto &nextLeaves = treeCanonScratch.nextLeaves;
+    std::size_t remaining = nodeCount;
 
     for (std::size_t node = 0; node < nodeCount; node++)
     {
-        // X was a legacy deletion sentinel with inconsistent partial-tree
-        // semantics. Route such input through exact whole-graph canonicalisation.
-        if (mg.mg[node].type == "X") return {};
-        remaining++;
-        remainingDegree[node] = static_cast<int>(mg.mg[node].list.size());
+        remainingDegree[node] = static_cast<int>(
+            canonGraphNeighbours(graph, node).size()
+        );
         if (remainingDegree[node] <= 1)
             leaves.push_back(static_cast<int>(node));
     }
@@ -184,17 +375,16 @@ treeCanonForm centroidTreeCanon(molGraph &mg, int n)
         remaining -= leaves.size();
         for (const int leaf : leaves) removed[leaf] = 1;
 
-        std::vector<int> nextLeaves;
+        nextLeaves.clear();
         for (const int leaf : leaves)
         {
             const treeCanonNodeId subtree = internTreeCanonNode(
-                mg,
-                leaf,
+                canonGraphAtomType(graph, static_cast<std::size_t>(leaf)),
                 std::move(children[leaf])
             );
-            for (const bond &edge : mg.mg[leaf].list)
+            for (const auto &edge : canonGraphNeighbours(graph, leaf))
             {
-                const int neighbour = edge.n;
+                const int neighbour = canonGraphNeighbour(edge);
                 if (
                     neighbour < 0 ||
                     static_cast<std::size_t>(neighbour) >= nodeCount ||
@@ -202,7 +392,7 @@ treeCanonForm centroidTreeCanon(molGraph &mg, int n)
                 ) continue;
 
                 children[neighbour].push_back({
-                    static_cast<unsigned char>(static_cast<char>(edge.type)),
+                    canonGraphBondType(edge),
                     subtree
                 });
                 remainingDegree[neighbour]--;
@@ -211,31 +401,32 @@ treeCanonForm centroidTreeCanon(molGraph &mg, int n)
                 break;
             }
         }
-        leaves = std::move(nextLeaves);
+        leaves.swap(nextLeaves);
     }
 
-    std::vector<int> centroids;
-    centroids.reserve(2);
+    std::array<int, 2> centroids{};
+    std::size_t centroidCount = 0;
     for (std::size_t node = 0; node < nodeCount; node++)
     {
-        if (!removed[node]) centroids.push_back(static_cast<int>(node));
+        if (removed[node]) continue;
+        if (centroidCount == centroids.size()) return {};
+        centroids[centroidCount++] = static_cast<int>(node);
     }
-    if (centroids.empty() || centroids.size() > 2) return {};
+    if (centroidCount == 0) return {};
 
     const treeCanonNodeId first = internTreeCanonNode(
-        mg,
-        centroids[0],
+        canonGraphAtomType(graph, static_cast<std::size_t>(centroids[0])),
         std::move(children[centroids[0]])
     );
-    if (centroids.size() == 1) return {first, 0, 0};
+    if (centroidCount == 1) return {first, 0, 0};
 
     unsigned char centralBond = 0;
     bool centralBondFound = false;
-    for (const bond &edge : mg.mg[centroids[0]].list)
+    for (const auto &edge : canonGraphNeighbours(graph, centroids[0]))
     {
-        if (edge.n == centroids[1])
+        if (canonGraphNeighbour(edge) == centroids[1])
         {
-            centralBond = static_cast<unsigned char>(static_cast<char>(edge.type));
+            centralBond = canonGraphBondType(edge);
             centralBondFound = true;
             break;
         }
@@ -243,10 +434,19 @@ treeCanonForm centroidTreeCanon(molGraph &mg, int n)
     if (!centralBondFound) return {};
 
     const treeCanonNodeId second = internTreeCanonNode(
-        mg,
-        centroids[1],
+        canonGraphAtomType(graph, static_cast<std::size_t>(centroids[1])),
         std::move(children[centroids[1]])
     );
     if (first <= second) return {first, second, centralBond};
     return {second, first, centralBond};
+}
+
+inline treeCanonForm centroidTreeCanon(molGraph &mg, int n)
+{
+    return centroidTreeCanonImpl(mg, n);
+}
+
+inline treeCanonForm centroidTreeCanon(const flatCanonGraph &graph, int n)
+{
+    return centroidTreeCanonImpl(graph, n);
 }

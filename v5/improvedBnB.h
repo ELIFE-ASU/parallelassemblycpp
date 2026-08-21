@@ -1365,6 +1365,7 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     vector<edgeL> removedEdges;
     targetMolecule = preprocessWriteback(mg, removedEdges);
     univEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
     // End the persistent mask's lifetime under its old representation before
     // changing the domain width, then construct its new representation. Other
     // mask-owning globals were cleared above.
