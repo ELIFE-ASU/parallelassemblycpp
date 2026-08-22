@@ -46,6 +46,11 @@ class PgoTrainingTests(unittest.TestCase):
             "Cefquinome": 128,
             "Cefpirome": 1024,
             "amino-acid-scale-03c": 256,
+            "amino-acid-scale-09c": 4,
+            "amino-acid-scale-10c": 1,
+            "amino-acid-scale-11c": 1,
+            "amino-acid-scale-12c": 1,
+            "amino-acid-scale-13c": 1,
         }
         for case in cases:
             if case.name in tuned_weights:
@@ -60,7 +65,7 @@ class PgoTrainingTests(unittest.TestCase):
                 self.assertEqual(weights[case.name], 8)
             else:
                 self.fail(f"unclassified default training case: {case.name}")
-        self.assertEqual(sum(weights.values()), 2854)
+        self.assertEqual(sum(weights.values()), 2862)
 
     def test_weights_reject_invalid_header_and_column_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -262,7 +267,7 @@ class PgoTrainingTests(unittest.TestCase):
             ) -> int:
                 self.assertEqual(executable_path, executable.resolve())
                 self.assertEqual(timeout, 9.0)
-                self.assertEqual(len(weighted_cases), 31)
+                self.assertEqual(len(weighted_cases), 36)
                 self.assertFalse(stale.exists())
                 (profiles / "fresh.gcda").write_text("fresh", encoding="utf-8")
                 return sum(entry.repetitions for entry in weighted_cases)
@@ -293,13 +298,13 @@ class PgoTrainingTests(unittest.TestCase):
                 record["schema_version"],
                 pgo_training.COMPLETION_SCHEMA_VERSION,
             )
-            self.assertEqual(record["completed_repetitions"], 2854)
+            self.assertEqual(record["completed_repetitions"], 2862)
             self.assertEqual(record["profile_files"], ["fresh.gcda"])
             self.assertEqual(
                 record["corpus"]["manifest"]["sha256"],
                 pgo_training.file_sha256(benchmark.DEFAULT_MANIFEST),
             )
-            self.assertEqual(len(record["corpus"]["inputs"]), 31)
+            self.assertEqual(len(record["corpus"]["inputs"]), 36)
 
     def test_failed_training_leaves_no_completion_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

@@ -374,9 +374,9 @@ python benchmarks/benchmark.py \
   --suite profile --runs 1 --warmup 0
 ```
 
-The `scaling` suite measures a cumulative sequence of two through eight
-disconnected amino-acid components (18 to 68 atoms, 16 to 60 bonds). Its table
-places system size beside wall-time and algorithm clock-tick costs:
+The `scaling` suite measures a cumulative sequence of two through thirteen
+disconnected amino-acid components (18 to 113 atoms, 16 to 100 bonds). Its
+table places system size beside wall-time and algorithm clock-tick costs:
 
 ```bash
 python benchmarks/benchmark.py \
@@ -385,8 +385,13 @@ python benchmarks/benchmark.py \
 
 Use clock ticks to compare the smallest cases, where fixed process-startup and
 input-parsing costs can dominate wall time. The sequence adds a different amino
-acid at each step, so it characterizes this workload rather than an asymptotic
-complexity law for arbitrary molecules.
+acid at each step, with the five largest cases adding isoleucine, leucine,
+lysine, methionine, and valine. It therefore characterizes this workload rather
+than an asymptotic complexity law for arbitrary molecules.
+
+The largest cases deliberately exercise expensive scaling behaviour. On a
+typical performance build, the 100-bond endpoint can take several minutes and
+use more than 1 GiB of memory, so use `--runs 1 --warmup 0` for a smoke run.
 
 For a paired before/after comparison, keep the old executable and pass it as
 the baseline. Baseline and candidate calculations run adjacently, alternating

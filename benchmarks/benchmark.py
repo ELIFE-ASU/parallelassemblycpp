@@ -1541,8 +1541,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout",
         type=positive_float,
-        default=300.0,
-        help="per-calculation timeout in seconds (default: 300)",
+        default=600.0,
+        help="per-calculation timeout in seconds (default: 600)",
     )
     parser.add_argument(
         "--json-output",

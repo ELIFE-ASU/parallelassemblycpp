@@ -440,11 +440,30 @@ class BenchmarkTests(unittest.TestCase):
             4,
         )
         scaling = benchmark.select_cases(cases, "scaling", [])
-        self.assertEqual(len(scaling), 13)
+        self.assertEqual(len(scaling), 18)
         self.assertTrue(all(case.expectation == "provisional" for case in scaling))
         self.assertEqual(
             [case.expected_assembly_index for case in scaling],
-            [10, 13, 15, 17, 19, 21, 23, 8, 6, 7, 10, 7, 8],
+            [
+                10,
+                13,
+                15,
+                17,
+                19,
+                21,
+                23,
+                25,
+                27,
+                29,
+                32,
+                34,
+                8,
+                6,
+                7,
+                10,
+                7,
+                8,
+            ],
         )
         self.assertEqual(
             [case.workload for case in scaling],
@@ -456,6 +475,11 @@ class BenchmarkTests(unittest.TestCase):
                 "53 atoms / 47 bonds / 6 comps",
                 "63 atoms / 56 bonds / 7 comps",
                 "68 atoms / 60 bonds / 8 comps",
+                "77 atoms / 68 bonds / 9 comps",
+                "86 atoms / 76 bonds / 10 comps",
+                "96 atoms / 85 bonds / 11 comps",
+                "105 atoms / 93 bonds / 12 comps",
+                "113 atoms / 100 bonds / 13 comps",
                 "64 atoms / 63 bonds / cache on / 1 word",
                 "65 atoms / 64 bonds / cache on / 1 word",
                 "66 atoms / 65 bonds / cache on / 2 words",
@@ -480,6 +504,11 @@ class BenchmarkTests(unittest.TestCase):
             (53, 47, 6),
             (63, 56, 7),
             (68, 60, 8),
+            (77, 68, 9),
+            (86, 76, 10),
+            (96, 85, 11),
+            (105, 93, 12),
+            (113, 100, 13),
         ]
         blocks: list[tuple[list[str], list[str]]] = []
 

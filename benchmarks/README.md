@@ -26,14 +26,15 @@ expectation statuses, missing inputs, and non-integer expected results.
   searches. Except for ketoconazole, their expectations are provisional
   benchmark guards rather than reviewed regression expectations.
 - `scaling` combines two complementary series. The cumulative amino-acid series
-  grows from 18 atoms and 16 bonds to 68 atoms and 60 bonds; every larger input
-  contains the preceding graph and one additional component. A homogeneous-path
-  boundary series covers 63, 64, 65, 127, 128, and 129 bonds. Those cases cross
-  the residual-decomposition cache's scalar-to-wide key boundary and the first
-  two 64-bit mask-word boundaries without introducing an exponential graph
-  family. Wide caching remains eligible at later word boundaries because masks
-  now grow to the processed graph's width rather than stopping at 512 bits. The
-  expectations are provisional benchmark guards.
+  grows from 18 atoms and 16 bonds to 113 atoms and 100 bonds; every larger
+  input contains the preceding graph and one additional component. The five
+  largest cases add isoleucine, leucine, lysine, methionine, and valine. A
+  homogeneous-path boundary series covers 63, 64, 65, 127, 128, and 129 bonds.
+  Those cases cross the residual-decomposition cache's scalar-to-wide key
+  boundary and the first two 64-bit mask-word boundaries without introducing
+  an exponential graph family. Wide caching remains eligible at later word
+  boundaries because masks now grow to the processed graph's width rather than
+  stopping at 512 bits. The expectations are provisional benchmark guards.
 
 Build the optimized candidate and telemetry sibling from the repository root:
 
@@ -48,6 +49,11 @@ Run the scaling series with:
 python benchmarks/benchmark.py \
   --executable build/performance/AssemblyCpp --suite scaling
 ```
+
+The largest cases deliberately exercise expensive scaling behaviour. The
+100-bond endpoint can take several minutes and more than 1 GiB of memory on a
+performance build; use `--runs 1 --warmup 0` for a smoke run. The default
+per-calculation timeout is 600 seconds and can be adjusted with `--timeout`.
 
 Collect scaling telemetry with one additional untimed candidate run per case:
 
