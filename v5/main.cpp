@@ -1,16 +1,26 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <csignal>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <memory_resource>
+#include <new>
+#include <numeric>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,11 +30,20 @@
     #include <windows.h>
 #endif
 
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+#include "assemblycpp.h"
+#endif
+
 using namespace std;
 using vi = vector<int>;
 using vb = vector<bool>;
 using pii = pair<int, int>;
 #include "activeWordMask.h"
+
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+namespace assemblycpp::detail
+{
+#endif
 
 constexpr int ceilLog2(int value)
 {
@@ -88,6 +107,51 @@ bool hasMolfileExtension(const string &filename)
     return filename.ends_with(".mol");
 }
 
+/** Load one supported input without creating any output files. */
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+bool loadMoleculeInput(
+    const string &input,
+    molGraph &molGraphOutput,
+    string &error
+)
+{
+    const bool explicitMolfile = hasMolfileExtension(input);
+    const string molfileName = explicitMolfile ? input : input + ".mol";
+    ifstream molfile(molfileName);
+
+    try
+    {
+        if (molfile.is_open())
+        {
+            if (verbose) cout << "opening " << molfileName << '\n';
+            molfileParser(molfile, molGraphOutput);
+            return true;
+        }
+        if (!explicitMolfile)
+        {
+            ifstream graphFile(input);
+            if (graphFile.is_open())
+            {
+                if (verbose) cout << "opening " << input << '\n';
+                graphio(graphFile, molGraphOutput);
+                return true;
+            }
+            error = "input file not found: '" + input + "' (also tried '" +
+                    molfileName + "')";
+            return false;
+        }
+        error = "input file not found: '" + input + "'";
+        return false;
+    }
+    catch (const std::exception &exception)
+    {
+        error = "could not parse '" + input + "': " + exception.what();
+        return false;
+    }
+}
+#endif
+
+#ifndef ASSEMBLYCPP_LIBRARY_BUILD
 /**
  * @brief Read a molfile or native graph and calculate its assembly index.
  *
@@ -103,34 +167,44 @@ bool assemblyCalculator(const string &input)
     resetSearchTelemetry();
 #endif
     const bool explicitMolfile = hasMolfileExtension(input);
-    const string outputBase = explicitMolfile ? input.substr(0, input.size() - 4) : input;
+    const string outputBase =
+        explicitMolfile ? input.substr(0, input.size() - 4) : input;
     const string molfileName = explicitMolfile ? input : input + ".mol";
     molGraph mol_graph;
     ifstream molfile(molfileName);
 
-    if (molfile.is_open())
+    try
     {
-        cout << "opening " << molfileName << '\n';
-        molfileParser(molfile, mol_graph);
-    }
-    else if (!explicitMolfile)
-    {
-        ifstream graphFile(input);
-        if (graphFile.is_open())
+        if (molfile.is_open())
         {
-            cout << "opening " << input << '\n';
-            graphio(graphFile, mol_graph);
+            if (verbose) cout << "opening " << molfileName << '\n';
+            molfileParser(molfile, mol_graph);
+        }
+        else if (!explicitMolfile)
+        {
+            ifstream graphFile(input);
+            if (graphFile.is_open())
+            {
+                if (verbose) cout << "opening " << input << '\n';
+                graphio(graphFile, mol_graph);
+            }
+            else
+            {
+                cerr << "error: input file not found: '" << input
+                     << "' (also tried '" << molfileName << "')\n";
+                return false;
+            }
         }
         else
         {
-            cerr << "error: input file not found: '" << input
-                 << "' (also tried '" << molfileName << "')\n";
+            cerr << "error: input file not found: '" << input << "'\n";
             return false;
         }
     }
-    else
+    catch (const std::exception &exception)
     {
-        cerr << "error: input file not found: '" << input << "'\n";
+        cerr << "error: could not parse '" << input << "': "
+             << exception.what() << '\n';
         return false;
     }
 
@@ -156,9 +230,6 @@ bool assemblyCalculator(const string &input)
         outputsSucceeded = false;
     }
 
-    // Once all potentially long-running output generation is complete, stop
-    // accepting new interrupts and record any interrupt already observed.
-    disableInterruptHandler();
     if (receivedUserInterrupt())
     {
         cout << "status: interrupted by user\n";
@@ -183,7 +254,163 @@ bool assemblyCalculator(const string &input)
 #endif
     return outputsSucceeded;
 }
+#endif
 
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+
+namespace
+{
+
+class LibraryOptionScope
+{
+    int previousEnumerationLimit = ENUM_MAX;
+    unsigned long long previousRuntimeTicks = runTimeMax;
+    bool previousPathway = isPathway;
+    bool previousRemoveHydrogens = removeHydrogens;
+    bool previousCompensateDisjoint = disjointCompensation;
+    bool previousVerbose = verbose;
+    bool previousMemoryReport = memTest;
+    bool previousIntermediateMAs = writeIntermediateMAs;
+
+public:
+    explicit LibraryOptionScope(const assemblycpp::CalculationOptions &options)
+    {
+        ENUM_MAX = options.enumerationLimit;
+        runTimeMax = options.runtimeTicks;
+        isPathway = false;
+        removeHydrogens = options.removeHydrogens;
+        disjointCompensation = options.compensateDisjoint;
+        verbose = options.verbose;
+        memTest = false;
+        writeIntermediateMAs = false;
+    }
+
+    ~LibraryOptionScope()
+    {
+        ENUM_MAX = previousEnumerationLimit;
+        runTimeMax = previousRuntimeTicks;
+        isPathway = previousPathway;
+        removeHydrogens = previousRemoveHydrogens;
+        disjointCompensation = previousCompensateDisjoint;
+        verbose = previousVerbose;
+        memTest = previousMemoryReport;
+        writeIntermediateMAs = previousIntermediateMAs;
+    }
+};
+
+void prepareInProcessCalculation()
+{
+    // A runtime budget uses the shared stop flag. Clear it before each item so
+    // a limited calculation cannot stop the remainder of an in-process batch.
+#ifdef _WIN32
+    interruptFlag.store(false);
+#else
+    interruptFlag = 0;
+#endif
+}
+
+assemblycpp::CalculationResult calculateLoadedMolecule(
+    molGraph &graph,
+    const string &input
+)
+{
+    assemblycpp::CalculationResult result;
+    result.input = input;
+    prepareInProcessCalculation();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    resetSearchTelemetry();
+#endif
+    // An unopened stream is a portable no-file sink for the legacy internal
+    // search writer. The public API returns the same value directly below.
+    ofstream discardedOutput;
+    result.succeeded = improvedBnB(graph, discardedOutput);
+    result.assemblyIndex = lastCalculatedAssemblyIndex;
+    result.clockTicks = elapsedClockTicks();
+    result.runtimeLimitReached = runtimeLimitReached;
+    result.enumerationLimitReached = enumerationLimitReached;
+    if (!result.succeeded)
+        result.error = "the requested calculation output could not be produced";
+    return result;
+}
+
+bool validLibraryOptions(
+    const assemblycpp::CalculationOptions &options,
+    string &error
+)
+{
+    if (options.enumerationLimit >= 1) return true;
+    error = "enumerationLimit must be at least one";
+    return false;
+}
+
+} // namespace
+
+} // namespace assemblycpp::detail
+using namespace assemblycpp::detail;
+
+assemblycpp::CalculationResult assemblycpp::calculateMolfile(
+    std::istream &molfile,
+    const CalculationOptions &options
+)
+{
+    CalculationResult result;
+    result.input = "<stream>";
+    if (!validLibraryOptions(options, result.error)) return result;
+
+    LibraryOptionScope optionScope(options);
+    try
+    {
+        molGraph graph;
+        molfileParser(molfile, graph);
+        return calculateLoadedMolecule(graph, result.input);
+    }
+    catch (const std::exception &exception)
+    {
+        result.error = exception.what();
+        return result;
+    }
+}
+
+assemblycpp::CalculationResult assemblycpp::calculate(
+    const std::string &input,
+    const CalculationOptions &options
+)
+{
+    CalculationResult result;
+    result.input = input;
+    if (!validLibraryOptions(options, result.error)) return result;
+
+    LibraryOptionScope optionScope(options);
+    try
+    {
+        molGraph graph;
+        if (!loadMoleculeInput(input, graph, result.error)) return result;
+        return calculateLoadedMolecule(graph, input);
+    }
+    catch (const std::exception &exception)
+    {
+        result.error = exception.what();
+        return result;
+    }
+}
+
+std::vector<assemblycpp::CalculationResult> assemblycpp::calculateBatch(
+    const std::vector<std::string> &inputs,
+    const CalculationOptions &options
+)
+{
+    std::vector<CalculationResult> results;
+    results.reserve(inputs.size());
+    for (const string &input : inputs)
+    {
+        results.push_back(calculate(input, options));
+    }
+    return results;
+}
+
+#endif
+
+#ifndef ASSEMBLYCPP_LIBRARY_BUILD
 /**
  * @brief Memory usage tracker, works for linux only
  * 
@@ -241,7 +468,9 @@ bool maxMemoryUsage(const string& outputFilename)
     }
     return true;
 }
+#endif
 
+#ifndef ASSEMBLYCPP_NO_MAIN
 int main(int argc, char** argv)
 {
     ios::sync_with_stdio(false);
@@ -271,6 +500,10 @@ int main(int argc, char** argv)
 
     bool succeeded = assemblyCalculator(arguments.input);
 
+    // All search and pathway output is complete; ignore new interrupts while
+    // final process-level reports and stream buffers are finished.
+    disableInterruptHandler();
+
     #ifdef __linux__
         if (succeeded && memTest) succeeded = maxMemoryUsage("memUsage");
     #endif
@@ -279,3 +512,4 @@ int main(int argc, char** argv)
     if (receivedUserInterrupt()) return 130;
     return 0;
 }
+#endif

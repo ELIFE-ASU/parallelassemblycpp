@@ -11,6 +11,7 @@ enum class InputFlag
     enumMax,
     pathway,
     removeHydrogensFlag,
+    verbose,
     compensateDisjoint,
     memoryReport,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -72,6 +73,14 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "1",
             "Remove explicit hydrogen atoms from molfile inputs.",
             {"removeHydrogens"}
+        },
+        {
+            InputFlag::verbose,
+            "verbose",
+            "0|1",
+            "0",
+            "Print input summaries and parsed molecular graphs.",
+            {}
         },
         {
             InputFlag::compensateDisjoint,
@@ -191,6 +200,10 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 
         case InputFlag::removeHydrogensFlag:
             removeHydrogens = parseBooleanFlag(definition, value);
+            break;
+
+        case InputFlag::verbose:
+            verbose = parseBooleanFlag(definition, value);
             break;
 
         case InputFlag::compensateDisjoint:

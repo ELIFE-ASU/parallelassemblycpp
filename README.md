@@ -2,7 +2,8 @@
 
 https://arxiv.org/abs/2410.09100#
 
-This repository contains the C++ implementation of v5 of the assembly algorithm, in a "script" style version.
+This repository contains the C++ implementation of v5 of the assembly algorithm,
+with command-line and reusable C++ library interfaces.
 
 School of Chemistry, The University of Glasgow, University Avenue, Glasgow G12 8QQ, United Kingdom
 
@@ -60,7 +61,8 @@ option.
 
 ### Install and package
 
-Install the portable executable and its documentation to a chosen prefix:
+Install the portable executable, static library, public header, and documentation
+to a chosen prefix:
 
 ```bash
 cmake --install build/release --prefix build/install
@@ -83,6 +85,50 @@ baseline. They are still specific to the platform and toolchain used to build
 them; `portable` describes the CPU instruction baseline, not a universal
 binary. CI builds its checked Linux archive on Ubuntu 22.04 with the system
 compiler. Packages include the README and the CC BY-NC 4.0 license.
+
+### C++ library and in-process batches
+
+The CMake build exports the `AssemblyCpp::Library` target. An installed package
+can be consumed with:
+
+```cmake
+find_package(AssemblyCpp 5 CONFIG REQUIRED)
+target_link_libraries(my_program PRIVATE AssemblyCpp::Library)
+```
+
+`calculate` and `calculateMolfile` return assembly indices and status directly
+without creating `INPUTOut` or pathway files. `calculateBatch` performs an
+ordered sequence in one process, avoiding process startup for short molecules:
+
+```cpp
+#include <assemblycpp.h>
+
+#include <iostream>
+#include <string>
+#include <vector>
+
+int main()
+{
+    const std::vector<std::string> inputs = {
+        "molecules/icosane.mol",
+        "molecules/sucrose.mol",
+    };
+    for (const assemblycpp::CalculationResult& result :
+         assemblycpp::calculateBatch(inputs))
+    {
+        if (!result)
+        {
+            std::cerr << result.input << ": " << result.error << '\n';
+            continue;
+        }
+        std::cout << result.input << '\t' << result.assemblyIndex << '\n';
+    }
+}
+```
+
+The batch interface is sequential. Search storage is currently process-global,
+so library calls are reusable but not thread-safe; use separate processes for
+concurrent calculations. A runtime limit applies independently to each item.
 
 ## Running AssemblyCpp
 
@@ -113,6 +159,7 @@ the same argument using `=`. Boolean values must be exactly `0` (disabled) or
 | `--enum-max=<COUNT>` | `1`–`INT_MAX` | `50000000` | Cap the number of unique connected subgraph masks retained while building the initial enumeration DAG, including one-edge masks. The search stops before retaining a mask beyond the limit. Larger limits can substantially increase memory use. |
 | `--pathway=<0\|1>` | Boolean | `1` | Write the recovered assembly pathway to `INPUTPathway`. |
 | `--remove-hydrogens=<0\|1>` | Boolean | `1` | Remove explicit hydrogen atoms from molfile inputs before calculation. This has no effect on native graph inputs. |
+| `--verbose=<0\|1>` | Boolean | `0` | Print input summaries and parsed molecular graphs. |
 | `--compensate-disjoint=<0\|1>` | Boolean | `0` | Subtract one from final and intermediate assembly indices for every component after the first in the processed graph. For molfiles, components are counted after optional hydrogen removal. Empty graphs receive no adjustment. |
 | `--memory-report=<0\|1>` | Boolean | `0` | After the other calculation outputs are written successfully on Linux, write `/proc/self/status`'s peak virtual-memory value (`VmPeak`, in kB) to `memUsage` in the current working directory. The option has no output on other platforms. |
 | `--telemetry=<0\|1>` | Boolean | `0` | In a telemetry-enabled build, write retained-mask and matching counts, canonicalisation activity, legacy VF2 counters, cache rates, and phase-specific memory to `INPUTTelemetry.json`. The current exact cyclic canonicaliser does not invoke VF2, so those compatibility counters remain zero. |

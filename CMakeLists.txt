@@ -83,8 +83,37 @@ function(assemblycpp_configure_target target)
   endif()
 endfunction()
 
+add_library(AssemblyCppLibrary STATIC v5/main.cpp)
+add_library(AssemblyCpp::Library ALIAS AssemblyCppLibrary)
+target_compile_definitions(
+  AssemblyCppLibrary
+  PRIVATE ASSEMBLYCPP_LIBRARY_BUILD ASSEMBLYCPP_NO_MAIN
+)
+target_include_directories(
+  AssemblyCppLibrary
+  PUBLIC
+    "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/v5>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/assemblycpp>"
+)
+target_compile_features(AssemblyCppLibrary PUBLIC cxx_std_20)
+set_target_properties(
+  AssemblyCppLibrary
+  PROPERTIES
+    EXPORT_NAME Library
+    OUTPUT_NAME assemblycpp
+    POSITION_INDEPENDENT_CODE ON
+)
+assemblycpp_configure_target(AssemblyCppLibrary)
+
 add_executable(AssemblyCpp v5/main.cpp)
 assemblycpp_configure_target(AssemblyCpp)
+if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # Both implementations are single translation units. Internalising their
+  # implementation details avoids frontend changes perturbing the search
+  # inliner; the library header preserves its three public entry points.
+  target_compile_options(AssemblyCpp PRIVATE -fwhole-program)
+  target_compile_options(AssemblyCppLibrary PRIVATE -fwhole-program)
+endif()
 
 if(ASSEMBLYCPP_BUILD_TELEMETRY)
   add_executable(AssemblyCppTelemetry v5/main.cpp)
@@ -96,13 +125,29 @@ if(ASSEMBLYCPP_BUILD_TELEMETRY)
 endif()
 
 install(
-  TARGETS AssemblyCpp
+  TARGETS AssemblyCpp AssemblyCppLibrary
+  EXPORT AssemblyCppTargets
   RUNTIME
     DESTINATION "${CMAKE_INSTALL_BINDIR}"
     PERMISSIONS
       OWNER_READ OWNER_WRITE OWNER_EXECUTE
       GROUP_READ GROUP_EXECUTE
       WORLD_READ WORLD_EXECUTE
+  ARCHIVE
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    PERMISSIONS
+      OWNER_READ OWNER_WRITE
+      GROUP_READ
+      WORLD_READ
+  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/assemblycpp"
+)
+install(
+  FILES v5/assemblycpp.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/assemblycpp"
+  PERMISSIONS
+    OWNER_READ OWNER_WRITE
+    GROUP_READ
+    WORLD_READ
 )
 install(
   FILES README.md License.md
@@ -111,6 +156,29 @@ install(
     OWNER_READ OWNER_WRITE
     GROUP_READ
     WORLD_READ
+)
+install(
+  EXPORT AssemblyCppTargets
+  FILE AssemblyCppTargets.cmake
+  NAMESPACE AssemblyCpp::
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/AssemblyCpp"
+)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+  cmake/AssemblyCppConfig.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/AssemblyCppConfig.cmake"
+  INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/AssemblyCpp"
+)
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/AssemblyCppConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion
+)
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/AssemblyCppConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/AssemblyCppConfigVersion.cmake"
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/AssemblyCpp"
 )
 if(UNIX AND NOT APPLE)
   # Conda compiler wrappers can inject an absolute environment RPATH outside
@@ -162,6 +230,22 @@ if(BUILD_TESTING)
   )
   assemblycpp_configure_target(assemblycpp_fragmentation_metadata_tests)
 
+  add_executable(
+    assemblycpp_molfile_parser_tests
+    unitTests/molfileParserTester.cpp
+  )
+  assemblycpp_configure_target(assemblycpp_molfile_parser_tests)
+
+  add_executable(
+    assemblycpp_library_batch_tests
+    unitTests/libraryBatchTester.cpp
+  )
+  target_link_libraries(
+    assemblycpp_library_batch_tests
+    PRIVATE AssemblyCppLibrary
+  )
+  assemblycpp_configure_target(assemblycpp_library_batch_tests)
+
   add_test(
     NAME unit.active-word-mask
     COMMAND assemblycpp_active_word_mask_tests
@@ -195,6 +279,18 @@ if(BUILD_TESTING)
     NAME unit.fragmentation-metadata
     COMMAND assemblycpp_fragmentation_metadata_tests
   )
+  add_test(
+    NAME unit.molfile-parser
+    COMMAND assemblycpp_molfile_parser_tests
+  )
+  add_test(
+    NAME unit.library-batch
+    COMMAND
+      assemblycpp_library_batch_tests
+      "${PROJECT_SOURCE_DIR}/unitTests/icosane.mol"
+      "${PROJECT_SOURCE_DIR}/unitTests/sucrose.mol"
+      "${PROJECT_SOURCE_DIR}/unitTests/butane.mol"
+  )
   set_tests_properties(
     unit.active-word-mask
     unit.assembly-transposition-table
@@ -202,6 +298,8 @@ if(BUILD_TESTING)
     unit.cyclic-canonicalisation
     unit.search-stop-polling
     unit.fragmentation-metadata
+    unit.molfile-parser
+    unit.library-batch
     PROPERTIES LABELS "unit"
   )
 

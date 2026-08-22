@@ -1,10 +1,12 @@
+#include <istream>
+
 /**
  * @brief Graph I/O
  * 
  * @param ifs input file
  * @param mg output molGraph
  */
-void graphio(ifstream &ifs, molGraph &mg)
+void graphio(std::istream &ifs, molGraph &mg)
 {
     string s;
     string graphName;
@@ -13,7 +15,7 @@ void graphio(ifstream &ifs, molGraph &mg)
     getline(ifs, graphName);
     istringstream nameLine(graphName);
     nameLine >> graphName;
-    cout << "Name of graph is: " << graphName << '\n';
+    if (verbose) cout << "Name of graph is: " << graphName << '\n';
     getline(ifs, s);
     istringstream iss1(s);
     iss1 >> graphSize;
@@ -37,5 +39,5 @@ void graphio(ifstream &ifs, molGraph &mg)
         iss3 >> a;
         mg.addBond(edge.first - 1, edge.second - 1, a);
     }
-    mg.printToCout();
+    if (verbose) mg.printToCout();
 }

@@ -777,6 +777,9 @@ void recordImprovedAssemblyIndex(
     if constexpr (trackPath)
         searchStorage.pathway->best = searchStorage.pathway->current;
     const unsigned long long time = elapsedClockTicks();
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+    if (verbose)
+#endif
     cout << "time: " << time << " min AI found so far: " << AI << '\n';
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
@@ -1320,14 +1323,25 @@ bool runImprovedAssemblySearch(
     setSearchTelemetryPhase(SearchTelemetryPhase::output);
 #endif
     // Keep the primary result line machine-readable even for partial searches.
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+    lastCalculatedAssemblyIndex = compensateDisjointAssemblyIndex(AI);
+    ofs << lastCalculatedAssemblyIndex << '\n';
+#else
     ofs << compensateDisjointAssemblyIndex(AI) << '\n';
+#endif
     if (runtimeLimitReached)
     {
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+        if (verbose)
+#endif
         cout << "status: runtime limit reached\n";
         ofs << "status: runtime limit reached\n";
     }
     if (enumerationLimitReached)
     {
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+        if (verbose)
+#endif
         cout << "status: enumeration limit reached\n";
         ofs << "status: enumeration limit reached\n";
     }

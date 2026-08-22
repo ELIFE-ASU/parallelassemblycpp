@@ -53,8 +53,12 @@ struct graphHash
 /**
  * @brief Hash for subgraph unordered_map
  */
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+struct graphHashHasher
+#else
 template<>
 struct std::hash<graphHash>
+#endif
 {
     size_t operator()(const graphHash &gh) const
     {
@@ -350,7 +354,11 @@ void prepareCanonicalisationGraph(
     canonicalisationGraphScratch.configure(source, edgeList);
 }
 
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+std::unordered_map<graphHash, pii, graphHashHasher> graphHashMap;
+#else
 std::unordered_map<graphHash, pii> graphHashMap;
+#endif
 
 /** Keep the allocation-heavy miss path out of the cache-hit instruction body. */
 [[gnu::noinline]] int canoniseCacheMiss(EdgeMask &mask)

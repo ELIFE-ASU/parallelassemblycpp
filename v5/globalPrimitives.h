@@ -82,9 +82,13 @@ std::unordered_map<EdgeMask, pii> bitsetHashTable;
 
 bool isPathway = true;
 bool removeHydrogens = true;
+bool verbose = false;
 bool disjointCompensation = false;
 bool memTest = false;
 bool writeIntermediateMAs = false;
+#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+int lastCalculatedAssemblyIndex = -1;
+#endif
 int disjointFragments = 1;
 vector<pair<unsigned long long, int>> intermediateMAs;
 

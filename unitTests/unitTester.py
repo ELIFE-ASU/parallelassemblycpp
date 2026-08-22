@@ -403,6 +403,7 @@ def run_cli_checks(executable: Path) -> int:
         "--enum-max=<COUNT>",
         "--pathway=<0|1>",
         "--remove-hydrogens=<0|1>",
+        "--verbose=<0|1>",
         "--compensate-disjoint=<0|1>",
         "--memory-report=<0|1>",
         "--write-intermediate-mas=<0|1>",
@@ -508,6 +509,7 @@ def run_cli_checks(executable: Path) -> int:
             (["input", "--pathway="], "expects 0 or 1"),
             (["input", "--pathway=2"], "expects 0 or 1"),
             (["input", "--remove-hydrogens=yes"], "expects 0 or 1"),
+            (["input", "--verbose=2"], "expects 0 or 1"),
             (["input", "--enum-max=0"], "expects a value from 1"),
             (["input", "--enum-max=12junk"], "non-negative whole number"),
             (["input", "--runtime=-1"], "non-negative whole number"),
@@ -548,6 +550,7 @@ def run_cli_checks(executable: Path) -> int:
             "--enum-max=1000000",
             "--pathway=0",
             "--remove-hydrogens=0",
+            "--verbose=0",
             "--compensate-disjoint=1",
             "--memory-report=0",
             "--write-intermediate-mas=1",
@@ -587,6 +590,30 @@ def run_cli_checks(executable: Path) -> int:
         require_cli(
             not (working_directory / "inputTelemetry.json").exists(),
             "--telemetry=0 should suppress telemetry output",
+            completed,
+        )
+        require_cli(
+            "There are" not in completed.stdout and "Atom " not in completed.stdout,
+            "quiet mode should suppress the parsed graph dump",
+            completed,
+        )
+        scenarios += 1
+
+        completed = run_cli_command(
+            executable,
+            ["--pathway=0", "--verbose=1", input_path.name],
+            working_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "--verbose=1 should run successfully",
+            completed,
+        )
+        require_cli(
+            "Detecting 4 atoms and 3 bonds" in completed.stdout
+            and "There are 4 atoms" in completed.stdout
+            and "Atom 1" in completed.stdout,
+            "--verbose=1 should print the input summary and parsed graph",
             completed,
         )
         scenarios += 1
