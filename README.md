@@ -50,6 +50,47 @@ cmake --build --preset performance
 ./build/performance/AssemblyCppTelemetry --help
 ```
 
+### Experimental parallel search
+
+The opt-in `parallel` preset builds serial, OpenMP, MPI, and hybrid MPI/OpenMP
+executables from the same optimized source. It requires both OpenMP and MPI;
+the Conda environment provides Open MPI, while another MPI implementation can
+be selected through CMake's usual `MPI_CXX_COMPILER` setting.
+
+```bash
+cmake --preset parallel
+cmake --build --preset parallel
+
+OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
+  ./build/parallel/AssemblyCppOMP molecule.mol --pathway=0
+mpirun --map-by slot --bind-to core -n 4 \
+  ./build/parallel/AssemblyCppMPI molecule.mol --pathway=0
+OMP_NUM_THREADS=2 OMP_PLACES=cores OMP_PROC_BIND=close \
+  mpirun --map-by slot:PE=2 --bind-to core -n 2 \
+  ./build/parallel/AssemblyCppHybrid molecule.mol --pathway=0
+```
+
+The `mpirun` placement flags above use the Open MPI syntax supplied by the
+Conda environment. Use the equivalent rank and CPU binding controls when
+selecting a different MPI implementation.
+
+Parallel executables repeat deterministic setup in isolated worker state and
+shard the first-level search branches. MPI rank zero is the only output writer.
+The parallel path is used for count-only unlimited searches with at least 32
+input bonds by default; pathway recovery, runtime-limited searches,
+intermediate-MA output, telemetry, smaller inputs, and one-worker launches use
+the serial path. Set `ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` to force a scaling
+experiment on a smaller input.
+
+Each OpenMP thread and MPI rank owns its search caches and mask arena. This
+keeps the existing library ABI and serial executable unchanged, but duplicates
+initial-enumeration work and memory. It is therefore intended for coarse,
+long-running searches rather than millisecond inputs. Program-reported
+`std::clock` ticks are aggregate process CPU cost for OpenMP and rank-local cost
+for MPI; compare parallel builds with paired wall time, speedup, and efficiency.
+The benchmark section below and `benchmarks/README.md` show reproducible
+launcher and scaling commands.
+
 Do not run the performance binaries on processors that lack the x86-64-v3
 feature level. Portable and performance builds never mix in the same build
 directory.

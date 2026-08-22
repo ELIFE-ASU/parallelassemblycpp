@@ -62,7 +62,7 @@ struct cyclicCanonPeelingWorkspace
 // The surrounding search state is already process-global and single-threaded.
 // Reusing these flat buffers avoids repeated scratch allocation for every
 // cyclic canonicalisation miss.
-inline cyclicCanonPeelingWorkspace cyclicCanonPeelingScratch;
+inline ASSEMBLYCPP_SEARCH_LOCAL cyclicCanonPeelingWorkspace cyclicCanonPeelingScratch;
 
 /**
  * @brief Cached coloured-core representation with lazy exact labelling.

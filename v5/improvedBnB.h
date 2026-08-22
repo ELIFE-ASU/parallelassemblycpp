@@ -770,17 +770,36 @@ void recordImprovedAssemblyIndex(
     const assemblySearchStorage &searchStorage
 )
 {
+    if (sharedAssemblyIndex != nullptr)
+        AI = min(AI, sharedAssemblyIndex->load(std::memory_order_relaxed));
     const int candidate = input.AI();
     if (candidate >= AI) return;
 
     AI = candidate;
+    if (sharedAssemblyIndex != nullptr)
+    {
+        int observed = sharedAssemblyIndex->load(std::memory_order_relaxed);
+        while (
+            candidate < observed &&
+            !sharedAssemblyIndex->compare_exchange_weak(
+                observed,
+                candidate,
+                std::memory_order_relaxed
+            )
+        ) {}
+        AI = min(AI, observed);
+        if (candidate > AI) return;
+    }
     if constexpr (trackPath)
         searchStorage.pathway->best = searchStorage.pathway->current;
     const unsigned long long time = elapsedClockTicks();
+    if (!suppressSearchOutput)
+    {
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
-    if (verbose)
+        if (verbose)
 #endif
-    cout << "time: " << time << " min AI found so far: " << AI << '\n';
+        cout << "time: " << time << " min AI found so far: " << AI << '\n';
+    }
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
 
@@ -1196,6 +1215,16 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
             initialDuplicateSet &ss = entry.duplicates;
             auto matchingVisitor = [&](validMatchings &matching)
             {
+                const size_t branchOrdinal = searchShardBranchOrdinal++;
+                if (
+                    searchShardCount > 1 &&
+                    branchOrdinal % searchShardCount != searchShardIndex
+                ) return true;
+                if (sharedAssemblyIndex != nullptr)
+                    AI = min(
+                        AI,
+                        sharedAssemblyIndex->load(std::memory_order_relaxed)
+                    );
                 candidate.clearFragments();
                 fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                     input,
@@ -1323,26 +1352,28 @@ bool runImprovedAssemblySearch(
     setSearchTelemetryPhase(SearchTelemetryPhase::output);
 #endif
     // Keep the primary result line machine-readable even for partial searches.
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
     lastCalculatedAssemblyIndex = compensateDisjointAssemblyIndex(AI);
     ofs << lastCalculatedAssemblyIndex << '\n';
-#else
-    ofs << compensateDisjointAssemblyIndex(AI) << '\n';
-#endif
     if (runtimeLimitReached)
     {
+        if (!suppressSearchOutput)
+        {
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
-        if (verbose)
+            if (verbose)
 #endif
-        cout << "status: runtime limit reached\n";
+            cout << "status: runtime limit reached\n";
+        }
         ofs << "status: runtime limit reached\n";
     }
     if (enumerationLimitReached)
     {
+        if (!suppressSearchOutput)
+        {
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
-        if (verbose)
+            if (verbose)
 #endif
-        cout << "status: enumeration limit reached\n";
+            cout << "status: enumeration limit reached\n";
+        }
         ofs << "status: enumeration limit reached\n";
     }
 
@@ -1372,6 +1403,7 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     clearTreeCanonInterner();
     DAG.clear();
     intermediateMAs.clear();
+    searchShardBranchOrdinal = 0;
     totalBonds = mg.totalBonds;
     originalEdgeList = mg.writeEdgeList();
     disjointFragments = mg.disjointFragments();

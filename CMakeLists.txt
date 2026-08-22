@@ -57,6 +57,21 @@ option(
   "Run the complete regression manifest instead of its first 20 cases"
   OFF
 )
+option(
+  ASSEMBLYCPP_BUILD_OPENMP
+  "Build the experimental intra-calculation OpenMP executable"
+  OFF
+)
+option(
+  ASSEMBLYCPP_BUILD_MPI
+  "Build the experimental intra-calculation MPI executable"
+  OFF
+)
+option(
+  ASSEMBLYCPP_BUILD_HYBRID
+  "Build the experimental hybrid MPI and OpenMP executable"
+  OFF
+)
 
 set(_ASSEMBLYCPP_PGO_PHASES OFF GENERATE USE)
 if(NOT ASSEMBLYCPP_PGO_PHASE IN_LIST _ASSEMBLYCPP_PGO_PHASES)
@@ -426,12 +441,58 @@ assemblycpp_configure_target(AssemblyCppLibrary)
 add_executable(AssemblyCpp v5/main.cpp)
 assemblycpp_configure_target(AssemblyCpp)
 assemblycpp_configure_pgo_target(AssemblyCpp)
+
+if(ASSEMBLYCPP_BUILD_OPENMP OR ASSEMBLYCPP_BUILD_HYBRID)
+  find_package(OpenMP REQUIRED COMPONENTS CXX)
+endif()
+if(ASSEMBLYCPP_BUILD_MPI OR ASSEMBLYCPP_BUILD_HYBRID)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+endif()
+
+if(ASSEMBLYCPP_BUILD_OPENMP)
+  add_executable(AssemblyCppOMP v5/main.cpp)
+  target_compile_definitions(AssemblyCppOMP PRIVATE ASSEMBLYCPP_USE_OPENMP)
+  target_link_libraries(AssemblyCppOMP PRIVATE OpenMP::OpenMP_CXX)
+  assemblycpp_configure_target(AssemblyCppOMP)
+endif()
+
+if(ASSEMBLYCPP_BUILD_MPI)
+  add_executable(AssemblyCppMPI v5/main.cpp)
+  target_compile_definitions(AssemblyCppMPI PRIVATE ASSEMBLYCPP_USE_MPI)
+  target_link_libraries(AssemblyCppMPI PRIVATE MPI::MPI_CXX)
+  assemblycpp_configure_target(AssemblyCppMPI)
+endif()
+
+if(ASSEMBLYCPP_BUILD_HYBRID)
+  add_executable(AssemblyCppHybrid v5/main.cpp)
+  target_compile_definitions(
+    AssemblyCppHybrid
+    PRIVATE ASSEMBLYCPP_USE_MPI ASSEMBLYCPP_USE_OPENMP
+  )
+  target_link_libraries(
+    AssemblyCppHybrid
+    PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX
+  )
+  assemblycpp_configure_target(AssemblyCppHybrid)
+endif()
+
 if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   # Both implementations are single translation units. Internalising their
   # implementation details avoids frontend changes perturbing the search
   # inliner; the library header preserves its three public entry points.
   target_compile_options(AssemblyCpp PRIVATE -fwhole-program)
   target_compile_options(AssemblyCppLibrary PRIVATE -fwhole-program)
+  foreach(
+    ASSEMBLYCPP_PARALLEL_TARGET
+    AssemblyCppOMP AssemblyCppMPI AssemblyCppHybrid
+  )
+    if(TARGET ${ASSEMBLYCPP_PARALLEL_TARGET})
+      target_compile_options(
+        ${ASSEMBLYCPP_PARALLEL_TARGET}
+        PRIVATE -fwhole-program
+      )
+    endif()
+  endforeach()
 endif()
 
 if(ASSEMBLYCPP_BUILD_TELEMETRY)

@@ -12,6 +12,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -41,6 +42,7 @@ KNOWN_EXPECTATIONS = ("reviewed", "provisional")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
+ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class BenchmarkError(RuntimeError):
@@ -90,6 +92,14 @@ class CaseResult:
     telemetry: dict[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class ExecutionConfig:
+    """Launcher prefix and explicit environment overrides for one executable."""
+
+    launcher: tuple[str, ...] = ()
+    environment: tuple[tuple[str, str], ...] = ()
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -109,6 +119,61 @@ def positive_float(value: str) -> float:
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed
+
+
+def environment_assignment(value: str) -> tuple[str, str]:
+    """Parse one conventional KEY=VALUE environment assignment."""
+    key, separator, setting = value.partition("=")
+    if not separator:
+        raise argparse.ArgumentTypeError("must use KEY=VALUE syntax")
+    if not ENVIRONMENT_KEY_PATTERN.fullmatch(key):
+        raise argparse.ArgumentTypeError(
+            "environment key must match [A-Za-z_][A-Za-z0-9_]*"
+        )
+    if "\x00" in setting:
+        raise argparse.ArgumentTypeError("environment value must not contain NUL")
+    return key, setting
+
+
+def launcher_prefix(value: str) -> tuple[str, ...]:
+    """Shell-split a launcher prefix without invoking a shell."""
+    try:
+        launcher = tuple(shlex.split(value))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid shell quoting: {error}") from error
+    if not launcher:
+        raise argparse.ArgumentTypeError("launcher prefix must not be empty")
+    return launcher
+
+
+def create_execution_config(
+    launcher: tuple[str, ...] | None,
+    environment: Sequence[tuple[str, str]],
+    role: str,
+) -> ExecutionConfig | None:
+    """Validate and normalize one optional command execution configuration."""
+    seen: set[str] = set()
+    for key, _ in environment:
+        if key in seen:
+            raise BenchmarkError(f"duplicate {role} environment setting: {key}")
+        seen.add(key)
+
+    environment_values = dict(environment)
+    launcher_path = environment_values.get("PATH", os.environ.get("PATH"))
+    if launcher and shutil.which(launcher[0], path=launcher_path) is None:
+        raise BenchmarkError(f"{role} launcher not found: {launcher[0]}")
+
+    config = ExecutionConfig(launcher or (), tuple(environment))
+    return None if not config.launcher and not config.environment else config
+
+
+def execution_config_metadata(config: ExecutionConfig | None) -> dict[str, object]:
+    """Return the exact explicit execution configuration used for a role."""
+    effective = config or ExecutionConfig()
+    return {
+        "launcher": list(effective.launcher),
+        "environment": dict(effective.environment),
+    }
 
 
 def resolve_file(path: Path, description: str) -> Path:
@@ -148,10 +213,48 @@ def resolve_executable(path: Path) -> Path:
     )
 
 
-def ensure_distinct_executables(candidate: Path, baseline: Path) -> None:
-    if paths_alias(candidate, baseline):
+def execution_configs_alias(
+    candidate: ExecutionConfig | None,
+    baseline: ExecutionConfig | None,
+) -> bool:
+    """Return whether two configurations launch with identical semantics."""
+    candidate = candidate or ExecutionConfig()
+    baseline = baseline or ExecutionConfig()
+    return (
+        candidate.launcher == baseline.launcher
+        and dict(candidate.environment) == dict(baseline.environment)
+    )
+
+
+def ensure_distinct_executables(
+    candidate: Path,
+    baseline: Path,
+    candidate_execution: ExecutionConfig | None = None,
+    baseline_execution: ExecutionConfig | None = None,
+) -> None:
+    if paths_alias(candidate, baseline) and execution_configs_alias(
+        candidate_execution, baseline_execution
+    ):
         raise BenchmarkError(
-            "candidate and baseline executables resolve to the same file"
+            "candidate and baseline executables resolve to the same file and use "
+            "the same execution configuration"
+        )
+
+
+def ensure_distinct_execution_identities(
+    candidate_metadata: dict[str, object],
+    baseline_metadata: dict[str, object],
+    candidate_execution: ExecutionConfig | None,
+    baseline_execution: ExecutionConfig | None,
+) -> None:
+    """Reject byte-identical binaries only when their configurations also alias."""
+    if (
+        candidate_metadata.get("sha256") == baseline_metadata.get("sha256")
+        and execution_configs_alias(candidate_execution, baseline_execution)
+    ):
+        raise BenchmarkError(
+            "candidate and baseline use the same binary fingerprint and execution "
+            "configuration"
         )
 
 
@@ -499,12 +602,70 @@ def prepare_cases(
     return prepared
 
 
+def terminate_command(process: subprocess.Popen[str]) -> None:
+    """Terminate a configured launch, including its POSIX process group."""
+    killed_group = False
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            killed_group = True
+        except ProcessLookupError:
+            killed_group = True
+        except OSError:
+            pass
+    if not killed_group:
+        process.kill()
+
+
+def run_command(
+    command: Sequence[str],
+    working_directory: Path,
+    timeout: float,
+    environment: dict[str, str] | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command and clean up its process group on timeout or interruption."""
+    popen_arguments: dict[str, object] = {
+        "cwd": working_directory,
+        "env": environment,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "posix":
+        popen_arguments["start_new_session"] = True
+
+    process = subprocess.Popen(command, **popen_arguments)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        terminate_command(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            error.timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from error
+    except BaseException:
+        # start_new_session deliberately keeps launcher workers out of the
+        # driver's foreground process group, so an interrupt must stop them
+        # explicitly before it propagates to the caller.
+        terminate_command(process)
+        process.communicate()
+        raise
+
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def run_once(
     executable: Path,
     prepared: PreparedCase,
     timeout: float,
+    *,
+    execution: ExecutionConfig | None = None,
 ) -> Measurement:
     command = [
+        *(execution.launcher if execution is not None else ()),
         str(executable),
         "--pathway=0",
         "--memory-report=0",
@@ -512,17 +673,29 @@ def run_once(
         "--",
         prepared.input_name,
     ]
+    environment = None
+    if execution is not None and execution.environment:
+        environment = os.environ.copy()
+        environment.update(execution.environment)
     prepared.output_path.unlink(missing_ok=True)
     started = time.perf_counter()
     try:
-        completed = subprocess.run(
-            command,
-            cwd=prepared.working_directory,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        if execution is None:
+            completed = subprocess.run(
+                command,
+                cwd=prepared.working_directory,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        else:
+            completed = run_command(
+                command,
+                prepared.working_directory,
+                timeout,
+                environment,
+            )
     except subprocess.TimeoutExpired as error:
         raise BenchmarkError(
             f"{prepared.case.name} timed out after {error.timeout:g} seconds"
@@ -925,6 +1098,8 @@ def run_benchmarks(
     warmup: int,
     timeout: float,
     telemetry_executable: Path | None = None,
+    candidate_execution: ExecutionConfig | None = None,
+    baseline_execution: ExecutionConfig | None = None,
 ) -> list[CaseResult]:
     with tempfile.TemporaryDirectory(prefix="assemblycpp-benchmark-") as directory:
         prepared_cases = prepare_cases(cases, Path(directory))
@@ -949,6 +1124,25 @@ def run_benchmarks(
                 ("candidate", executable),
                 ("baseline", baseline_executable),
             ]
+
+        def execute(
+            role: str,
+            current_executable: Path,
+            prepared: PreparedCase,
+        ) -> Measurement:
+            execution = (
+                candidate_execution if role == "candidate" else baseline_execution
+            )
+            # Preserve the historical three-argument call for default callers and
+            # monkeypatched PGO/benchmark test doubles.
+            if execution is None:
+                return run_once(current_executable, prepared, timeout)
+            return run_once(
+                current_executable,
+                prepared,
+                timeout,
+                execution=execution,
+            )
 
         def validate_unchecked_pair(
             prepared: PreparedCase, paired: dict[str, Measurement]
@@ -977,8 +1171,8 @@ def run_benchmarks(
                         flush=True,
                     )
                     try:
-                        paired_warmups[role] = run_once(
-                            current_executable, prepared, timeout
+                        paired_warmups[role] = execute(
+                            role, current_executable, prepared
                         )
                     except BenchmarkError as error:
                         raise BenchmarkError(
@@ -992,7 +1186,7 @@ def run_benchmarks(
                 paired_measurements: dict[str, Measurement] = {}
                 for role, current_executable in executable_order(run_index):
                     try:
-                        measurement = run_once(current_executable, prepared, timeout)
+                        measurement = execute(role, current_executable, prepared)
                     except BenchmarkError as error:
                         raise BenchmarkError(
                             f"round {run_index + 1}/{runs} {role}: {error}"
@@ -1317,6 +1511,8 @@ def write_json_report(
     warmup: int,
     timeout: float,
     results: Sequence[CaseResult],
+    candidate_execution: ExecutionConfig | None = None,
+    baseline_execution: ExecutionConfig | None = None,
 ) -> None:
     def measurement_report(measurements: tuple[Measurement, ...]) -> dict[str, object]:
         wall = summarize([measurement.wall_seconds for measurement in measurements])
@@ -1418,6 +1614,14 @@ def write_json_report(
             "baseline": baseline_metadata,
             "telemetry": telemetry_metadata,
         },
+        "execution": {
+            "candidate": execution_config_metadata(candidate_execution),
+            "baseline": (
+                None
+                if baseline_metadata is None
+                else execution_config_metadata(baseline_execution)
+            ),
+        },
         "corpus": corpus_metadata,
         "manifest": None if manifest is None else str(manifest),
         "suite": suite,
@@ -1473,7 +1677,7 @@ def print_case_list(cases: Sequence[BenchmarkCase]) -> None:
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run serial AssemblyCpp calculations and summarize their speed. "
+            "Run isolated AssemblyCpp calculations and summarize their speed. "
             "Without a corpus option, the default input remains "
             "unitTests/ketoconazole.mol."
         )
@@ -1491,6 +1695,41 @@ def create_argument_parser() -> argparse.ArgumentParser:
             "baseline executable for paired A/B measurements; --executable is "
             "the candidate"
         ),
+    )
+    parser.add_argument(
+        "--candidate-launcher",
+        type=launcher_prefix,
+        metavar="COMMAND",
+        help=(
+            "shell-split command prefix placed before the candidate executable "
+            "(for example 'mpirun -n 2')"
+        ),
+    )
+    parser.add_argument(
+        "--baseline-launcher",
+        type=launcher_prefix,
+        metavar="COMMAND",
+        help="shell-split command prefix placed before the baseline executable",
+    )
+    parser.add_argument(
+        "--candidate-env",
+        "--candidate-environment",
+        dest="candidate_environment",
+        type=environment_assignment,
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="candidate environment override; may be repeated",
+    )
+    parser.add_argument(
+        "--baseline-env",
+        "--baseline-environment",
+        dest="baseline_environment",
+        type=environment_assignment,
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="baseline environment override; may be repeated",
     )
     parser.add_argument(
         "--input",
@@ -1637,6 +1876,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.baseline_executable is not None:
             baseline_executable = resolve_executable(arguments.baseline_executable)
 
+        candidate_execution = create_execution_config(
+            arguments.candidate_launcher,
+            arguments.candidate_environment,
+            "candidate",
+        )
+        if baseline_executable is None and (
+            arguments.baseline_launcher or arguments.baseline_environment
+        ):
+            raise BenchmarkError(
+                "--baseline-launcher and --baseline-env require "
+                "--baseline-executable"
+            )
+        baseline_execution = create_execution_config(
+            arguments.baseline_launcher,
+            arguments.baseline_environment,
+            "baseline",
+        )
+
         if arguments.telemetry_executable is not None and not arguments.telemetry:
             raise BenchmarkError(
                 "--telemetry-executable requires --telemetry"
@@ -1679,7 +1936,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.build:
             if baseline_executable is not None:
                 ensure_distinct_executables(
-                    executable_path.resolve(), baseline_executable
+                    executable_path.resolve(),
+                    baseline_executable,
+                    candidate_execution,
+                    baseline_execution,
                 )
             executable_path = build_executable(
                 executable_path,
@@ -1697,7 +1957,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             telemetry_executable = resolve_executable(telemetry_path)
         if baseline_executable is not None:
-            ensure_distinct_executables(executable, baseline_executable)
+            ensure_distinct_executables(
+                executable,
+                baseline_executable,
+                candidate_execution,
+                baseline_execution,
+            )
             if runs % 2 != 0:
                 print(
                     "Warning: an odd number of paired rounds gives one "
@@ -1726,6 +1991,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if baseline_executable is None
             else executable_metadata(baseline_executable)
         )
+        if baseline_metadata is not None:
+            ensure_distinct_execution_identities(
+                candidate_metadata,
+                baseline_metadata,
+                candidate_execution,
+                baseline_execution,
+            )
         telemetry_metadata = (
             None
             if telemetry_executable is None
@@ -1779,6 +2051,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             executable=executable,
             baseline_executable=baseline_executable,
             telemetry_executable=telemetry_executable,
+            candidate_execution=candidate_execution,
+            baseline_execution=baseline_execution,
             cases=cases,
             runs=runs,
             warmup=arguments.warmup,
@@ -1820,6 +2094,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 warmup=arguments.warmup,
                 timeout=arguments.timeout,
                 results=results,
+                candidate_execution=candidate_execution,
+                baseline_execution=baseline_execution,
             )
             print(f"JSON report: {arguments.json_output}")
     except (BenchmarkError, OSError) as error:

@@ -11,6 +11,10 @@
 #include <type_traits>
 #include <utility>
 
+#ifndef ASSEMBLYCPP_SEARCH_LOCAL
+    #define ASSEMBLYCPP_SEARCH_LOCAL
+#endif
+
 /**
  * @brief Runtime-width bit mask with an exact one-word small specialization.
  *
@@ -22,9 +26,9 @@
  *
  * A domain must be configured only after all masks from its preceding width
  * have been destroyed (persistent masks must be destroyed and reconstructed)
- * and all mask-keyed containers have been cleared. The surrounding search is
- * process-global and already observes that lifecycle; it is not re-entrant, so
- * reference counts are non-atomic.
+ * and all mask-keyed containers have been cleared. Parallel builds give every
+ * OpenMP worker a thread-local domain and arena, so the non-atomic reference
+ * counts never cross a worker boundary.
  */
 template<typename Domain>
 class ActiveWordMask
@@ -1089,9 +1093,9 @@ private:
         storage_.tail = replacement;
     }
 
-    inline static std::size_t activeBitCount_ = wordBits;
-    inline static std::size_t activeWordCount_ = 1;
-    inline static ArenaState arena_;
+    inline static ASSEMBLYCPP_SEARCH_LOCAL std::size_t activeBitCount_ = wordBits;
+    inline static ASSEMBLYCPP_SEARCH_LOCAL std::size_t activeWordCount_ = 1;
+    inline static ASSEMBLYCPP_SEARCH_LOCAL ArenaState arena_;
     Storage storage_;
 };
 

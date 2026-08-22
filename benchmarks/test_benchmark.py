@@ -4,8 +4,12 @@ import contextlib
 import csv
 import io
 import json
+import os
+import shlex
+import signal
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -148,6 +152,27 @@ class BenchmarkTests(unittest.TestCase):
         )
         executable.chmod(0o755)
         return executable
+
+    def create_forwarding_launcher(self, directory: Path) -> Path:
+        launcher = directory / "forwarding launcher"
+        launcher.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import os
+                import sys
+
+                if len(sys.argv) < 5 or sys.argv[1] != "--require":
+                    raise SystemExit(90)
+                if os.environ.get(sys.argv[2]) != sys.argv[3]:
+                    raise SystemExit(91)
+                os.execv(sys.argv[4], sys.argv[4:])
+                """
+            ),
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        return launcher
 
     def test_summary_statistics_support_one_sample_and_outliers(self) -> None:
         single = benchmark.summarize([4.0])
@@ -338,6 +363,286 @@ class BenchmarkTests(unittest.TestCase):
             self.assertTrue(
                 all(len(result.baseline_measurements) == 3 for result in results)
             )
+
+    def test_role_execution_configs_launch_with_environment_and_reach_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            candidate = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            baseline = self.create_fake_executable(
+                directory, "baseline", assembly_index=7, clock_ticks=200
+            )
+            launcher = self.create_forwarding_launcher(directory)
+            report_path = directory / "report.json"
+            candidate_launcher = [
+                str(launcher),
+                "--require",
+                "CANDIDATE_MODE",
+                "candidate enabled",
+            ]
+            baseline_launcher = [
+                str(launcher),
+                "--require",
+                "BASELINE_MODE",
+                "baseline enabled",
+            ]
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = benchmark.main(
+                    [
+                        "--input",
+                        str(fixture),
+                        "--expected",
+                        "7",
+                        "--executable",
+                        str(candidate),
+                        "--baseline-executable",
+                        str(baseline),
+                        "--candidate-launcher",
+                        shlex.join(candidate_launcher),
+                        "--baseline-launcher",
+                        shlex.join(baseline_launcher),
+                        "--candidate-env",
+                        "CANDIDATE_MODE=candidate enabled",
+                        "--baseline-env",
+                        "BASELINE_MODE=baseline enabled",
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "0",
+                        "--json-output",
+                        str(report_path),
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["execution"]["candidate"],
+                {
+                    "launcher": candidate_launcher,
+                    "environment": {"CANDIDATE_MODE": "candidate enabled"},
+                },
+            )
+            self.assertEqual(
+                report["execution"]["baseline"],
+                {
+                    "launcher": baseline_launcher,
+                    "environment": {"BASELINE_MODE": "baseline enabled"},
+                },
+            )
+            self.assertEqual(len(report["cases"][0]["candidate"]["measurements"]), 2)
+            self.assertEqual(len(report["cases"][0]["baseline"]["measurements"]), 2)
+
+    def test_same_executable_is_allowed_when_execution_configs_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            executable = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            report_path = directory / "report.json"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = benchmark.main(
+                    [
+                        "--input",
+                        str(fixture),
+                        "--expected",
+                        "7",
+                        "--executable",
+                        str(executable),
+                        "--baseline-executable",
+                        str(executable),
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=4",
+                        "--baseline-env",
+                        "OMP_NUM_THREADS=1",
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "0",
+                        "--json-output",
+                        str(report_path),
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["executables"]["candidate"]["sha256"],
+                report["executables"]["baseline"]["sha256"],
+            )
+            self.assertEqual(
+                report["execution"]["candidate"]["environment"],
+                {"OMP_NUM_THREADS": "4"},
+            )
+            self.assertEqual(
+                report["execution"]["baseline"]["environment"],
+                {"OMP_NUM_THREADS": "1"},
+            )
+
+    def test_identical_binary_copies_require_distinct_execution_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            candidate = self.create_fake_executable(
+                directory, "candidate", assembly_index=22, clock_ticks=100
+            )
+            baseline = self.create_fake_executable(
+                directory, "baseline", assembly_index=22, clock_ticks=100
+            )
+            self.assertNotEqual(candidate, baseline)
+            self.assertEqual(candidate.read_bytes(), baseline.read_bytes())
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = benchmark.main(
+                    [
+                        "--executable",
+                        str(candidate),
+                        "--baseline-executable",
+                        str(baseline),
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(status, 1)
+            self.assertIn("same binary fingerprint", stderr.getvalue())
+
+    def test_execution_config_rejects_invalid_or_ambiguous_settings(self) -> None:
+        parser = benchmark.create_argument_parser()
+        for arguments in (
+            ["--candidate-env", "missing-separator"],
+            ["--candidate-env", "1INVALID=value"],
+            ["--candidate-launcher", "'unterminated"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                parser.parse_args(arguments)
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            executable = self.create_fake_executable(
+                directory, "candidate", assembly_index=22, clock_ticks=100
+            )
+            scenarios = (
+                (
+                    ["--candidate-launcher", str(directory / "missing-launcher")],
+                    "candidate launcher not found",
+                ),
+                (
+                    ["--baseline-env", "OMP_NUM_THREADS=1"],
+                    "require --baseline-executable",
+                ),
+                (
+                    [
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=1",
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=2",
+                    ],
+                    "duplicate candidate environment setting",
+                ),
+            )
+            for arguments, expected_error in scenarios:
+                with self.subTest(arguments=arguments):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        status = benchmark.main(
+                            [
+                                "--executable",
+                                str(executable),
+                                "--runs",
+                                "1",
+                                "--warmup",
+                                "0",
+                                *arguments,
+                            ]
+                        )
+                    self.assertEqual(status, 1)
+                    self.assertIn(expected_error, stderr.getvalue())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups are required")
+    def test_configured_timeout_terminates_launcher_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            working_directory = directory / "working"
+            working_directory.mkdir()
+            marker = directory / "orphan-marker"
+            launcher = directory / "timeout-launcher"
+            launcher.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import subprocess
+                    import sys
+                    import time
+
+                    child = (
+                        "import pathlib,sys,time; time.sleep(0.4); "
+                        "pathlib.Path(sys.argv[1]).write_text('orphan')"
+                    )
+                    subprocess.Popen([sys.executable, "-c", child, sys.argv[1]])
+                    time.sleep(10)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            launcher.chmod(0o755)
+            executable = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            case = benchmark.BenchmarkCase(
+                "sample", fixture, 7, "reviewed", ("quick",), "timeout"
+            )
+            prepared = benchmark.PreparedCase(
+                case=case,
+                input_name=fixture.name,
+                output_path=working_directory / "inputOut",
+                telemetry_path=working_directory / "inputTelemetry.json",
+                working_directory=working_directory,
+            )
+
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "timed out"):
+                benchmark.run_once(
+                    executable,
+                    prepared,
+                    0.1,
+                    execution=benchmark.ExecutionConfig(
+                        launcher=(str(launcher), str(marker))
+                    ),
+                )
+            time.sleep(0.6)
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups are required")
+    def test_configured_interrupt_terminates_launcher_process_group(self) -> None:
+        process = mock.Mock(pid=12345, returncode=-signal.SIGKILL)
+        process.communicate.side_effect = [KeyboardInterrupt, ("", "")]
+
+        with (
+            mock.patch.object(benchmark.subprocess, "Popen", return_value=process),
+            mock.patch.object(benchmark.os, "killpg") as kill_group,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            benchmark.run_command(
+                ["launcher", "candidate"],
+                Path.cwd(),
+                30.0,
+                None,
+            )
+
+        kill_group.assert_called_once_with(12345, signal.SIGKILL)
+        self.assertEqual(process.communicate.call_count, 2)
 
     def test_legacy_default_and_custom_input_resolution(self) -> None:
         parser = benchmark.create_argument_parser()

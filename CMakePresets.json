@@ -73,6 +73,17 @@
       }
     },
     {
+      "name": "parallel",
+      "displayName": "x86-64-v3 OpenMP, MPI, and hybrid experiments",
+      "description": "Opt-in parallel search executables for scaling experiments",
+      "inherits": "performance",
+      "cacheVariables": {
+        "ASSEMBLYCPP_BUILD_OPENMP": true,
+        "ASSEMBLYCPP_BUILD_MPI": true,
+        "ASSEMBLYCPP_BUILD_HYBRID": true
+      }
+    },
+    {
       "name": "pgo-generate",
       "displayName": "x86-64-v3 PGO training build",
       "description": "Instrumented GCC build for weighted-corpus profile generation",
@@ -115,6 +126,10 @@
     {
       "name": "performance-lto",
       "configurePreset": "performance-lto"
+    },
+    {
+      "name": "parallel",
+      "configurePreset": "parallel"
     },
     {
       "name": "pgo-generate",

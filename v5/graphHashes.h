@@ -344,7 +344,8 @@ struct canonicalisationGraphWorkspace
 
 // Enumeration, canonical maps, and interners are already process-global and
 // single-threaded; the flat miss-path storage follows the same lifecycle.
-inline canonicalisationGraphWorkspace canonicalisationGraphScratch;
+inline ASSEMBLYCPP_SEARCH_LOCAL canonicalisationGraphWorkspace
+    canonicalisationGraphScratch;
 
 void prepareCanonicalisationGraph(
     const molGraph &source,
@@ -355,9 +356,13 @@ void prepareCanonicalisationGraph(
 }
 
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
-std::unordered_map<graphHash, pii, graphHashHasher> graphHashMap;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+    graphHash,
+    pii,
+    graphHashHasher
+> graphHashMap;
 #else
-std::unordered_map<graphHash, pii> graphHashMap;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, pii> graphHashMap;
 #endif
 
 /** Keep the allocation-heavy miss path out of the cache-hit instruction body. */

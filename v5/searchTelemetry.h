@@ -122,7 +122,7 @@ struct SearchTelemetryState
 inline constexpr bool searchTelemetryCompiled = true;
 
 inline bool searchTelemetryEnabled = false;
-inline SearchTelemetryState searchTelemetry;
+inline ASSEMBLYCPP_SEARCH_LOCAL SearchTelemetryState searchTelemetry;
 
 inline const char* searchTelemetryPhaseName(SearchTelemetryPhase phase)
 {

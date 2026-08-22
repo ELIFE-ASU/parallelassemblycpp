@@ -154,14 +154,80 @@ cumulative changing-composition workload and isolated representation
 boundaries; neither should be interpreted as an asymptotic complexity
 measurement for arbitrary molecules.
 
+## Parallel scaling reports
+
+The benchmark runner can give the candidate and baseline independent launcher
+prefixes and environment overrides. Prefixes are shell-split without invoking a
+shell; repeat `--candidate-env` or `--baseline-env` for multiple variables. For
+example, compare a four-thread OpenMP candidate with the serial build while
+pinning both roles explicitly:
+
+```bash
+python benchmarks/benchmark.py \
+  --suite profile --runs 6 \
+  --executable build/parallel/AssemblyCppOMP \
+  --baseline-executable build/parallel/AssemblyCpp \
+  --candidate-launcher "taskset -c 0,2,4,6" \
+  --baseline-launcher "taskset -c 0" \
+  --candidate-env OMP_NUM_THREADS=4 \
+  --json-output build/parallel-omp-4.json
+```
+
+For MPI, keep `AssemblyCpp` as the non-MPI one-worker baseline, select
+`AssemblyCppMPI` as the candidate, and use
+`"mpirun --map-by slot --bind-to core -n 4"` for its launcher when using the
+Open MPI package from `environment.yml`. For a two-rank, two-thread hybrid
+candidate, use `"mpirun --map-by slot:PE=2 --bind-to core -n 2"`, set
+`OMP_NUM_THREADS=2`, `OMP_PLACES=cores`, and `OMP_PROC_BIND=close` through
+repeated `--candidate-env` options. Use the equivalent placement controls for
+another MPI implementation. The first launcher token must resolve to an
+executable.
+Explicit launcher tokens and environment overrides are retained under
+`execution` in the JSON report. The same binary is valid for both roles only
+when these execution configurations differ. On POSIX, a timed-out or
+interrupted calculation terminates the launcher's process group so worker
+processes are not intentionally left behind.
+
+Compare worker counts and execution models by passing paired schema-v2 reports
+as `LABEL:WORKERS:PATH` values. Every report must cover the same suite and
+corpus and use the same serial baseline executable, launcher, and explicit
+environment. For example, retain `--baseline-launcher "taskset -c 0"` from the
+OpenMP command above in the MPI and hybrid benchmark commands. Reports with the
+same topology label must also use the same candidate binary at every worker
+count:
+
+```bash
+python benchmarks/check_parallel_scaling.py \
+  omp:1:build/parallel-omp-1.json \
+  omp:4:build/parallel-omp-4.json \
+  mpi:4:build/parallel-mpi-4.json \
+  hybrid:8:build/parallel-hybrid-8.json
+```
+
+The report recomputes per-case and suite round-total paired wall speedups from
+raw samples and prints parallel efficiency (`speedup / workers`). `WORKERS`
+must match the report's candidate execution configuration: MPI launcher ranks
+multiplied by the effective OpenMP thread count; an explicit `OMP_THREAD_LIMIT`
+caps `OMP_NUM_THREADS`. The common direct-launch defaults count as one. The
+shared baseline must likewise resolve to one worker. The command is report-only
+by default. Add `--require-all-faster` to return failure when any case has wall
+speedup at or below 1.0. Algorithm clock ticks are deliberately not used as a
+parallel gate because process CPU time is not comparable across OpenMP and MPI
+layouts.
+
+Set `OMP_NUM_THREADS` explicitly in every OpenMP and hybrid report, including a
+one-thread report. Otherwise an OpenMP runtime may inherit a host-dependent
+default that is not present in the report's explicit execution configuration.
+
 ## Measurement method
 
-All calculations are serial and run in isolated temporary directories. Within
-each round the first case is rotated to spread systematic order effects. In a
-paired comparison, each baseline/candidate pair is adjacent; odd rounds use AB
-order and even rounds use BA order. Paired mode defaults to six measured rounds
-so each executable occupies each position equally often; explicitly requesting
-an odd count emits a warning.
+Benchmark cases are scheduled serially and run in isolated temporary
+directories; a configured launcher may use parallel workers within one
+calculation. Within each round the first case is rotated to spread systematic
+order effects. In a paired comparison, each baseline/candidate pair is adjacent;
+odd rounds use AB order and even rounds use BA order. Paired mode defaults to six
+measured rounds so each executable occupies each position equally often;
+explicitly requesting an odd count emits a warning.
 
 Wall time includes process startup and input parsing. The program-reported
 `std::clock` values begin after parsing and remain in platform-specific ticks;
@@ -176,8 +242,9 @@ descriptive equal-weight geometric mean is also reported, with MAD; treat it
 cautiously when a suite contains millisecond-scale cases.
 
 JSON schema version 2 retains every timed sample, case metadata, aggregate
-summaries, the deterministic schedule, platform information, executable,
-manifest, and input fingerprints, and optional candidate telemetry. Telemetry
+summaries, the deterministic schedule, platform information, executable and
+execution configurations, manifest and input fingerprints, and optional
+candidate telemetry. Telemetry
 includes the raw
 processed graph size, retained masks, matching visits, canonicalisation activity,
 legacy VF2 counters, canonical/residual/assembly/pair-bound cache rates, and

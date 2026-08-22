@@ -351,7 +351,7 @@ molGraph preprocessWriteback(const molGraph &mg, vector<edgeL> &writeback)
 }
 
 /// Global variable for the molGraph before and after preprocessing
-molGraph originalMolecule, targetMolecule;
+ASSEMBLYCPP_SEARCH_LOCAL molGraph originalMolecule, targetMolecule;
 
 struct cachedResidualDecomposition
 {

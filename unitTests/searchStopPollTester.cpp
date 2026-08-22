@@ -22,6 +22,7 @@ using pii = pair<int, int>;
 
 void setInterruptFlag(bool value)
 {
+    searchCancellationFlag.store(value);
 #ifdef _WIN32
     interruptFlag.store(value);
 #else

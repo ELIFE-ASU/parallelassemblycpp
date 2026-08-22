@@ -1,6 +1,4 @@
-#ifdef _WIN32
-    #include <atomic>
-#endif
+#include <atomic>
 
 template <typename T1, typename T2, typename T3>
 struct triple
@@ -59,8 +57,8 @@ static_assert(sizeof(assemblyFragment) == 2 * sizeof(uint64_t));
 
 int ENUM_MAX = 50000000;
 
-string moleculeName;
-EdgeMask allEdges;
+ASSEMBLYCPP_SEARCH_LOCAL string moleculeName;
+ASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
 #ifdef _WIN32
     std::atomic_bool interruptFlag = false;
     std::atomic_bool userInterruptReceived = false;
@@ -68,17 +66,20 @@ EdgeMask allEdges;
     volatile std::sig_atomic_t interruptFlag = 0;
     volatile std::sig_atomic_t userInterruptReceived = 0;
 #endif
-clock_t startTime = 0;
+// Solver workers use a real C++ atomic for cooperative cancellation. POSIX
+// signal handlers retain sig_atomic_t flags and never write this object.
+std::atomic_bool searchCancellationFlag = false;
+ASSEMBLYCPP_SEARCH_LOCAL clock_t startTime = 0;
 unsigned long long runTimeMax = std::numeric_limits<unsigned long long>::max();
-bool runtimeLimitReached = false;
-bool enumerationLimitReached = false;
+ASSEMBLYCPP_SEARCH_LOCAL bool runtimeLimitReached = false;
+ASSEMBLYCPP_SEARCH_LOCAL bool enumerationLimitReached = false;
 
 using edgeL = triple<short, short, short>;
-unsigned int totalBonds = 0;
-vector<edgeL> originalEdgeList, univEdgeList;
+ASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
+ASSEMBLYCPP_SEARCH_LOCAL vector<edgeL> originalEdgeList, univEdgeList;
 
 /// Hash table for edgelists for pathway algorithm
-std::unordered_map<EdgeMask, pii> bitsetHashTable;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, pii> bitsetHashTable;
 
 bool isPathway = true;
 bool removeHydrogens = true;
@@ -86,18 +87,24 @@ bool verbose = false;
 bool disjointCompensation = false;
 bool memTest = false;
 bool writeIntermediateMAs = false;
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
-int lastCalculatedAssemblyIndex = -1;
-#endif
-int disjointFragments = 1;
-vector<pair<unsigned long long, int>> intermediateMAs;
+ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
+ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
+ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>> intermediateMAs;
+
+// Parallel builds replicate the complete solver state and divide only the
+// first-level branches. These controls are local to each replica.
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchShardIndex = 0;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchShardCount = 1;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchShardBranchOrdinal = 0;
+ASSEMBLYCPP_SEARCH_LOCAL std::atomic<int> *sharedAssemblyIndex = nullptr;
+ASSEMBLYCPP_SEARCH_LOCAL bool suppressSearchOutput = false;
 
 bool interruptionRequested()
 {
     #ifdef _WIN32
-        return interruptFlag.load();
+        return interruptFlag.load() || searchCancellationFlag.load();
     #else
-        return interruptFlag != 0;
+        return interruptFlag != 0 || searchCancellationFlag.load();
     #endif
 }
 
@@ -135,8 +142,8 @@ unsigned long long elapsedClockTicks()
  */
 constexpr size_t searchStopPollInterval = 128;
 static_assert(std::has_single_bit(searchStopPollInterval));
-size_t searchStopPollCountdown = 0;
-size_t searchStopInnerPollCountdown = 0;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchStopPollCountdown = 0;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchStopInnerPollCountdown = 0;
 
 bool searchShouldStop()
 {
@@ -154,11 +161,7 @@ bool searchShouldStop()
 
     runtimeLimitReached = true;
     searchStopPollCountdown = 0;
-    #ifdef _WIN32
-        interruptFlag.store(true);
-    #else
-        interruptFlag = 1;
-    #endif
+    searchCancellationFlag.store(true);
     return true;
 }
 

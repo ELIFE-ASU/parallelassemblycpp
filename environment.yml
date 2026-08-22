@@ -5,4 +5,5 @@ dependencies:
   - cmake>=4.3
   - cxx-compiler
   - ninja
+  - openmpi
   - python>=3.10

@@ -99,7 +99,7 @@ struct treeCanonWorkspace
 };
 
 // Canonical maps and the surrounding search are already single-threaded.
-inline treeCanonWorkspace treeCanonScratch;
+inline ASSEMBLYCPP_SEARCH_LOCAL treeCanonWorkspace treeCanonScratch;
 
 /**
  * @brief Exact structural key for a rooted subtree.
@@ -137,14 +137,17 @@ struct treeCanonSignatureHash
  * discards graphHashMap before resetting these interners between calculations;
  * forms from different generations must not be mixed.
  */
-inline std::unordered_map<std::string, treeCanonAtomId> treeCanonAtomInterner;
-inline std::vector<treeCanonNodeId> treeCanonLeafInterner;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+    std::string,
+    treeCanonAtomId
+> treeCanonAtomInterner;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::vector<treeCanonNodeId> treeCanonLeafInterner;
 inline std::unordered_map<
     treeCanonSignature,
     treeCanonNodeId,
     treeCanonSignatureHash
-> treeCanonInterner;
-inline std::uint64_t treeCanonInternerGeneration = 1;
+> ASSEMBLYCPP_SEARCH_LOCAL treeCanonInterner;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t treeCanonInternerGeneration = 1;
 
 void clearTreeCanonInterner()
 {
