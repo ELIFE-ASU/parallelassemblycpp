@@ -136,6 +136,35 @@ int main(int argc, char **argv)
     }
     assert(rejected);
 
+    string selfBond = validMolfile;
+    const size_t selfBondPosition = selfBond.find("  4  5  1");
+    assert(selfBondPosition != string::npos);
+    selfBond.replace(selfBondPosition, 9, "  4  4  1");
+    rejected = false;
+    try
+    {
+        static_cast<void>(parse(selfBond));
+    }
+    catch (const runtime_error &)
+    {
+        rejected = true;
+    }
+    assert(rejected);
+
+    molGraph unchanged;
+    string sentinel = "sentinel";
+    unchanged.addAtom(sentinel);
+    istringstream invalidInput(invalidBond);
+    try
+    {
+        molfileParser(invalidInput, unchanged);
+    }
+    catch (const runtime_error &)
+    {
+    }
+    assert(unchanged.mg.size() == 1);
+    assert(unchanged.mg.front().type == sentinel);
+
     string unsupportedVersion = validMolfile;
     const size_t version = unsupportedVersion.find("V2000");
     assert(version != string::npos);

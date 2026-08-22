@@ -7,6 +7,7 @@ import csv
 import difflib
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -71,7 +72,7 @@ def positive_int(value: str) -> int:
 
 def positive_float(value: str) -> float:
     parsed = float(value)
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed
 
@@ -1502,7 +1503,7 @@ def run_mask_unit_tests(compiler: str) -> None:
         command = [
             *command_prefix,
             str(TEST_DIRECTORY / "activeWordMaskTester.cpp"),
-            "-std=c++23",
+            "-std=c++20",
             "-O2",
             "-mpopcnt",
             "-march=x86-64-v3",
@@ -1531,7 +1532,7 @@ def run_tree_canon_unit_tests(compiler: str) -> None:
         command = [
             *command_prefix,
             str(TEST_DIRECTORY / "treeCanonTester.cpp"),
-            "-std=c++23",
+            "-std=c++20",
             "-O2",
             "-mpopcnt",
             "-march=x86-64-v3",
@@ -1569,7 +1570,7 @@ def run_cyclic_canon_unit_tests(compiler: str) -> None:
         command = [
             *command_prefix,
             str(TEST_DIRECTORY / "cyclicCanonTester.cpp"),
-            "-std=c++23",
+            "-std=c++20",
             "-O2",
             "-mpopcnt",
             "-march=x86-64-v3",
@@ -1604,7 +1605,7 @@ def build_executable(executable: Path, compiler: str) -> Path:
     command = [
         *command_prefix,
         str(REPOSITORY_ROOT / "v5" / "main.cpp"),
-        "-std=c++23",
+        "-std=c++20",
         "-O3",
         "-mpopcnt",
         "-march=x86-64-v3",

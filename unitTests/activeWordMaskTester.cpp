@@ -1,3 +1,8 @@
+// This executable is also built by Release/CI presets; keep its checks active.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include "../v5/activeWordMask.h"
 
 #include <algorithm>

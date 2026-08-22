@@ -503,9 +503,20 @@ if(UNIX AND NOT APPLE)
   # Conda compiler wrappers can inject an absolute environment RPATH outside
   # CMake's normal install-RPATH handling. Never preserve it in an install or
   # archive intended to leave that environment.
+  if(IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}")
+    set(
+      ASSEMBLYCPP_INSTALLED_EXECUTABLE
+      "\$ENV{DESTDIR}${CMAKE_INSTALL_BINDIR}/AssemblyCpp"
+    )
+  else()
+    set(
+      ASSEMBLYCPP_INSTALLED_EXECUTABLE
+      "\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/AssemblyCpp"
+    )
+  endif()
   install(
     CODE
-      "file(RPATH_REMOVE FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/AssemblyCpp\")"
+      "file(RPATH_REMOVE FILE \"${ASSEMBLYCPP_INSTALLED_EXECUTABLE}\")"
   )
 endif()
 
@@ -574,6 +585,18 @@ if(BUILD_TESTING)
   assemblycpp_configure_target(assemblycpp_molfile_parser_tests)
 
   add_executable(
+    assemblycpp_graphio_tests
+    unitTests/graphioTester.cpp
+  )
+  assemblycpp_configure_target(assemblycpp_graphio_tests)
+
+  add_executable(
+    assemblycpp_pathway_generator_tests
+    unitTests/pathwayGeneratorTester.cpp
+  )
+  assemblycpp_configure_target(assemblycpp_pathway_generator_tests)
+
+  add_executable(
     assemblycpp_library_batch_tests
     unitTests/libraryBatchTester.cpp
   )
@@ -621,6 +644,14 @@ if(BUILD_TESTING)
     COMMAND assemblycpp_molfile_parser_tests
   )
   add_test(
+    NAME unit.native-graph-parser
+    COMMAND assemblycpp_graphio_tests
+  )
+  add_test(
+    NAME unit.pathway-generator
+    COMMAND assemblycpp_pathway_generator_tests
+  )
+  add_test(
     NAME unit.library-batch
     COMMAND
       assemblycpp_library_batch_tests
@@ -636,8 +667,12 @@ if(BUILD_TESTING)
     unit.search-stop-polling
     unit.fragmentation-metadata
     unit.molfile-parser
+    unit.native-graph-parser
+    unit.pathway-generator
     unit.library-batch
-    PROPERTIES LABELS "unit"
+    PROPERTIES
+      LABELS "unit"
+      TIMEOUT 300
   )
 
   add_test(
@@ -651,6 +686,7 @@ if(BUILD_TESTING)
     tooling.test-data-audit
     PROPERTIES
       LABELS "tooling"
+      TIMEOUT 300
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   )
 
@@ -666,6 +702,7 @@ if(BUILD_TESTING)
     tooling.benchmark-runner
     PROPERTIES
       LABELS "tooling"
+      TIMEOUT 300
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   )
 
@@ -680,6 +717,7 @@ if(BUILD_TESTING)
     tooling.benchmark-corpus
     PROPERTIES
       LABELS "tooling"
+      TIMEOUT 300
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   )
 
@@ -733,8 +771,10 @@ set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/License.md")
 set(CPACK_RESOURCE_FILE_README "${PROJECT_SOURCE_DIR}/README.md")
 set(CPACK_PACKAGE_CHECKSUM SHA256)
 set(CPACK_MONOLITHIC_INSTALL ON)
-set(CPACK_ARCHIVE_UID 0)
-set(CPACK_ARCHIVE_GID 0)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.3)
+  set(CPACK_ARCHIVE_UID 0)
+  set(CPACK_ARCHIVE_GID 0)
+endif()
 set(
   CPACK_PRE_BUILD_SCRIPTS
   "${PROJECT_SOURCE_DIR}/cmake/NormalizeArchivePermissions.cmake"

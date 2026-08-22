@@ -51,26 +51,56 @@ void printMaskAsEdgeList(ofstream &ofs)
 }
 
 /**
+ * @brief Write one JSON string, escaping every required ASCII character.
+ */
+void printJsonString(const string &value, ostream &output)
+{
+    static constexpr char hexDigits[] = "0123456789ABCDEF";
+    output.put('"');
+    for (const unsigned char character : value)
+    {
+        switch (character)
+        {
+            case '"': output << "\\\""; break;
+            case '\\': output << "\\\\"; break;
+            case '\b': output << "\\b"; break;
+            case '\f': output << "\\f"; break;
+            case '\n': output << "\\n"; break;
+            case '\r': output << "\\r"; break;
+            case '\t': output << "\\t"; break;
+            default:
+                if (character < 0x20)
+                {
+                    output << "\\u00"
+                           << hexDigits[character >> 4]
+                           << hexDigits[character & 0x0f];
+                }
+                else output.put(static_cast<char>(character));
+                break;
+        }
+    }
+    output.put('"');
+}
+
+/**
  * @brief Write the JSON representation used for a bond type.
  */
-void printBondColour(short type, ofstream &ofs)
+void printBondColour(short type, ostream &output)
 {
     switch (type)
     {
-        case 0:
-            ofs << "error";
-            break;
         case 1:
-            ofs << "\"single\"";
+            output << "\"single\"";
             break;
         case 2:
-            ofs << "\"double\"";
+            output << "\"double\"";
             break;
         case 3:
-            ofs << "\"triple\"";
+            output << "\"triple\"";
             break;
         default:
-            if (type >= 4) ofs << '"' << type << '"';
+            if (type >= 4) output << '"' << type << '"';
+            else output << "\"error\"";
             break;
     }
 }
@@ -110,7 +140,7 @@ void printOriginalGraph(ofstream &ofs)
     ofs << "\"VertexColours\": [";
     for (size_t i = 0; i < originalMolecule.mg.size(); i++)
     {
-        ofs << "\"" << originalMolecule.mg[i].type << "\"";
+        printJsonString(originalMolecule.mg[i].type, ofs);
         if (i < originalMolecule.mg.size() - 1) ofs << ',';
     }
     ofs << "],\n";
@@ -167,7 +197,7 @@ void printRemnantGraph(EdgeMask mask, ofstream &ofs)
         if (remnantAtoms[i])
         {
             if (!first) ofs << ',';
-            ofs << "\"" << targetMolecule.mg[i].type << "\"";
+            printJsonString(targetMolecule.mg[i].type, ofs);
             first = false;
         }
     }

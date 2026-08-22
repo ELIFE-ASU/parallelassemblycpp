@@ -11,7 +11,7 @@ enum class InputFlag
     enumMax,
     pathway,
     removeHydrogensFlag,
-    verbose,
+    verboseFlag,
     compensateDisjoint,
     memoryReport,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -75,7 +75,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             {"removeHydrogens"}
         },
         {
-            InputFlag::verbose,
+            InputFlag::verboseFlag,
             "verbose",
             "0|1",
             "0",
@@ -202,7 +202,7 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             removeHydrogens = parseBooleanFlag(definition, value);
             break;
 
-        case InputFlag::verbose:
+        case InputFlag::verboseFlag:
             verbose = parseBooleanFlag(definition, value);
             break;
 

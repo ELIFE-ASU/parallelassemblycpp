@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace molfileParserDetail
 {
@@ -83,6 +84,7 @@ namespace molfileParserDetail
 void molfileParser(std::istream &molfile, molGraph &mg)
 {
     std::string currLine;
+    molGraph parsed;
 
     for (int headerLine = 0; headerLine < 3; headerLine++)
     {
@@ -113,7 +115,7 @@ void molfileParser(std::istream &molfile, molGraph &mg)
         std::cout << "Detecting " << atomCount << " atoms and " << bondCount
                   << " bonds\n";
     }
-    mg.mg.reserve(mg.mg.size() + static_cast<std::size_t>(atomCount));
+    parsed.mg.reserve(static_cast<std::size_t>(atomCount));
 
     for (int i = 0; i < atomCount; i++)
     {
@@ -127,7 +129,7 @@ void molfileParser(std::istream &molfile, molGraph &mg)
             throw std::runtime_error("invalid molfile: missing atom type");
 
         std::string atomType(atomField);
-        mg.addAtom(atomType);
+        parsed.addAtom(std::move(atomType));
     }
     for (int i = 0; i < bondCount; i++)
     {
@@ -141,23 +143,27 @@ void molfileParser(std::istream &molfile, molGraph &mg)
         const int bondOrder = molfileParserDetail::integerField(
             currLine, 6, 3, "bond order"
         );
+        if (atomA == atomB)
+            throw std::runtime_error(
+                "invalid molfile: self-loop bonds are not supported"
+            );
         if (
             atomA < 1 || atomA > atomCount ||
-            atomB < 1 || atomB > atomCount ||
-            bondOrder < 0
+            atomB < 1 || atomB > atomCount || bondOrder < 0
         )
         {
             throw std::runtime_error("invalid molfile: bond line is out of range");
         }
-        mg.addBond(atomA - 1, atomB - 1, bondOrder);
+        parsed.addBond(atomA - 1, atomB - 1, bondOrder);
     }
     if (removeHydrogens)
     {
-        for (size_t i = 0; i < mg.mg.size(); i++)
+        for (size_t i = 0; i < parsed.mg.size(); i++)
         {
-            if (mg.atype(i) == "H") mg.removeAtom(i);
+            if (parsed.atype(i) == "H") parsed.removeAtom(i);
         }
-        mg.removeAndCollapse();
+        parsed.removeAndCollapse();
     }
-    if (verbose) mg.printToCout();
+    if (verbose) parsed.printToCout();
+    mg = std::move(parsed);
 }

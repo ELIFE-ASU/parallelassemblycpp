@@ -93,12 +93,6 @@ struct cyclicCanonForm
     return left.value < right.value;
 }
 
-[[nodiscard]] std::uint16_t cyclicCanonBondType(short bondType) noexcept
-{
-    // Preserve the byte bond-label semantics used throughout canonicalisation.
-    return static_cast<unsigned char>(static_cast<char>(bondType));
-}
-
 [[nodiscard]] std::uint32_t cyclicCanonColourCount(
     const std::vector<std::uint32_t> &colours
 ) noexcept
@@ -675,10 +669,7 @@ template<typename Graph>
             detachedTreeComponent = true;
             continue;
         }
-        children[liveNeighbour].push_back({
-            static_cast<unsigned char>(liveBond),
-            subtree
-        });
+        children[liveNeighbour].push_back({liveBond, subtree});
         if (--degree[liveNeighbour] == 1) leaves.push_back(liveNeighbour);
     }
 

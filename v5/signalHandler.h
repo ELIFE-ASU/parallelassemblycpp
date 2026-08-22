@@ -1,5 +1,7 @@
+#pragma once
+
 #ifdef _WIN32
-    BOOL CtrlHandler(DWORD fdwCtrlType) {
+    BOOL WINAPI CtrlHandler(DWORD fdwCtrlType) {
         switch (fdwCtrlType) {
             case CTRL_C_EVENT:
                 userInterruptReceived.store(true);

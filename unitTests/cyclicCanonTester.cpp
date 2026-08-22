@@ -572,6 +572,20 @@ vector<namedGraph> makeDifferentialCorpus()
         vector<edgeSpec>{{0, 1, 1}, {0, 1, 2}},
         83
     );
+    appendPermutedPair(
+        corpus,
+        "wide-bond-label-low",
+        vector<string>(3, "C"),
+        vector<edgeSpec>{{0, 1, 1}, {1, 2, 1}, {2, 0, 1}},
+        89
+    );
+    appendPermutedPair(
+        corpus,
+        "wide-bond-label-high",
+        vector<string>(3, "C"),
+        vector<edgeSpec>{{0, 1, 257}, {1, 2, 1}, {2, 0, 1}},
+        97
+    );
     return corpus;
 }
 

@@ -16,8 +16,35 @@ struct atom
     string type;
     vector<bond> list;
 
-    atom(string _type): type(_type){}
+    explicit atom(string _type): type(std::move(_type)){}
 
+};
+
+/** Exact key for edges equivalent during unique-edge preprocessing. */
+struct bondClassKey
+{
+    string firstAtomType;
+    string secondAtomType;
+    short bondType;
+
+    bool operator==(const bondClassKey &) const = default;
+};
+
+struct bondClassKeyHash
+{
+    static void combine(size_t &seed, size_t value)
+    {
+        seed ^= value + static_cast<size_t>(0x9e3779b97f4a7c15ULL)
+            + (seed << 6) + (seed >> 2);
+    }
+
+    size_t operator()(const bondClassKey &key) const
+    {
+        size_t result = std::hash<string>{}(key.firstAtomType);
+        combine(result, std::hash<short>{}(key.bondType));
+        combine(result, std::hash<string>{}(key.secondAtomType));
+        return result;
+    }
 };
 
 /**
@@ -38,10 +65,9 @@ struct molGraph
      * @brief Use this function to add atoms/nodes
      * @param _type Type is atom type/node labelling.
      */
-    void addAtom(string &_type)
+    void addAtom(string _type)
     {
-        atom a(_type);
-        mg.push_back(a);
+        mg.emplace_back(std::move(_type));
     }
 
     /**
@@ -78,12 +104,12 @@ struct molGraph
     /**
      * @brief Get the degree (number of bonds) of atom at index x
      */
-    size_t degree(int x)
+    size_t degree(size_t x) const
     {
         return mg[x].list.size();
     }
 
-    short elem(size_t a, size_t b)
+    short elem(size_t a, size_t b) const
     {
         return mg[a].list[b].n;
     }
@@ -91,24 +117,14 @@ struct molGraph
     /**
      * @brief Get atom type for index i
      */
-    string atype(size_t i) {return mg[i].type;}
-
-    /**
-     * @brief Get bond type as char
-     * @param a Index of first atom/node
-     * @param b Index of bond
-     */
-    char btype(size_t a, size_t b)
-    {
-        return static_cast<char>(mg[a].list[b].type);
-    }
+    const string &atype(size_t i) const {return mg[i].type;}
 
     /**
      * @brief Get bond type as short
      * @param a Index of first atom/node
      * @param b Index of bond
      */
-    short btypeS(size_t a, size_t b)
+    short btypeS(size_t a, size_t b) const
     {
         return mg[a].list[b].type;
     }
@@ -146,7 +162,7 @@ private:
                     output.addBond(
                         static_cast<int>(reverseMap[source]),
                         static_cast<int>(reverseMap[target]),
-                        btype(source, bondIndex)
+                        btypeS(source, bondIndex)
                     );
                 }
             }
@@ -188,7 +204,7 @@ public:
      * @brief Turns molGraph (adjacency list) into equivalent edgelist
      * @return std::vector<edgeL>
      */
-    vector<edgeL> writeEdgeList()
+    vector<edgeL> writeEdgeList() const
     {
         vector<edgeL> out;
         for (size_t i = 0; i < mg.size(); i++)
@@ -211,7 +227,13 @@ public:
     /**
      * @brief For preprocessing, writes edgeList as hash map to detect duplicated bonds
      */
-    void writeEdgeList(std::unordered_map<string, pair<int, edgeL> > &ht)
+    void writeEdgeList(
+        std::unordered_map<
+            bondClassKey,
+            pair<int, edgeL>,
+            bondClassKeyHash
+        > &ht
+    ) const
     {
         for (size_t i = 0; i < mg.size(); i++)
         {
@@ -220,13 +242,19 @@ public:
                 short k = elem(i, j);
                 if (i < static_cast<size_t>(k))
                 {
-                    string is = atype(i), ks = atype(k), out;
-                    if (is < ks) out = is + btype(i, j) + ks;
-                    else out = ks + btype(i, j) + is;
+                    const string &sourceType = atype(i);
+                    const string &targetType = atype(k);
+                    bondClassKey key = sourceType < targetType
+                        ? bondClassKey{sourceType, targetType, btypeS(i, j)}
+                        : bondClassKey{targetType, sourceType, btypeS(i, j)};
                     short source = static_cast<short>(i);
                     short bondIndex = static_cast<short>(j);
                     edgeL t(source, k, bondIndex);
-                    auto [entry, inserted] = ht.try_emplace(out, 1, t);
+                    auto [entry, inserted] = ht.try_emplace(
+                        std::move(key),
+                        1,
+                        t
+                    );
                     if (!inserted) entry->second.first++;
                 }
             }
@@ -250,27 +278,34 @@ public:
      * @brief For compensating for disjoint fragments in the JAI
      * 
      */
-    void disjointFragmentsR(vb & visited, int n)
-    {
-        if (visited[n]) return;
-        visited[n] = 1;
-        for (size_t i = 0; i < mg[n].list.size(); i++) disjointFragmentsR(visited, elem(n, i));
-    }
-
     /**
      * @brief For compensating for disjoint fragments in the JAI
      * 
      * @return int number of disjoint fragments
      */
-    int disjointFragments()
+    int disjointFragments() const
     {
-        vb visited(mg.size(), 0); int count = 0;
+        vb visited(mg.size(), 0);
+        vector<size_t> pending;
+        pending.reserve(mg.size());
+        int count = 0;
         for (size_t i = 0; i < mg.size(); i++)
         {
-            if (!visited[i])
+            if (visited[i]) continue;
+            count++;
+            visited[i] = true;
+            pending.push_back(i);
+            while (!pending.empty())
             {
-                count++;
-                disjointFragmentsR(visited, i);
+                const size_t vertex = pending.back();
+                pending.pop_back();
+                for (const bond &edge : mg[vertex].list)
+                {
+                    const size_t neighbour = static_cast<size_t>(edge.n);
+                    if (visited[neighbour]) continue;
+                    visited[neighbour] = true;
+                    pending.push_back(neighbour);
+                }
             }
         }
         return count;
@@ -283,9 +318,13 @@ public:
  * @param writeback Edges removed during preprocessing
  * @return molGraph (the final output)
  */
-molGraph preprocessWriteback(molGraph &mg, vector<edgeL> &writeback)
+molGraph preprocessWriteback(const molGraph &mg, vector<edgeL> &writeback)
 {
-    std::unordered_map<string, pair<int, edgeL> > ht;
+    std::unordered_map<
+        bondClassKey,
+        pair<int, edgeL>,
+        bondClassKeyHash
+    > ht;
     molGraph out = mg;
     mg.writeEdgeList(ht);
     vector<edgeL> v;
@@ -296,6 +335,16 @@ molGraph preprocessWriteback(molGraph &mg, vector<edgeL> &writeback)
             v.push_back(it->second.second);
         }
     }
+    std::sort(
+        v.begin(),
+        v.end(),
+        [](const edgeL &left, const edgeL &right)
+        {
+            if (left.a != right.a) return left.a < right.a;
+            if (left.b != right.b) return left.b < right.b;
+            return left.c < right.c;
+        }
+    );
     out.negativeEdgeCollapse(v);
     writeback = v;
     return out;

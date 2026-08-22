@@ -57,7 +57,7 @@ struct treeCanonForm
 {
     treeCanonNodeId first = 0;
     treeCanonNodeId second = 0;
-    unsigned char centralBond = 0;
+    std::uint16_t centralBond = 0;
 
     bool empty() const {return first == 0;}
     bool operator==(const treeCanonForm &) const = default;
@@ -68,7 +68,7 @@ struct treeCanonForm
  */
 struct treeCanonChild
 {
-    unsigned char bondType;
+    std::uint16_t bondType;
     treeCanonNodeId subtree;
 
     bool operator==(const treeCanonChild &) const = default;
@@ -125,7 +125,7 @@ struct treeCanonSignatureHash
         std::size_t result = std::hash<treeCanonAtomId>{}(signature.atomType);
         for (const treeCanonChild &child : signature.children)
         {
-            combine(result, std::hash<unsigned char>{}(child.bondType));
+            combine(result, std::hash<std::uint16_t>{}(child.bondType));
             combine(result, std::hash<treeCanonNodeId>{}(child.subtree));
         }
         return result;
@@ -317,16 +317,16 @@ inline treeCanonNodeId internTreeCanonNode(
     return static_cast<int>(edge.neighbour);
 }
 
-[[nodiscard]] inline unsigned char canonGraphBondType(const bond &edge) noexcept
+[[nodiscard]] inline std::uint16_t canonGraphBondType(const bond &edge) noexcept
 {
-    return static_cast<unsigned char>(static_cast<char>(edge.type));
+    return static_cast<std::uint16_t>(edge.type);
 }
 
-[[nodiscard]] inline unsigned char canonGraphBondType(
+[[nodiscard]] inline std::uint16_t canonGraphBondType(
     const flatCanonAdjacentEdge &edge
 ) noexcept
 {
-    return static_cast<unsigned char>(edge.bondType);
+    return edge.bondType;
 }
 
 /**
@@ -334,7 +334,7 @@ inline treeCanonNodeId internTreeCanonNode(
  *
  * AHU leaf peeling processes a complete layer at a time. Each removed node is
  * represented by an exact interned ID built from its atom label and sorted
- * (bond-byte, child-ID) multiset. The one or two unremoved nodes are the tree
+ * (bond-label, child-ID) multiset. The one or two unremoved nodes are the tree
  * centroids, so no recursive traversal or subtree-string concatenation is
  * required.
  *
@@ -420,7 +420,7 @@ treeCanonForm centroidTreeCanonImpl(const Graph &graph, int n)
     );
     if (centroidCount == 1) return {first, 0, 0};
 
-    unsigned char centralBond = 0;
+    std::uint16_t centralBond = 0;
     bool centralBondFound = false;
     for (const auto &edge : canonGraphNeighbours(graph, centroids[0]))
     {

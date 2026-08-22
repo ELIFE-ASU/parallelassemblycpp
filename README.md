@@ -107,6 +107,10 @@ cpack --preset release
 cmake --build build/release --target package_source
 ```
 
+CMake 4.3 or newer is required when producing release archives so CPack can
+normalize archive ownership to root; configuring, building, and installing do
+not require that packaging-only feature.
+
 Create source archives from a clean checkout because CPack packages the working
 tree as well as tracked files.
 

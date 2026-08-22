@@ -75,7 +75,7 @@ struct std::hash<graphHash>
             );
             treeCanonSignatureHash::combine(
                 result,
-                std::hash<unsigned char>{}(gh.treeHash.centralBond)
+                std::hash<std::uint16_t>{}(gh.treeHash.centralBond)
             );
             return result;
         }

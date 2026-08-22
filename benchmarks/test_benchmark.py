@@ -589,6 +589,7 @@ class BenchmarkTests(unittest.TestCase):
                 directory, "telemetry", assembly_index=7, clock_ticks=100
             )
             report_path = directory / "report.json"
+            report_path.write_text("stale report\n", encoding="utf-8")
 
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
@@ -616,6 +617,14 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIn("Comparison summary", output.getvalue())
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(
+                report["corpus"]["manifest"]["sha256"],
+                benchmark.file_sha256(manifest),
+            )
+            self.assertEqual(
+                report["corpus"]["inputs"][0]["sha256"],
+                benchmark.file_sha256(directory / "input.mol"),
+            )
             self.assertEqual(len(report["cases"]), 1)
             case = report["cases"][0]
             self.assertEqual(len(case["candidate"]["measurements"]), 6)
@@ -667,6 +676,84 @@ class BenchmarkTests(unittest.TestCase):
             wider_path.write_text(json.dumps(wider), encoding="utf-8")
             parsed = benchmark.parse_search_telemetry(wider_path)
             self.assertEqual(parsed["processed_graph"]["active_mask_words"], 9)
+
+    def test_json_output_rejects_protected_paths_before_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            manifest = self.create_manifest(
+                directory,
+                [
+                    (
+                        "sample",
+                        fixture.name,
+                        7,
+                        "reviewed",
+                        "quick",
+                        "integration",
+                    )
+                ],
+            )
+            candidate = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            baseline = self.create_fake_executable(
+                directory, "baseline", assembly_index=7, clock_ticks=200
+            )
+            telemetry = self.create_fake_executable(
+                directory, "telemetry", assembly_index=7, clock_ticks=100
+            )
+            baseline_alias = directory / "baseline-report.json"
+            baseline_alias.hardlink_to(baseline)
+            input_alias = directory / "input-report.json"
+            input_alias.hardlink_to(fixture)
+
+            scenarios = (
+                (candidate, "candidate executable"),
+                (baseline_alias, "baseline executable"),
+                (telemetry, "telemetry executable"),
+                (manifest, "benchmark manifest"),
+                (input_alias, "benchmark input"),
+            )
+            protected_contents = {
+                path: path.read_bytes()
+                for path in (candidate, baseline, telemetry, manifest, fixture)
+            }
+
+            with mock.patch.object(benchmark, "run_benchmarks") as run_benchmarks:
+                for report_path, expected_error in scenarios:
+                    with self.subTest(report_path=report_path):
+                        stderr = io.StringIO()
+                        with contextlib.redirect_stderr(stderr):
+                            status = benchmark.main(
+                                [
+                                    "--manifest",
+                                    str(manifest),
+                                    "--suite",
+                                    "quick",
+                                    "--executable",
+                                    str(candidate),
+                                    "--baseline-executable",
+                                    str(baseline),
+                                    "--telemetry",
+                                    "--telemetry-executable",
+                                    str(telemetry),
+                                    "--runs",
+                                    "2",
+                                    "--warmup",
+                                    "0",
+                                    "--json-output",
+                                    str(report_path),
+                                ]
+                            )
+
+                        self.assertEqual(status, 1)
+                        self.assertIn(expected_error, stderr.getvalue())
+
+                run_benchmarks.assert_not_called()
+
+            for path, contents in protected_contents.items():
+                self.assertEqual(path.read_bytes(), contents)
 
     def test_search_telemetry_parser_rejects_malformed_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

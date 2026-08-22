@@ -803,12 +803,12 @@ bool continueAssemblySearchWithWorkspace(
 
     const assemblyTranspositionTable::result result =
         searchStorage.states.consider(candidateKey, sumDupBonds);
-    const bool inserted =
-        result == assemblyTranspositionTable::result::inserted;
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]
     {
+        const bool inserted =
+            result == assemblyTranspositionTable::result::inserted;
         if (inserted) ++searchTelemetry.counters.assemblyCacheMisses;
         else ++searchTelemetry.counters.assemblyCacheHits;
     }

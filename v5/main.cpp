@@ -219,7 +219,17 @@ bool assemblyCalculator(const string &input)
     moleculeName = outputBase + "Pathway";
     outputFile << outputBase << " has assembly index: ";
     // improvedBnB propagates recoverPathway2's requested-output status.
-    const bool calculationSucceeded = improvedBnB(mol_graph, outputFile);
+    bool calculationSucceeded = false;
+    try
+    {
+        calculationSucceeded = improvedBnB(mol_graph, outputFile);
+    }
+    catch (const std::exception &exception)
+    {
+        cerr << "error: calculation failed for '" << input << "': "
+             << exception.what() << '\n';
+        return false;
+    }
     bool outputsSucceeded = calculationSucceeded;
 
     if (
@@ -475,7 +485,7 @@ int main(int argc, char** argv)
 {
     ios::sync_with_stdio(false);
     #ifdef _WIN32
-        static_cast<void>(SetConsoleCtrlHandler((PHANDLER_ROUTINE)CtrlHandler, TRUE));
+        static_cast<void>(SetConsoleCtrlHandler(CtrlHandler, TRUE));
     #else
         signal(SIGINT, signalHandler);
     #endif

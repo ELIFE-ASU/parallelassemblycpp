@@ -149,18 +149,52 @@ def resolve_executable(path: Path) -> Path:
 
 
 def ensure_distinct_executables(candidate: Path, baseline: Path) -> None:
-    candidate = candidate.resolve()
-    baseline = baseline.resolve()
-    same_file = candidate == baseline
-    if not same_file and candidate.exists():
-        try:
-            same_file = candidate.samefile(baseline)
-        except OSError:
-            pass
-    if same_file:
+    if paths_alias(candidate, baseline):
         raise BenchmarkError(
             "candidate and baseline executables resolve to the same file"
         )
+
+
+def paths_alias(first: Path, second: Path) -> bool:
+    """Return whether two paths resolve to, or hardlink, the same file."""
+    first = first.resolve()
+    second = second.resolve()
+    if first == second:
+        return True
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+
+def ensure_json_output_is_distinct(
+    output: Path,
+    candidate: Path,
+    baseline: Path | None,
+    telemetry: Path | None,
+    manifest: Path | None,
+    cases: Sequence[BenchmarkCase],
+) -> None:
+    """Refuse to overwrite an executable or benchmark corpus source."""
+    protected_paths: list[tuple[str, Path]] = [
+        ("candidate executable", candidate),
+    ]
+    if baseline is not None:
+        protected_paths.append(("baseline executable", baseline))
+    if telemetry is not None:
+        protected_paths.append(("telemetry executable", telemetry))
+    if manifest is not None:
+        protected_paths.append(("benchmark manifest", manifest))
+    protected_paths.extend(
+        (f"benchmark input for {case.name!r}", case.source) for case in cases
+    )
+
+    for description, protected_path in protected_paths:
+        if paths_alias(output, protected_path):
+            raise BenchmarkError(
+                f"--json-output resolves to or aliases the {description}: "
+                f"{protected_path}"
+            )
 
 
 def executable_metadata(path: Path) -> dict[str, object]:
@@ -176,6 +210,40 @@ def executable_metadata(path: Path) -> dict[str, object]:
         "path": str(path),
         "sha256": digest.hexdigest(),
         "size_bytes": size,
+    }
+
+
+def file_sha256(path: Path) -> str:
+    """Return the SHA-256 digest of a file used by the benchmark corpus."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise BenchmarkError(f"could not fingerprint {path}: {error}") from error
+    return digest.hexdigest()
+
+
+def benchmark_corpus_metadata(
+    manifest: Path | None,
+    cases: Sequence[BenchmarkCase],
+) -> dict[str, object]:
+    """Fingerprint the manifest and selected inputs represented by a report."""
+    return {
+        "manifest": (
+            None
+            if manifest is None
+            else {"path": str(manifest), "sha256": file_sha256(manifest)}
+        ),
+        "inputs": [
+            {
+                "name": case.name,
+                "path": str(case.source),
+                "sha256": file_sha256(case.source),
+            }
+            for case in cases
+        ],
     }
 
 
@@ -340,7 +408,7 @@ def build_executable(
     command = [
         *compiler_command,
         str(REPOSITORY_ROOT / "v5" / "main.cpp"),
-        "-std=c++23",
+        "-std=c++20",
         "-O3",
         "-mpopcnt",
         "-march=x86-64-v3",
@@ -1242,6 +1310,7 @@ def write_json_report(
     candidate_metadata: dict[str, object],
     baseline_metadata: dict[str, object] | None,
     telemetry_metadata: dict[str, object] | None,
+    corpus_metadata: dict[str, object],
     manifest: Path | None,
     suite: str | None,
     runs: int,
@@ -1349,6 +1418,7 @@ def write_json_report(
             "baseline": baseline_metadata,
             "telemetry": telemetry_metadata,
         },
+        "corpus": corpus_metadata,
         "manifest": None if manifest is None else str(manifest),
         "suite": suite,
         "runs": runs,
@@ -1641,6 +1711,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     baseline_executable,
                     telemetry_executable,
                 )
+        if arguments.json_output is not None:
+            ensure_json_output_is_distinct(
+                output=arguments.json_output,
+                candidate=executable,
+                baseline=baseline_executable,
+                telemetry=telemetry_executable,
+                manifest=manifest,
+                cases=cases,
+            )
         candidate_metadata = executable_metadata(executable)
         baseline_metadata = (
             None
@@ -1651,6 +1730,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             None
             if telemetry_executable is None
             else executable_metadata(telemetry_executable)
+        )
+        corpus_metadata = (
+            None
+            if arguments.json_output is None
+            else benchmark_corpus_metadata(manifest, cases)
         )
 
         if baseline_executable is None:
@@ -1713,14 +1797,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 telemetry_metadata,
                 "telemetry",
             )
+        if (
+            corpus_metadata is not None
+            and benchmark_corpus_metadata(manifest, cases) != corpus_metadata
+        ):
+            raise BenchmarkError(
+                "benchmark manifest or selected input changed during measurement"
+            )
         print_summary(results)
         print_telemetry_summary(results)
         if arguments.json_output is not None:
+            assert corpus_metadata is not None
             write_json_report(
                 path=arguments.json_output,
                 candidate_metadata=candidate_metadata,
                 baseline_metadata=baseline_metadata,
                 telemetry_metadata=telemetry_metadata,
+                corpus_metadata=corpus_metadata,
                 manifest=manifest,
                 suite=arguments.suite,
                 runs=runs,

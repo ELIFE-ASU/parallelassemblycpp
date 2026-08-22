@@ -129,7 +129,9 @@ done
 
 Use an even run count so AB and BA ordering remains balanced. The gate requires
 every case's paired algorithm-clock median and every suite's paired round-total
-wall and clock medians to exceed 1.0. If a small case fails, repeat it with at
+wall and clock medians to exceed 1.0. It recomputes those medians from the raw
+paired samples and rejects reports whose manifest or input fingerprints no
+longer match the maintained corpus. If a small case fails, repeat it with at
 least 100 rounds. For a persistent PGO regression, increase the relevant
 training weight, regenerate the profile, and repeat all suites; an LTO-only
 failure instead requires flag tuning and the same full revalidation. Timing
@@ -168,8 +170,9 @@ descriptive equal-weight geometric mean is also reported, with MAD; treat it
 cautiously when a suite contains millisecond-scale cases.
 
 JSON schema version 2 retains every timed sample, case metadata, aggregate
-summaries, the deterministic schedule, platform information, executable
-fingerprints, and optional candidate telemetry. Telemetry includes the raw
+summaries, the deterministic schedule, platform information, executable,
+manifest, and input fingerprints, and optional candidate telemetry. Telemetry
+includes the raw
 processed graph size, retained masks, matching visits, canonicalisation activity,
 legacy VF2 counters, canonical/residual/assembly/pair-bound cache rates, and
 absolute resident peak memory for setup, initial enumeration, DAG conversion,

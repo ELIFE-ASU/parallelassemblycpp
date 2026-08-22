@@ -18,5 +18,5 @@
 "duplicates":[
 
 ],
-"removed_edges":[[6,8],[6,7],[4,5]]
+"removed_edges":[[4,5],[6,7],[6,8]]
 }

@@ -1,3 +1,8 @@
+// This executable is also built by Release/CI presets; keep its checks active.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -150,6 +155,25 @@ void testBondPlacement()
     ));
 }
 
+void testWideBondLabels()
+{
+    molGraph lowLabel = makeTree({"C", "N"}, {{0, 1, 1}});
+    molGraph highLabel = makeTree({"C", "N"}, {{0, 1, 257}});
+    assert(!equivalentTrees(lowLabel, highLabel));
+
+    clearTreeCanonInterner();
+    assert(canonicalForm(highLabel).centralBond == 257);
+
+    molGraph uniqueEdges = makeTree(
+        {"C", "N", "C", "N"},
+        {{0, 1, 1}, {2, 3, 257}}
+    );
+    vector<edgeL> removedEdges;
+    const molGraph processed = preprocessWriteback(uniqueEdges, removedEdges);
+    assert(removedEdges.size() == 2);
+    assert(processed.totalBonds == 0);
+}
+
 void testSameDegreeNonIsomorphs()
 {
     const vector<string> labels(7, "C");
@@ -295,6 +319,7 @@ int main()
     testCentroidForms();
     testLabelsAndPermutation();
     testBondPlacement();
+    testWideBondLabels();
     testSameDegreeNonIsomorphs();
     testLongPaths();
     testHighDegreeTree();
