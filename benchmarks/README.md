@@ -67,6 +67,77 @@ receives the diagnostic run, so an older baseline can still be used for
 timings. As an alternative, the runner's `--build` option creates both files
 directly at the requested executable path.
 
+## LTO and PGO candidates
+
+`performance-lto` adds link-time optimization to the x86-64-v3 performance
+configuration. `performance-pgo` adds a GCC profile trained by the maintained
+corpus as well as LTO. Build them from the repository root with:
+
+```bash
+cmake --preset performance-lto
+cmake --build --preset performance-lto
+
+cmake --preset pgo-generate
+cmake --build --preset pgo-train
+cmake --preset performance-pgo
+cmake --build --preset performance-pgo
+```
+
+The `pgo-train` target reads the strict, complete weight mapping in
+`pgo-training.tsv`. Each training calculation runs serially in isolation and
+must reproduce its expected assembly index. The weights deliberately emphasize
+the short cases that can otherwise be lost among the long profile workloads.
+Running the target again removes existing `.gcda` files first, so a profile
+cannot silently mix code generations. A completion record is written atomically
+only after the full schedule succeeds and fingerprints the weights, manifest,
+and every input; the profile-use preset rejects partial, interrupted, or stale
+training data.
+
+Keep an unchanged `performance` executable as the baseline and compare every
+suite before promoting either optimization preset. This Linux example pins all
+work to one known performance core; choose an appropriate core for the host:
+
+```bash
+for candidate in performance-lto performance-pgo; do
+  taskset -c 2 python benchmarks/benchmark.py \
+    --baseline-executable build/performance/AssemblyCpp \
+    --executable "build/${candidate}/AssemblyCpp" \
+    --suite quick --runs 100 \
+    --json-output "build/${candidate}-quick.json"
+  taskset -c 2 python benchmarks/benchmark.py \
+    --baseline-executable build/performance/AssemblyCpp \
+    --executable "build/${candidate}/AssemblyCpp" \
+    --suite full --runs 100 \
+    --json-output "build/${candidate}-full.json"
+  taskset -c 2 python benchmarks/benchmark.py \
+    --baseline-executable build/performance/AssemblyCpp \
+    --executable "build/${candidate}/AssemblyCpp" \
+    --suite profile --runs 6 \
+    --json-output "build/${candidate}-profile.json"
+  taskset -c 2 python benchmarks/benchmark.py \
+    --baseline-executable build/performance/AssemblyCpp \
+    --executable "build/${candidate}/AssemblyCpp" \
+    --suite scaling --runs 30 \
+    --json-output "build/${candidate}-scaling.json"
+  python benchmarks/check_speedups.py \
+    "build/${candidate}-quick.json" \
+    "build/${candidate}-full.json" \
+    "build/${candidate}-profile.json" \
+    "build/${candidate}-scaling.json"
+done
+```
+
+Use an even run count so AB and BA ordering remains balanced. The gate requires
+every case's paired algorithm-clock median and every suite's paired round-total
+wall and clock medians to exceed 1.0. If a small case fails, repeat it with at
+least 100 rounds. For a persistent PGO regression, increase the relevant
+training weight, regenerate the profile, and repeat all suites; an LTO-only
+failure instead requires flag tuning and the same full revalidation. Timing
+remains a host-pinned manual release gate rather than a shared-CI assertion
+because contention would make such a check unreliable. A failed gate blocks
+promotion or default use, but does not prevent keeping the corresponding preset
+available as an explicit experimental opt-in.
+
 The workload column puts atoms, bonds, component counts, cache eligibility, and
 active mask-word counts next to the relevant timing statistics. Algorithm clock
 ticks are the clearest cost signal for the smaller inputs because wall time also

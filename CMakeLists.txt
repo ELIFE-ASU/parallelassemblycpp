@@ -32,10 +32,268 @@ option(
   OFF
 )
 option(
+  ASSEMBLYCPP_ENABLE_LTO
+  "Enable interprocedural optimization for AssemblyCpp targets"
+  OFF
+)
+set(
+  ASSEMBLYCPP_PGO_PHASE
+  "OFF"
+  CACHE STRING
+  "GCC profile-guided optimization phase: OFF, GENERATE, or USE"
+)
+set_property(
+  CACHE ASSEMBLYCPP_PGO_PHASE
+  PROPERTY STRINGS OFF GENERATE USE
+)
+set(
+  ASSEMBLYCPP_PGO_PROFILE_DIR
+  "${CMAKE_BINARY_DIR}/pgo-profiles"
+  CACHE PATH
+  "Directory shared by the GCC PGO generation and use builds"
+)
+option(
   ASSEMBLYCPP_FULL_REGRESSION_TESTS
   "Run the complete regression manifest instead of its first 20 cases"
   OFF
 )
+
+set(_ASSEMBLYCPP_PGO_PHASES OFF GENERATE USE)
+if(NOT ASSEMBLYCPP_PGO_PHASE IN_LIST _ASSEMBLYCPP_PGO_PHASES)
+  message(
+    FATAL_ERROR
+    "ASSEMBLYCPP_PGO_PHASE must be one of OFF, GENERATE, or USE; got "
+    "${ASSEMBLYCPP_PGO_PHASE}"
+  )
+endif()
+
+if(ASSEMBLYCPP_PGO_PHASE STREQUAL "OFF")
+  set(ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE "")
+else()
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR "AssemblyCpp PGO currently requires GCC")
+  endif()
+  if(ASSEMBLYCPP_PGO_PROFILE_DIR STREQUAL "")
+    message(FATAL_ERROR "ASSEMBLYCPP_PGO_PROFILE_DIR must not be empty")
+  endif()
+  cmake_path(
+    ABSOLUTE_PATH ASSEMBLYCPP_PGO_PROFILE_DIR
+    BASE_DIRECTORY "${CMAKE_BINARY_DIR}"
+    NORMALIZE
+    OUTPUT_VARIABLE ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE
+  )
+  set(
+    ASSEMBLYCPP_PGO_DIRECTORY_MARKER
+    "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}/.assemblycpp-pgo-profile-directory"
+  )
+
+  if(ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
+    file(MAKE_DIRECTORY "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}")
+    if(NOT EXISTS "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}")
+      file(
+        GLOB ASSEMBLYCPP_PGO_PROFILE_DIRECTORY_ENTRIES
+        LIST_DIRECTORIES true
+        "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}/*"
+      )
+      if(ASSEMBLYCPP_PGO_PROFILE_DIRECTORY_ENTRIES)
+        message(
+          FATAL_ERROR
+          "Refusing to adopt non-empty PGO profile directory without its "
+          "AssemblyCpp marker: ${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}"
+        )
+      endif()
+      file(
+        WRITE "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
+        "Dedicated AssemblyCpp PGO profile directory.\n"
+      )
+    elseif(
+      IS_DIRECTORY "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
+      OR IS_SYMLINK "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
+    )
+      message(FATAL_ERROR "Invalid PGO profile directory marker")
+    endif()
+  else()
+    if(
+      NOT EXISTS "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
+      OR IS_DIRECTORY "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
+      OR IS_SYMLINK "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
+    )
+      message(
+        FATAL_ERROR
+        "ASSEMBLYCPP_PGO_PHASE=USE requires the dedicated profile-directory "
+        "marker created by the pgo-generate preset"
+      )
+    endif()
+    set(
+      ASSEMBLYCPP_PGO_COMPLETION_FILE
+      "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}/assemblycpp-pgo-complete.json"
+    )
+    if(NOT EXISTS "${ASSEMBLYCPP_PGO_COMPLETION_FILE}")
+      message(
+        FATAL_ERROR
+        "ASSEMBLYCPP_PGO_PHASE=USE requires a completed weighted training run; "
+        "build the pgo-train preset first"
+      )
+    endif()
+    file(READ "${ASSEMBLYCPP_PGO_COMPLETION_FILE}" ASSEMBLYCPP_PGO_COMPLETION)
+    string(
+      JSON ASSEMBLYCPP_PGO_COMPLETION_SCHEMA
+      ERROR_VARIABLE ASSEMBLYCPP_PGO_COMPLETION_ERROR
+      GET "${ASSEMBLYCPP_PGO_COMPLETION}" schema_version
+    )
+    if(
+      ASSEMBLYCPP_PGO_COMPLETION_ERROR
+      OR NOT ASSEMBLYCPP_PGO_COMPLETION_SCHEMA EQUAL 2
+    )
+      message(
+        FATAL_ERROR
+        "Invalid PGO training completion record: "
+        "${ASSEMBLYCPP_PGO_COMPLETION_FILE}"
+      )
+    endif()
+    string(
+      JSON ASSEMBLYCPP_PGO_RECORDED_WEIGHTS_SHA256
+      ERROR_VARIABLE ASSEMBLYCPP_PGO_WEIGHTS_ERROR
+      GET "${ASSEMBLYCPP_PGO_COMPLETION}" weights sha256
+    )
+    file(
+      SHA256 "${PROJECT_SOURCE_DIR}/benchmarks/pgo-training.tsv"
+      ASSEMBLYCPP_PGO_CURRENT_WEIGHTS_SHA256
+    )
+    if(
+      ASSEMBLYCPP_PGO_WEIGHTS_ERROR
+      OR NOT ASSEMBLYCPP_PGO_RECORDED_WEIGHTS_SHA256
+        STREQUAL ASSEMBLYCPP_PGO_CURRENT_WEIGHTS_SHA256
+    )
+      message(
+        FATAL_ERROR
+        "PGO training weights changed after profile generation; rebuild the "
+        "pgo-train preset"
+      )
+    endif()
+    set(
+      ASSEMBLYCPP_PGO_MANIFEST
+      "${PROJECT_SOURCE_DIR}/benchmarks/cases.tsv"
+    )
+    string(
+      JSON ASSEMBLYCPP_PGO_RECORDED_MANIFEST_SHA256
+      ERROR_VARIABLE ASSEMBLYCPP_PGO_MANIFEST_ERROR
+      GET "${ASSEMBLYCPP_PGO_COMPLETION}" corpus manifest sha256
+    )
+    file(
+      SHA256 "${ASSEMBLYCPP_PGO_MANIFEST}"
+      ASSEMBLYCPP_PGO_CURRENT_MANIFEST_SHA256
+    )
+    if(
+      ASSEMBLYCPP_PGO_MANIFEST_ERROR
+      OR NOT ASSEMBLYCPP_PGO_RECORDED_MANIFEST_SHA256
+        STREQUAL ASSEMBLYCPP_PGO_CURRENT_MANIFEST_SHA256
+    )
+      message(
+        FATAL_ERROR
+        "The benchmark manifest changed after profile generation; rebuild the "
+        "pgo-train preset"
+      )
+    endif()
+    string(
+      JSON ASSEMBLYCPP_PGO_INPUT_COUNT
+      ERROR_VARIABLE ASSEMBLYCPP_PGO_INPUT_COUNT_ERROR
+      LENGTH "${ASSEMBLYCPP_PGO_COMPLETION}" corpus inputs
+    )
+    if(
+      ASSEMBLYCPP_PGO_INPUT_COUNT_ERROR
+      OR ASSEMBLYCPP_PGO_INPUT_COUNT LESS 1
+    )
+      message(FATAL_ERROR "Invalid PGO corpus input fingerprints")
+    endif()
+    math(EXPR ASSEMBLYCPP_PGO_LAST_INPUT "${ASSEMBLYCPP_PGO_INPUT_COUNT} - 1")
+    set(ASSEMBLYCPP_PGO_CORPUS_FILES "${ASSEMBLYCPP_PGO_MANIFEST}")
+    foreach(ASSEMBLYCPP_PGO_INPUT_INDEX RANGE ${ASSEMBLYCPP_PGO_LAST_INPUT})
+      string(
+        JSON ASSEMBLYCPP_PGO_RECORDED_INPUT_PATH
+        ERROR_VARIABLE ASSEMBLYCPP_PGO_INPUT_PATH_ERROR
+        GET "${ASSEMBLYCPP_PGO_COMPLETION}"
+        corpus inputs ${ASSEMBLYCPP_PGO_INPUT_INDEX} path
+      )
+      string(
+        JSON ASSEMBLYCPP_PGO_RECORDED_INPUT_SHA256
+        ERROR_VARIABLE ASSEMBLYCPP_PGO_INPUT_SHA256_ERROR
+        GET "${ASSEMBLYCPP_PGO_COMPLETION}"
+        corpus inputs ${ASSEMBLYCPP_PGO_INPUT_INDEX} sha256
+      )
+      if(
+        ASSEMBLYCPP_PGO_INPUT_PATH_ERROR
+        OR ASSEMBLYCPP_PGO_INPUT_SHA256_ERROR
+      )
+        message(FATAL_ERROR "Invalid PGO corpus input fingerprint")
+      endif()
+      cmake_path(
+        ABSOLUTE_PATH ASSEMBLYCPP_PGO_RECORDED_INPUT_PATH
+        BASE_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        NORMALIZE
+        OUTPUT_VARIABLE ASSEMBLYCPP_PGO_CURRENT_INPUT
+      )
+      if(
+        NOT EXISTS "${ASSEMBLYCPP_PGO_CURRENT_INPUT}"
+        OR IS_DIRECTORY "${ASSEMBLYCPP_PGO_CURRENT_INPUT}"
+      )
+        message(
+          FATAL_ERROR
+          "PGO corpus input is missing: ${ASSEMBLYCPP_PGO_CURRENT_INPUT}; "
+          "rebuild the pgo-train preset"
+        )
+      endif()
+      file(
+        SHA256 "${ASSEMBLYCPP_PGO_CURRENT_INPUT}"
+        ASSEMBLYCPP_PGO_CURRENT_INPUT_SHA256
+      )
+      if(
+        NOT ASSEMBLYCPP_PGO_RECORDED_INPUT_SHA256
+          STREQUAL ASSEMBLYCPP_PGO_CURRENT_INPUT_SHA256
+      )
+        message(
+          FATAL_ERROR
+          "PGO corpus input changed after profile generation: "
+          "${ASSEMBLYCPP_PGO_CURRENT_INPUT}; rebuild the pgo-train preset"
+        )
+      endif()
+      list(APPEND ASSEMBLYCPP_PGO_CORPUS_FILES "${ASSEMBLYCPP_PGO_CURRENT_INPUT}")
+    endforeach()
+    file(
+      GLOB_RECURSE ASSEMBLYCPP_PGO_PROFILE_DATA
+      LIST_DIRECTORIES false
+      "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}/*.gcda"
+    )
+    if(NOT ASSEMBLYCPP_PGO_PROFILE_DATA)
+      message(
+        FATAL_ERROR
+        "ASSEMBLYCPP_PGO_PHASE=USE requires trained *.gcda files in "
+        "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}; build the pgo-train preset first"
+      )
+    endif()
+    # Re-run configuration before any subsequent build if training is repeated,
+    # interrupted, or its weights change. This keeps an already-configured USE
+    # tree from consuming partial or stale profile data.
+    set_property(
+      DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+      "${ASSEMBLYCPP_PGO_COMPLETION_FILE}"
+      "${PROJECT_SOURCE_DIR}/benchmarks/pgo-training.tsv"
+      ${ASSEMBLYCPP_PGO_CORPUS_FILES}
+    )
+  endif()
+endif()
+
+if(ASSEMBLYCPP_ENABLE_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(
+    RESULT ASSEMBLYCPP_LTO_SUPPORTED
+    OUTPUT ASSEMBLYCPP_LTO_ERROR
+    LANGUAGES CXX
+  )
+  if(NOT ASSEMBLYCPP_LTO_SUPPORTED)
+    message(FATAL_ERROR "LTO is unavailable: ${ASSEMBLYCPP_LTO_ERROR}")
+  endif()
+endif()
 
 function(assemblycpp_configure_target target)
   target_compile_features(${target} PRIVATE cxx_std_20)
@@ -46,6 +304,38 @@ function(assemblycpp_configure_target target)
       CXX_STANDARD_REQUIRED ON
       INSTALL_REMOVE_ENVIRONMENT_RPATH ON
   )
+
+  if(ASSEMBLYCPP_ENABLE_LTO)
+    set_property(
+      TARGET ${target}
+      PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE
+    )
+
+    if(
+      CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+      AND ASSEMBLYCPP_PGO_PHASE STREQUAL "OFF"
+    )
+      # GCC's one-partition link was consistently better for the unprofiled
+      # binary. Profile-use builds retain GCC's balanced partitioning because
+      # that configuration is trained and validated independently.
+      set(
+        _ASSEMBLYCPP_GNU_LTO_OPTIONS
+        -flto-partition=one
+        -fipa-pta
+        -fno-semantic-interposition
+        -fdevirtualize-at-ltrans
+        -fno-plt
+      )
+      target_compile_options(
+        ${target}
+        PRIVATE ${_ASSEMBLYCPP_GNU_LTO_OPTIONS}
+      )
+      target_link_options(
+        ${target}
+        PRIVATE ${_ASSEMBLYCPP_GNU_LTO_OPTIONS}
+      )
+    endif()
+  endif()
 
   if(WIN32)
     target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -83,6 +373,34 @@ function(assemblycpp_configure_target target)
   endif()
 endfunction()
 
+function(assemblycpp_configure_pgo_target target)
+  if(ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
+    set(
+      _ASSEMBLYCPP_PGO_OPTIONS
+      "-fprofile-generate=${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}"
+      "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+    )
+  elseif(ASSEMBLYCPP_PGO_PHASE STREQUAL "USE")
+    set(
+      _ASSEMBLYCPP_PGO_OPTIONS
+      "-fprofile-use=${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}"
+      "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+      -fno-tracer
+      -fno-reorder-blocks-and-partition
+      -Werror=missing-profile
+      -Werror=coverage-mismatch
+    )
+  else()
+    return()
+  endif()
+
+  # The training corpus exercises the CLI. Profiling the library or telemetry
+  # sibling would create untrained objects and make missing-profile diagnostics
+  # either noisy or ineffective.
+  target_compile_options(${target} PRIVATE ${_ASSEMBLYCPP_PGO_OPTIONS})
+  target_link_options(${target} PRIVATE ${_ASSEMBLYCPP_PGO_OPTIONS})
+endfunction()
+
 add_library(AssemblyCppLibrary STATIC v5/main.cpp)
 add_library(AssemblyCpp::Library ALIAS AssemblyCppLibrary)
 target_compile_definitions(
@@ -107,6 +425,7 @@ assemblycpp_configure_target(AssemblyCppLibrary)
 
 add_executable(AssemblyCpp v5/main.cpp)
 assemblycpp_configure_target(AssemblyCpp)
+assemblycpp_configure_pgo_target(AssemblyCpp)
 if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   # Both implementations are single translation units. Internalising their
   # implementation details avoids frontend changes perturbing the search
@@ -191,9 +510,27 @@ if(UNIX AND NOT APPLE)
 endif()
 
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING OR ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
   find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+endif()
 
+if(ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
+  add_custom_target(
+    pgo-train
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/benchmarks/pgo_training.py"
+      --executable "$<TARGET_FILE:AssemblyCpp>"
+      --profile-dir "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}"
+      --weights "${PROJECT_SOURCE_DIR}/benchmarks/pgo-training.tsv"
+    DEPENDS AssemblyCpp
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    USES_TERMINAL
+    VERBATIM
+  )
+endif()
+
+if(BUILD_TESTING)
   add_executable(
     assemblycpp_active_word_mask_tests
     unitTests/activeWordMaskTester.cpp

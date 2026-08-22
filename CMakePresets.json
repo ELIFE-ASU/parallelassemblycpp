@@ -62,6 +62,37 @@
         "ASSEMBLYCPP_BUILD_TELEMETRY": true,
         "ASSEMBLYCPP_X86_64_V3": true
       }
+    },
+    {
+      "name": "performance-lto",
+      "displayName": "x86-64-v3 LTO performance build",
+      "description": "Opt-in x86-64-v3 performance build with link-time optimization",
+      "inherits": "performance",
+      "cacheVariables": {
+        "ASSEMBLYCPP_ENABLE_LTO": true
+      }
+    },
+    {
+      "name": "pgo-generate",
+      "displayName": "x86-64-v3 PGO training build",
+      "description": "Instrumented GCC build for weighted-corpus profile generation",
+      "inherits": "performance",
+      "cacheVariables": {
+        "ASSEMBLYCPP_ENABLE_LTO": true,
+        "ASSEMBLYCPP_PGO_PHASE": "GENERATE",
+        "ASSEMBLYCPP_PGO_PROFILE_DIR": "${sourceDir}/build/pgo-profiles"
+      }
+    },
+    {
+      "name": "performance-pgo",
+      "displayName": "x86-64-v3 PGO and LTO performance build",
+      "description": "Opt-in GCC profile-use build from the weighted benchmark corpus",
+      "inherits": "performance",
+      "cacheVariables": {
+        "ASSEMBLYCPP_ENABLE_LTO": true,
+        "ASSEMBLYCPP_PGO_PHASE": "USE",
+        "ASSEMBLYCPP_PGO_PROFILE_DIR": "${sourceDir}/build/pgo-profiles"
+      }
     }
   ],
   "buildPresets": [
@@ -80,6 +111,26 @@
     {
       "name": "performance",
       "configurePreset": "performance"
+    },
+    {
+      "name": "performance-lto",
+      "configurePreset": "performance-lto"
+    },
+    {
+      "name": "pgo-generate",
+      "configurePreset": "pgo-generate"
+    },
+    {
+      "name": "pgo-train",
+      "configurePreset": "pgo-generate",
+      "targets": [
+        "pgo-train"
+      ]
+    },
+    {
+      "name": "performance-pgo",
+      "configurePreset": "performance-pgo",
+      "cleanFirst": true
     }
   ],
   "testPresets": [

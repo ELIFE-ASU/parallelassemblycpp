@@ -54,6 +54,36 @@ Do not run the performance binaries on processors that lack the x86-64-v3
 feature level. Portable and performance builds never mix in the same build
 directory.
 
+Link-time and profile-guided optimization are separate opt-in performance
+presets. The LTO build keeps the same x86-64-v3 baseline:
+
+```bash
+cmake --preset performance-lto
+cmake --build --preset performance-lto
+./build/performance-lto/AssemblyCpp --help
+```
+
+The PGO preset is currently GCC-only and uses a weighted version of every case
+in `benchmarks/cases.tsv`. Generate a fresh profile, train it, and then build the
+profile-use binary in that order:
+
+```bash
+cmake --preset pgo-generate
+cmake --build --preset pgo-train
+cmake --preset performance-pgo
+cmake --build --preset performance-pgo
+./build/performance-pgo/AssemblyCpp --help
+```
+
+The two PGO builds share `build/pgo-profiles`, but keep separate object trees.
+The training target clears stale GCC data, validates the assembly index of every
+run, applies the repetitions in `benchmarks/pgo-training.tsv`, and writes a
+completion record only after every run succeeds. The profile-use configure step
+rejects missing or partial training data and changes to the recorded weights,
+manifest, or corpus inputs. Re-run all four benchmark suites after changing the
+weights or corpus. PGO and LTO are not enabled by the portable release, CI, or
+ordinary performance presets, and none of the presets use `-march=native`.
+
 Search telemetry is compile-time opt-in so ordinary search loops contain no
 counter branches. `--telemetry=1` is available only in
 `AssemblyCppTelemetry`; the standard executable reports it as an unknown
