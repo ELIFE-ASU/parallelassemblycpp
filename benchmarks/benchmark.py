@@ -1209,7 +1209,7 @@ def run_benchmarks(
                     print(
                         f"{prefix}: {measurement.wall_seconds:.6f} s wall, "
                         f"{measurement.clock_ticks} clock ticks, "
-                        f"AI {measurement.assembly_index}",
+                        f"assembly index {measurement.assembly_index}",
                         flush=True,
                     )
 
@@ -1398,7 +1398,7 @@ def print_summary(results: Sequence[CaseResult]) -> None:
 
 
 def print_comparison_summary(results: Sequence[CaseResult]) -> None:
-    print("\nComparison summary (speedup > 1 means candidate is faster)")
+    print("\nComparison (speedup > 1.0 = candidate faster)")
     name_width = max(12, min(24, max(len(result.case.name) for result in results)))
     print(
         f"  {'Case':<{name_width}} {'Baseline':>12} {'Candidate':>12} "
@@ -1437,21 +1437,21 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
     assert equal_wall is not None
     print("\nCorpus comparison")
     print(
-        f"  primary paired round-total wall:  {round_wall.median:.4f}x "
+        f"  paired suite wall (primary):       {round_wall.median:.4f}x "
         f"(MAD {round_wall.mad:.4f}x)"
     )
     if round_clock is not None:
         print(
-            f"  primary paired round-total clock: {round_clock.median:.4f}x "
+            f"  paired suite clock (primary):     {round_clock.median:.4f}x "
             f"(MAD {round_clock.mad:.4f}x)"
         )
     print(
-        f"  descriptive equal-weight wall:    {equal_wall.median:.4f}x "
+        f"  equal-weight wall (descriptive):    {equal_wall.median:.4f}x "
         f"(MAD {equal_wall.mad:.4f}x)"
     )
     if equal_clock is not None:
         print(
-            f"  descriptive equal-weight clock:   {equal_clock.median:.4f}x "
+            f"  equal-weight clock (descriptive): {equal_clock.median:.4f}x "
             f"(MAD {equal_clock.mad:.4f}x)"
         )
 
@@ -1663,7 +1663,10 @@ def write_json_report(
 
 
 def print_case_list(cases: Sequence[BenchmarkCase]) -> None:
-    print(f"{'Case':<24} {'Suites':<20} {'Expected':>8} {'Status':<12}  Workload")
+    print(
+        f"{'Case':<24} {'Suites':<20} {'Index':>8} "
+        f"{'Expectation':<12}  Workload"
+    )
     print("-" * 95)
     for case in cases:
         print(
@@ -1676,24 +1679,23 @@ def print_case_list(cases: Sequence[BenchmarkCase]) -> None:
 
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run isolated AssemblyCpp calculations and summarize their speed. "
-            "Without a corpus option, the default input remains "
-            "unitTests/ketoconazole.mol."
-        )
+        description="Benchmark one input or a manifest suite."
     )
     parser.add_argument(
         "--executable",
         type=Path,
         default=DEFAULT_EXECUTABLE,
-        help=f"AssemblyCpp executable (default: {DEFAULT_EXECUTABLE})",
+        help=(
+            "AssemblyCpp executable "
+            f"(default: {DEFAULT_EXECUTABLE.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--baseline-executable",
         type=Path,
         help=(
-            "baseline executable for paired A/B measurements; --executable is "
-            "the candidate"
+            "baseline executable for paired comparisons "
+            "(candidate: --executable)"
         ),
     )
     parser.add_argument(
@@ -1701,15 +1703,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
         type=launcher_prefix,
         metavar="COMMAND",
         help=(
-            "shell-split command prefix placed before the candidate executable "
-            "(for example 'mpirun -n 2')"
+            "command prefix for the candidate executable "
+            "(for example, 'mpirun -n 2')"
         ),
     )
     parser.add_argument(
         "--baseline-launcher",
         type=launcher_prefix,
         metavar="COMMAND",
-        help="shell-split command prefix placed before the baseline executable",
+        help="command prefix for the baseline executable",
     )
     parser.add_argument(
         "--candidate-env",
@@ -1719,7 +1721,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="candidate environment override; may be repeated",
+        help="candidate environment override (repeatable)",
     )
     parser.add_argument(
         "--baseline-env",
@@ -1729,53 +1731,60 @@ def create_argument_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="baseline environment override; may be repeated",
+        help="baseline environment override (repeatable)",
     )
     parser.add_argument(
         "--input",
         type=Path,
-        help=f"single molfile or native graph (default: {DEFAULT_INPUT})",
+        help=(
+            "single molfile or native graph file "
+            f"(default: {DEFAULT_INPUT.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--expected",
         type=int,
         help=(
-            "expected assembly index for single-input mode; defaults to 22 for "
-            "the default input and is unchecked for a custom input"
+            "expected assembly index; defaults to 22 for the default input, "
+            "otherwise unchecked"
         ),
     )
     parser.add_argument(
         "--manifest",
         type=Path,
-        help=f"benchmark corpus manifest (default with corpus options: {DEFAULT_MANIFEST})",
+        help=(
+            "benchmark corpus manifest "
+            "(default with corpus options: "
+            f"{DEFAULT_MANIFEST.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--suite",
         choices=KNOWN_SUITES,
-        help="run one named suite from the benchmark manifest",
+        help="select a suite from the benchmark manifest",
     )
     parser.add_argument(
         "--case",
         action="append",
         default=[],
         metavar="NAME",
-        help="run only this manifest case; may be repeated",
+        help="select a manifest case (repeatable)",
     )
     parser.add_argument(
         "--list-cases",
         action="store_true",
-        help="list selected manifest cases and exit without building or running",
+        help="list selected cases without building or running",
     )
     parser.add_argument(
         "--runs",
         type=positive_int,
-        help="number of measured rounds per case (default: 5; paired: 6)",
+        help="measured rounds (default: 5; paired: 6)",
     )
     parser.add_argument(
         "--warmup",
         type=non_negative_int,
         default=1,
-        help="number of unmeasured rounds per case (default: 1)",
+        help="warm-up rounds (default: 1)",
     )
     parser.add_argument(
         "--timeout",
@@ -1786,22 +1795,19 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json-output",
         type=Path,
-        help="write measurements and summaries to this JSON file",
+        help="write a JSON report",
     )
     parser.add_argument(
         "--telemetry",
         action="store_true",
-        help=(
-            "collect one additional untimed telemetry run per case using a "
-            "separate instrumented executable"
-        ),
+        help="run each case once more with untimed telemetry",
     )
     parser.add_argument(
         "--telemetry-executable",
         type=Path,
         help=(
-            "separate ASSEMBLY_ENABLE_TELEMETRY executable used only for the "
-            "untimed diagnostic run; required with --telemetry unless --build"
+            "instrumented executable for telemetry; required unless --build "
+            "is used"
         ),
     )
     parser.add_argument(
@@ -1812,7 +1818,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compiler",
         default=os.environ.get("CXX") or "c++",
-        help="compiler command used with --build (default: CXX or c++)",
+        help="compiler used by --build (uses $CXX, then c++)",
     )
     return parser
 
@@ -2019,18 +2025,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if manifest is None:
             print(f"Input: {cases[0].source}")
             if cases[0].expected_assembly_index is None:
-                print("Assembly index: checked for presence only")
+                print("Assembly index: present but not validated")
             else:
                 print(f"Expected assembly index: {cases[0].expected_assembly_index}")
         else:
             print(f"Manifest: {manifest}")
-            print(f"Suite: {arguments.suite or 'all selected cases'}")
+            print(f"Suite: {arguments.suite or 'all'}")
             print(f"Cases: {len(cases)}")
             provisional = [
                 case.name for case in cases if case.expectation == "provisional"
             ]
             if provisional:
-                print(f"Provisional expectations: {', '.join(provisional)}")
+                print(f"Provisional assembly indices: {', '.join(provisional)}")
         if len(cases) == 1:
             print(
                 f"Runs: {runs} measured, {arguments.warmup} warm-up",
@@ -2043,7 +2049,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if arguments.telemetry:
             print(
-                "Telemetry: one untimed separate-instrumented run per case",
+                "Telemetry: one separate, untimed run per case",
                 flush=True,
             )
 

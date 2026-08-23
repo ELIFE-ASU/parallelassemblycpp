@@ -145,7 +145,7 @@ class CheckParallelScalingTests(unittest.TestCase):
         self.assertIn("case alpha", stdout)
         self.assertIn("2.500x", stdout)
         self.assertIn("62.5%", stdout)
-        self.assertIn("No case wall regressions", stdout)
+        self.assertIn("No case wall-time regressions.", stdout)
 
     def test_report_only_lists_regressions_without_failing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -160,7 +160,11 @@ class CheckParallelScalingTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertIn("omp/4 case alpha: 0.900x", stdout)
-        self.assertIn("REPORT ONLY", stdout)
+        self.assertIn(
+            "REPORT ONLY: regressions do not change exit status. Use "
+            "--require-all-faster to enforce the gate.",
+            stdout,
+        )
 
     def test_require_all_faster_fails_with_listed_regressions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -178,7 +182,7 @@ class CheckParallelScalingTests(unittest.TestCase):
 
         self.assertEqual(status, 1)
         self.assertIn("mpi/8 case slow: 1.000x", stdout)
-        self.assertIn("FAIL: 1 case wall regression", stdout)
+        self.assertIn("FAIL: 1 case wall regression.", stdout)
 
     def test_accepts_compatible_topologies_with_distinct_worker_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

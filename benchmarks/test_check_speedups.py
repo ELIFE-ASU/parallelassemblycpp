@@ -135,7 +135,11 @@ class CheckSpeedupsTests(unittest.TestCase):
                 status = check_speedups.main([str(path) for path in paths])
 
             self.assertEqual(status, 0)
-            self.assertIn("PASS", stdout.getvalue())
+            self.assertEqual(
+                stdout.getvalue(),
+                "PASS: all case clock medians and suite wall/clock medians "
+                "exceed 1.000000\n",
+            )
 
     def test_rejects_case_clock_regression(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -215,7 +219,7 @@ class CheckSpeedupsTests(unittest.TestCase):
                 status = check_speedups.main([str(path) for path in paths])
 
             self.assertEqual(status, 2)
-            self.assertIn("must be different", stderr.getvalue())
+            self.assertIn("must differ", stderr.getvalue())
 
     def test_accepts_same_binary_with_distinct_execution_configs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

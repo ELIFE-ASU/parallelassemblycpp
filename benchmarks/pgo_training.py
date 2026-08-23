@@ -1,4 +1,4 @@
-"""Train a GCC-instrumented AssemblyCpp executable with a weighted corpus."""
+"""Generate GCC PGO profiles from a weighted AssemblyCpp corpus."""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def load_training_weights(
 
 
 def prepare_profile_directory(path: Path) -> tuple[Path, int]:
-    """Create the requested directory and remove only existing GCC data files."""
+    """Prepare a marked profile directory and remove stale training outputs."""
     profile_directory = path.expanduser().resolve()
     protected_directories = {
         Path(profile_directory.anchor),
@@ -293,7 +293,8 @@ def train(
         for entry in weighted_cases:
             print(
                 f"Training {entry.case.name}: "
-                f"{entry.repetitions} repetition(s)",
+                f"{entry.repetitions} "
+                f"{'repetition' if entry.repetitions == 1 else 'repetitions'}",
                 flush=True,
             )
             for repetition in range(1, entry.repetitions + 1):
@@ -316,28 +317,30 @@ def train(
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the weighted AssemblyCpp corpus to create GCC PGO profile data. "
-            "The supplied executable must have been built with "
-            "-fprofile-generate."
+            "Generate GCC PGO profiles with the weighted benchmark corpus. "
+            "The executable must be built with -fprofile-generate."
         )
     )
     parser.add_argument(
         "--executable",
         type=Path,
         required=True,
-        help="GCC profile-generation AssemblyCpp executable",
+        help="AssemblyCpp executable built with -fprofile-generate",
     )
     parser.add_argument(
         "--profile-dir",
         type=Path,
         required=True,
-        help="explicit GCC profile directory; existing *.gcda files are removed",
+        help="PGO profile directory; removes existing *.gcda files",
     )
     parser.add_argument(
         "--weights",
         type=Path,
         default=DEFAULT_WEIGHTS,
-        help=f"training weights TSV (default: {DEFAULT_WEIGHTS})",
+        help=(
+            "weights TSV "
+            f"(default: {DEFAULT_WEIGHTS.relative_to(benchmark.REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -377,14 +380,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if corpus_metadata(manifest_path, cases) != training_corpus:
             raise benchmark.BenchmarkError(
-                "benchmark manifest or corpus input changed during PGO training"
+                "benchmark manifest or corpus inputs changed during PGO training"
             )
         profiles = find_gcda_files(profile_directory)
         if not profiles:
             raise benchmark.BenchmarkError(
                 f"training produced no .gcda files in {profile_directory}; "
-                "verify that the executable and profile directory were built "
-                "with matching -fprofile-generate settings"
+                "ensure the executable was built with -fprofile-generate "
+                "targeting this directory"
             )
 
         completion_path = write_completion_record(
@@ -397,7 +400,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             profiles,
         )
 
-        print(f"Training complete: {completed} repetition(s)")
+        print(
+            f"Training complete: {completed} "
+            f"{'repetition' if completed == 1 else 'repetitions'}"
+        )
         print(f"GCC profile files: {len(profiles)}")
         print(f"Completion record: {completion_path}")
     except (benchmark.BenchmarkError, OSError) as error:

@@ -1,4 +1,4 @@
-"""Build AssemblyCpp and run its regression manifest."""
+"""Run AssemblyCpp CLI and regression checks."""
 
 from __future__ import annotations
 
@@ -409,7 +409,7 @@ def run_cli_checks(executable: Path) -> int:
         "--memory-report=<0|1>",
         "--write-intermediate-mas=<0|1>",
         "Outputs:",
-        "Compatibility:",
+        "Legacy options:",
     )
     telemetry_supported: bool | None = None
 
@@ -460,7 +460,7 @@ def run_cli_checks(executable: Path) -> int:
             completed,
         )
         require_cli(
-            "missing required INPUT" in completed.stderr,
+            "INPUT is required" in completed.stderr,
             "the missing-input error should explain what is required",
             completed,
         )
@@ -506,24 +506,24 @@ def run_cli_checks(executable: Path) -> int:
 
         invalid_cases = [
             (["input", "--does-not-exist=1"], "unknown option"),
-            (["input", "--pathway"], "requires"),
-            (["input", "--pathway="], "expects 0 or 1"),
-            (["input", "--pathway=2"], "expects 0 or 1"),
-            (["input", "--remove-hydrogens=yes"], "expects 0 or 1"),
-            (["input", "--verbose=2"], "expects 0 or 1"),
-            (["input", "--enum-max=0"], "expects a value from 1"),
-            (["input", "--enum-max=12junk"], "non-negative whole number"),
-            (["input", "--runtime=-1"], "non-negative whole number"),
-            (["input", f"--runtime={'9' * 100}"], "non-negative whole number"),
+            (["input", "--pathway"], "requires a value"),
+            (["input", "--pathway="], "expected 0 or 1"),
+            (["input", "--pathway=2"], "expected 0 or 1"),
+            (["input", "--remove-hydrogens=yes"], "expected 0 or 1"),
+            (["input", "--verbose=2"], "expected 0 or 1"),
+            (["input", "--enum-max=0"], "expected an integer from 1"),
+            (["input", "--enum-max=12junk"], "non-negative integer"),
+            (["input", "--runtime=-1"], "non-negative integer"),
+            (["input", f"--runtime={'9' * 100}"], "non-negative integer"),
             (
                 ["input", "--pathway=0", "--pathway=1"],
-                "specified more than once",
+                "may be specified only once",
             ),
             (["first-input", "second-input"], "expected one INPUT"),
         ]
         if telemetry_supported:
             invalid_cases.append(
-                (["input", "--telemetry=2"], "expects 0 or 1")
+                (["input", "--telemetry=2"], "expected 0 or 1")
             )
         else:
             invalid_cases.append(
@@ -594,7 +594,7 @@ def run_cli_checks(executable: Path) -> int:
             completed,
         )
         require_cli(
-            "There are" not in completed.stdout and "Atom " not in completed.stdout,
+            "Graph:" not in completed.stdout and "  Atom " not in completed.stdout,
             "quiet mode should suppress the parsed graph dump",
             completed,
         )
@@ -611,9 +611,10 @@ def run_cli_checks(executable: Path) -> int:
             completed,
         )
         require_cli(
-            "Detecting 4 atoms and 3 bonds" in completed.stdout
-            and "There are 4 atoms" in completed.stdout
-            and "Atom 1" in completed.stdout,
+            "Input: input.mol" in completed.stdout
+            and "Molfile: 4 atoms, 3 bonds" in completed.stdout
+            and "Graph: 4 atoms, 3 bonds" in completed.stdout
+            and "  Atom 1 (C):" in completed.stdout,
             "--verbose=1 should print the input summary and parsed graph",
             completed,
         )
@@ -1809,72 +1810,78 @@ def print_summary(results: Sequence[TestResult]) -> None:
 
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build AssemblyCpp and run its regression manifest."
+        description="Run AssemblyCpp CLI and regression checks."
     )
     parser.add_argument(
         "executable",
         nargs="?",
         type=Path,
         default=DEFAULT_EXECUTABLE,
-        help=f"AssemblyCpp executable (default: {DEFAULT_EXECUTABLE})",
+        help=(
+            "AssemblyCpp executable "
+            f"(default: {DEFAULT_EXECUTABLE.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--manifest",
         type=Path,
         default=DEFAULT_MANIFEST,
-        help=f"tab-separated regression manifest (default: {DEFAULT_MANIFEST.name})",
+        help=(
+            "regression manifest (TSV; default: "
+            f"{DEFAULT_MANIFEST.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--pathway-manifest",
         type=Path,
         default=DEFAULT_PATHWAY_MANIFEST,
         help=(
-            "tab-separated pathway golden manifest "
-            f"(default: {DEFAULT_PATHWAY_MANIFEST.name})"
+            "pathway manifest (TSV; default: "
+            f"{DEFAULT_PATHWAY_MANIFEST.relative_to(REPOSITORY_ROOT)})"
         ),
     )
     parser.add_argument(
         "--audit",
         action="store_true",
-        help="validate the manifest and report fixture coverage without running tests",
+        help="check manifests and fixture coverage without running tests",
     )
     parser.add_argument(
         "--build",
         action="store_true",
-        help="compile v5/main.cpp for x86-64-v3 before running the tests",
+        help="build x86-64-v3 test executables before testing",
     )
     parser.add_argument(
         "--compiler",
         default=os.environ.get("CXX") or "c++",
-        help="compiler command used with --build (default: CXX or c++)",
+        help="compiler used by --build (uses $CXX, then c++)",
     )
     parser.add_argument(
         "--jobs",
         type=positive_int,
         default=1,
-        help="number of test processes to run concurrently (default: 1)",
+        help="parallel test processes (default: 1)",
     )
     parser.add_argument(
         "--limit",
         type=positive_int,
-        help="run only the first N cases",
+        help="run the first N regression cases",
     )
     parser.add_argument(
         "--pathways-only",
         action="store_true",
-        help="run only cases with expected pathway golden files",
+        help="select regression cases with pathway golden files",
     )
     parser.add_argument(
         "--timeout",
         type=positive_float,
         default=300.0,
-        help="per-case timeout in seconds (default: 300)",
+        help="timeout per case in seconds (default: 300)",
     )
     parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
-        help="print every passing test or list fixture-only molecules during an audit",
+        help="list passing checks; in audit mode, list fixture-only molecules",
     )
     return parser
 

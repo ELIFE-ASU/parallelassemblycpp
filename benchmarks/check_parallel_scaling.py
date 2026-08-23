@@ -1,4 +1,4 @@
-"""Report wall-time speedup and efficiency from paired parallel benchmarks."""
+"""Compare paired parallel benchmark speedup and efficiency."""
 
 from __future__ import annotations
 
@@ -231,13 +231,13 @@ def load_result(path: Path) -> dict[str, object]:
             document = json.load(stream)
     except (OSError, json.JSONDecodeError) as error:
         raise ScalingError(
-            f"could not read benchmark result {path}: {error}"
+            f"could not read benchmark report {path}: {error}"
         ) from error
     if not isinstance(document, dict):
-        raise ScalingError(f"invalid benchmark result {path}: expected an object")
+        raise ScalingError(f"invalid benchmark report {path}: expected an object")
     if document.get("schema_version") != 2:
         raise ScalingError(
-            f"invalid benchmark result {path}: expected schema_version 2"
+            f"invalid benchmark report {path}: expected schema_version 2"
         )
     return document
 
@@ -544,7 +544,7 @@ def regressions(results: Sequence[ScalingResult]) -> list[Regression]:
 
 
 def print_report(results: Sequence[ScalingResult]) -> list[Regression]:
-    print(f"Parallel scaling for suite {results[0].suite}")
+    print(f"Parallel scaling (suite: {results[0].suite})")
     print(f"Baseline SHA-256: {results[0].baseline_sha256}")
     print()
     print("Topology        Workers  Subject                     Speedup  Efficiency")
@@ -566,7 +566,7 @@ def print_report(results: Sequence[ScalingResult]) -> list[Regression]:
     failures = regressions(results)
     print()
     if failures:
-        print("Regressions (paired wall speedup <= 1.0x):")
+        print("Wall-time regressions (speedup <= 1.0x):")
         for failure in failures:
             print(
                 f"  {failure.label}/{failure.workers} case {failure.case_name}: "
@@ -574,28 +574,28 @@ def print_report(results: Sequence[ScalingResult]) -> list[Regression]:
                 f"({100 * failure.speedup / failure.workers:.1f}% efficiency)"
             )
     else:
-        print("No case wall regressions detected.")
+        print("No case wall-time regressions.")
     return failures
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Report paired wall-time speedup and parallel efficiency for one "
-            "suite across labelled worker topologies."
+            "Compare paired wall-time speedup and efficiency across parallel "
+            "configurations."
         )
     )
     parser.add_argument(
         "topologies",
         nargs="+",
         metavar="LABEL:WORKERS:PATH",
-        help="topology label, positive worker count, and paired schema-v2 report",
+        help="parallel configuration and paired v2 JSON report",
     )
     parser.add_argument(
         "--require-all-faster",
         "--require-every-case-faster",
         action="store_true",
-        help="fail when any case's paired wall speedup is at or below 1.0",
+        help="fail if any case has paired wall speedup <= 1.0",
     )
     return parser
 
@@ -612,13 +612,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
     failures = print_report(results)
     if parsed.require_all_faster:
         if failures:
-            print(f"FAIL: {len(failures)} case wall regression(s).")
+            noun = "regression" if len(failures) == 1 else "regressions"
+            print(f"FAIL: {len(failures)} case wall {noun}.")
             return 1
-        print("PASS: every case paired wall speedup exceeds 1.0x.")
+        print("PASS: all cases have paired wall speedup > 1.0x.")
     elif failures:
         print(
-            "REPORT ONLY: regressions do not affect exit status; use "
-            "--require-all-faster to enable the wall-time gate."
+            "REPORT ONLY: regressions do not change exit status. Use "
+            "--require-all-faster to enforce the gate."
         )
     return 0
 

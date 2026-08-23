@@ -798,7 +798,8 @@ void recordImprovedAssemblyIndex(
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
         if (verbose)
 #endif
-        cout << "time: " << time << " min AI found so far: " << AI << '\n';
+        cout << "Best assembly index: " << AI << " (" << time
+             << " clock ticks)\n";
     }
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
@@ -1351,7 +1352,7 @@ bool runImprovedAssemblySearch(
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     setSearchTelemetryPhase(SearchTelemetryPhase::output);
 #endif
-    // Keep the primary result line machine-readable even for partial searches.
+    // Append the numeric result even when the search stops at a limit.
     lastCalculatedAssemblyIndex = compensateDisjointAssemblyIndex(AI);
     ofs << lastCalculatedAssemblyIndex << '\n';
     if (runtimeLimitReached)

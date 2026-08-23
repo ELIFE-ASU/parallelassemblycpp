@@ -207,9 +207,10 @@ class PgoTrainingTests(unittest.TestCase):
                 working_directories.append(prepared.working_directory)
                 return benchmark.Measurement(0.1, 10, 7)
 
+            output = io.StringIO()
             with (
                 mock.patch.object(benchmark, "run_once", side_effect=fake_run_once),
-                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stdout(output),
             ):
                 completed = pgo_training.train(
                     Path("AssemblyCpp"), weighted, timeout=12.0
@@ -218,6 +219,8 @@ class PgoTrainingTests(unittest.TestCase):
             self.assertEqual(completed, 3)
             self.assertEqual(calls, ["one", "one", "two"])
             self.assertEqual(len(set(working_directories)), 3)
+            self.assertIn("Training one: 2 repetitions", output.getvalue())
+            self.assertIn("Training two: 1 repetition", output.getvalue())
 
     def test_main_requires_new_profile_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -291,7 +294,7 @@ class PgoTrainingTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertTrue((profiles / "fresh.gcda").is_file())
             self.assertTrue(keep.is_file())
-            self.assertIn("Training complete", stdout.getvalue())
+            self.assertIn("Training complete: 2862 repetitions", stdout.getvalue())
             completion = profiles / pgo_training.COMPLETION_FILENAME
             record = json.loads(completion.read_text(encoding="utf-8"))
             self.assertEqual(

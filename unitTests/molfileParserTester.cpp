@@ -117,8 +117,8 @@ int main(int argc, char **argv)
     cout.rdbuf(diagnostics.rdbuf());
     static_cast<void>(parse(validMolfile));
     cout.rdbuf(originalOutput);
-    assert(diagnostics.str().find("Detecting 5 atoms and 4 bonds") != string::npos);
-    assert(diagnostics.str().find("There are 5 atoms") != string::npos);
+    assert(diagnostics.str().find("Molfile: 5 atoms, 4 bonds") != string::npos);
+    assert(diagnostics.str().find("Graph: 5 atoms, 4 bonds") != string::npos);
 
     verbose = false;
     string invalidBond = validMolfile;
@@ -130,9 +130,11 @@ int main(int argc, char **argv)
     {
         static_cast<void>(parse(invalidBond));
     }
-    catch (const runtime_error &)
+    catch (const runtime_error &error)
     {
-        rejected = true;
+        rejected = string(error.what()).find(
+            "bond endpoint is outside the atom range"
+        ) != string::npos;
     }
     assert(rejected);
 
@@ -145,9 +147,26 @@ int main(int argc, char **argv)
     {
         static_cast<void>(parse(selfBond));
     }
-    catch (const runtime_error &)
+    catch (const runtime_error &error)
     {
-        rejected = true;
+        rejected = string(error.what()).find("self-loop") != string::npos;
+    }
+    assert(rejected);
+
+    string negativeBondOrder = validMolfile;
+    const size_t negativeBondPosition = negativeBondOrder.find("  4  5  1");
+    assert(negativeBondPosition != string::npos);
+    negativeBondOrder.replace(negativeBondPosition, 9, "  4  5 -1");
+    rejected = false;
+    try
+    {
+        static_cast<void>(parse(negativeBondOrder));
+    }
+    catch (const runtime_error &error)
+    {
+        rejected = string(error.what()).find(
+            "bond order must be nonnegative"
+        ) != string::npos;
     }
     assert(rejected);
 

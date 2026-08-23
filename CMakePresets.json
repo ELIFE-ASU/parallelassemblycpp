@@ -17,8 +17,8 @@
     },
     {
       "name": "dev",
-      "displayName": "Developer build",
-      "description": "Portable optimized build with focused tests and telemetry",
+      "displayName": "Developer",
+      "description": "Portable build with focused tests and telemetry",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
@@ -29,8 +29,8 @@
     },
     {
       "name": "ci",
-      "displayName": "Continuous integration build",
-      "description": "Portable release build with the complete regression suite",
+      "displayName": "CI",
+      "description": "Portable release with full regression tests",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -42,7 +42,7 @@
     {
       "name": "release",
       "displayName": "Portable release",
-      "description": "Portable release build used for installation and packaging",
+      "description": "Portable install and package build",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -53,8 +53,8 @@
     },
     {
       "name": "performance",
-      "displayName": "x86-64-v3 performance build",
-      "description": "Optimized x86-64-v3 executables with a telemetry sibling",
+      "displayName": "x86-64-v3 performance",
+      "description": "Optimized build with telemetry",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -65,8 +65,8 @@
     },
     {
       "name": "performance-lto",
-      "displayName": "x86-64-v3 LTO performance build",
-      "description": "Opt-in x86-64-v3 performance build with link-time optimization",
+      "displayName": "x86-64-v3 LTO",
+      "description": "Performance build with link-time optimization",
       "inherits": "performance",
       "cacheVariables": {
         "ASSEMBLYCPP_ENABLE_LTO": true
@@ -74,8 +74,8 @@
     },
     {
       "name": "parallel",
-      "displayName": "x86-64-v3 OpenMP, MPI, and hybrid experiments",
-      "description": "Opt-in parallel search executables for scaling experiments",
+      "displayName": "Parallel experiments",
+      "description": "OpenMP, MPI, and hybrid scaling builds",
       "inherits": "performance",
       "cacheVariables": {
         "ASSEMBLYCPP_BUILD_OPENMP": true,
@@ -85,8 +85,8 @@
     },
     {
       "name": "pgo-generate",
-      "displayName": "x86-64-v3 PGO training build",
-      "description": "Instrumented GCC build for weighted-corpus profile generation",
+      "displayName": "PGO training",
+      "description": "GCC-instrumented profile generation build",
       "inherits": "performance",
       "cacheVariables": {
         "ASSEMBLYCPP_ENABLE_LTO": true,
@@ -96,8 +96,8 @@
     },
     {
       "name": "performance-pgo",
-      "displayName": "x86-64-v3 PGO and LTO performance build",
-      "description": "Opt-in GCC profile-use build from the weighted benchmark corpus",
+      "displayName": "x86-64-v3 PGO and LTO",
+      "description": "GCC profile-use build with LTO",
       "inherits": "performance",
       "cacheVariables": {
         "ASSEMBLYCPP_ENABLE_LTO": true,

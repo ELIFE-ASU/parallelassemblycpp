@@ -90,12 +90,7 @@ constexpr int ceilLog2(int value)
 #include "ioflag.h"
 #include "help.h"
 
-/**
- * @brief Function to write out intermediate MAs before the calculation has terminated
- * 
- * @param filename output filename
- * @return true if the complete output was written successfully.
- */
+/** Write the improved assembly indices recorded during the search. */
 bool writeoutIntermediateMAs(const string &filename)
 {
     ofstream ofs(filename);
@@ -140,7 +135,7 @@ bool loadMoleculeInput(
     {
         if (molfile.is_open())
         {
-            if (verbose) cout << "opening " << molfileName << '\n';
+            if (verbose) cout << "Input: " << molfileName << '\n';
             molfileParser(molfile, molGraphOutput);
             return true;
         }
@@ -149,7 +144,7 @@ bool loadMoleculeInput(
             ifstream graphFile(input);
             if (graphFile.is_open())
             {
-                if (verbose) cout << "opening " << input << '\n';
+                if (verbose) cout << "Input: " << input << '\n';
                 graphio(graphFile, molGraphOutput);
                 return true;
             }
@@ -162,7 +157,8 @@ bool loadMoleculeInput(
     }
     catch (const std::exception &exception)
     {
-        error = "could not parse '" + input + "': " + exception.what();
+        const string &parsedName = molfile.is_open() ? molfileName : input;
+        error = "could not parse '" + parsedName + "': " + exception.what();
         return false;
     }
 }
@@ -521,7 +517,7 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
         }
         catch (const std::exception &exception)
         {
-            cerr << "error: serial MPI-root search failed: "
+            cerr << "error: search failed on the root MPI rank: "
                  << exception.what() << '\n';
             succeeded = 0;
         }
@@ -575,7 +571,8 @@ bool assemblyCalculator(const string &input)
     {
         if (isPrimaryProcess())
         {
-            if (inputError.empty()) inputError = "input failed on another MPI rank";
+            if (inputError.empty())
+                inputError = "another MPI rank could not load the input";
             cerr << "error: " << inputError << '\n';
         }
         return false;
@@ -726,7 +723,7 @@ assemblycpp::CalculationResult calculateLoadedMolecule(
     result.runtimeLimitReached = runtimeLimitReached;
     result.enumerationLimitReached = enumerationLimitReached;
     if (!result.succeeded)
-        result.error = "the requested calculation output could not be produced";
+        result.error = "calculation did not produce a result";
     return result;
 }
 
@@ -736,7 +733,7 @@ bool validLibraryOptions(
 )
 {
     if (options.enumerationLimit >= 1) return true;
-    error = "enumerationLimit must be at least one";
+    error = "enumerationLimit must be at least 1";
     return false;
 }
 
@@ -808,12 +805,7 @@ std::vector<assemblycpp::CalculationResult> assemblycpp::calculateBatch(
 #endif
 
 #ifndef ASSEMBLYCPP_LIBRARY_BUILD
-/**
- * @brief Memory usage tracker, works for linux only
- * 
- * @param outputFilename output filename
- * @return true if VmPeak was read and the complete report was written.
- */
+/** Write Linux VmPeak memory usage to a file. */
 bool maxMemoryUsage(const string& outputFilename)
 {
     const string statusFilename = "/proc/self/status";

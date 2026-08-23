@@ -948,7 +948,10 @@ class BenchmarkTests(unittest.TestCase):
                 )
 
             self.assertEqual(status, 0)
-            self.assertIn("Comparison summary", output.getvalue())
+            self.assertIn(
+                "Comparison (speedup > 1.0 = candidate faster)",
+                output.getvalue(),
+            )
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["schema_version"], 2)
             self.assertEqual(

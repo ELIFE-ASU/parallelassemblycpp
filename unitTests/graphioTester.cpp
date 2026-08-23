@@ -154,17 +154,17 @@ int main()
     );
     expectRejected(
         "bad count\n2 3\n\nC C\n\n",
-        "exactly one integer"
+        "must contain one integer"
     );
     expectRejected(
         "bad count\n-1\n\n\n\n",
-        "short-index range"
+        "graph size must be between 0 and"
     );
     expectRejected(
         "bad count\n" +
             to_string(static_cast<long long>(numeric_limits<short>::max()) + 1) +
             "\n\n\n\n",
-        "short-index range"
+        "graph size must be between 0 and"
     );
     expectRejected(
         "odd endpoints\n2\n1\nC C\n1\n",
@@ -192,17 +192,17 @@ int main()
     );
     expectRejected(
         "extra type\n2\n1 2\nC C\n1 2\n",
-        "expected 1 bond labels, found 2"
+        "expected 1 bond label, found 2"
     );
     expectRejected(
         "negative type\n2\n1 2\nC C\n-1\n",
-        "nonnegative short range"
+        "bond label must be between 0 and"
     );
     expectRejected(
         "wide type\n2\n1 2\nC C\n" +
             to_string(static_cast<long long>(numeric_limits<short>::max()) + 1) +
             "\n",
-        "nonnegative short range"
+        "bond label must be between 0 and"
     );
     expectRejected(
         "invalid type\n2\n1 2\nC C\n1.5\n",

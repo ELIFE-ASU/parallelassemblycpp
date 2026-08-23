@@ -1,4 +1,4 @@
-"""Validate paired benchmark JSON files as an optimization promotion gate."""
+"""Check paired benchmark reports before promoting an optimization."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class GateFailure:
 
 
 class GateError(RuntimeError):
-    """Raised when benchmark results cannot be evaluated safely."""
+    """Raised when benchmark reports cannot be evaluated safely."""
 
 
 MINIMUM_RUNS = {
@@ -109,12 +109,12 @@ def load_result(path: Path) -> dict[str, object]:
         with path.expanduser().open(encoding="utf-8") as stream:
             document = json.load(stream)
     except (OSError, json.JSONDecodeError) as error:
-        raise GateError(f"could not read benchmark result {path}: {error}") from error
+        raise GateError(f"could not read benchmark report {path}: {error}") from error
     if not isinstance(document, dict):
-        raise GateError(f"invalid benchmark result {path}: expected a JSON object")
+        raise GateError(f"invalid benchmark report {path}: expected a JSON object")
     if document.get("schema_version") != 2:
         raise GateError(
-            f"invalid benchmark result {path}: expected schema_version 2"
+            f"invalid benchmark report {path}: expected schema_version 2"
         )
     return document
 
@@ -329,17 +329,17 @@ def evaluate_results(
             or current_baseline_execution != baseline_execution
         ):
             raise GateError(
-                "all suite results must use the same candidate and baseline binary "
+                "all reports must use the same candidate and baseline binary "
                 "and execution configurations"
             )
         documents[suite] = (path, document, runs)
 
     missing_suites = [suite for suite in benchmark.KNOWN_SUITES if suite not in documents]
     if missing_suites:
-        raise GateError(f"missing benchmark suite result(s): {', '.join(missing_suites)}")
+        raise GateError(f"missing benchmark suites: {', '.join(missing_suites)}")
     if candidate_hash == baseline_hash and candidate_execution == baseline_execution:
         raise GateError(
-            "candidate and baseline binary/execution identities must be different"
+            "candidate and baseline binary/execution identities must differ"
         )
 
     failures: list[GateFailure] = []
@@ -467,21 +467,21 @@ def threshold_value(value: str) -> float:
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Require every maintained benchmark case and suite aggregate to be "
-            "faster in paired schema-v2 JSON results."
+            "Fail unless every benchmark case and suite aggregate is faster "
+            "in paired v2 reports."
         )
     )
     parser.add_argument(
         "results",
         type=Path,
         nargs="+",
-        help="one paired JSON result for each of quick, full, profile, and scaling",
+        help="paired JSON reports for quick, full, profile, and scaling",
     )
     parser.add_argument(
         "--threshold",
         type=threshold_value,
         default=1.0,
-        help="speedup medians must be strictly greater than this value (default: 1)",
+        help="require every median to exceed this value (default: 1)",
     )
     return parser
 
@@ -503,8 +503,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(
-        "PASS: every case clock median and every suite round-total wall/clock "
-        f"median exceeds {arguments.threshold:.6f}"
+        "PASS: all case clock medians and suite wall/clock medians exceed "
+        f"{arguments.threshold:.6f}"
     )
     return 0
 
