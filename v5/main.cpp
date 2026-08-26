@@ -202,6 +202,84 @@ size_t parallelMinimumBonds()
     return result;
 }
 
+bool configuredParallelBranchLeaseSize(size_t &leaseSize)
+{
+    constexpr size_t defaultLeaseSize = 4;
+    const char *configured = std::getenv("ASSEMBLYCPP_BRANCH_LEASE_SIZE");
+    uint64_t parsedLeaseSize = defaultLeaseSize;
+    bool valid = true;
+    if (configured != nullptr && *configured != '\0')
+    {
+        const char *end = configured + std::char_traits<char>::length(configured);
+        const auto parsed = std::from_chars(
+            configured,
+            end,
+            parsedLeaseSize
+        );
+        valid =
+            parsed.ec == std::errc() &&
+            parsed.ptr == end &&
+            parsedLeaseSize > 0 &&
+            parsedLeaseSize <= std::numeric_limits<size_t>::max();
+    }
+    else if (configured != nullptr) valid = false;
+
+#if defined(ASSEMBLYCPP_USE_MPI)
+    const int localValid = valid ? 1 : 0;
+    int allValid = localValid;
+    MPI_Allreduce(
+        &localValid,
+        &allValid,
+        1,
+        MPI_INT,
+        MPI_MIN,
+        MPI_COMM_WORLD
+    );
+    if (allValid == 0)
+    {
+        if (isPrimaryProcess())
+            cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
+                    "integer on every MPI rank\n";
+        return false;
+    }
+    uint64_t minimumLeaseSize = parsedLeaseSize;
+    uint64_t maximumLeaseSize = parsedLeaseSize;
+    MPI_Allreduce(
+        &parsedLeaseSize,
+        &minimumLeaseSize,
+        1,
+        MPI_UINT64_T,
+        MPI_MIN,
+        MPI_COMM_WORLD
+    );
+    MPI_Allreduce(
+        &parsedLeaseSize,
+        &maximumLeaseSize,
+        1,
+        MPI_UINT64_T,
+        MPI_MAX,
+        MPI_COMM_WORLD
+    );
+    if (minimumLeaseSize != maximumLeaseSize)
+    {
+        if (isPrimaryProcess())
+            cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must have the same "
+                    "value on every MPI rank\n";
+        return false;
+    }
+    parsedLeaseSize = minimumLeaseSize;
+#else
+    if (!valid)
+    {
+        cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
+                "integer\n";
+        return false;
+    }
+#endif
+    leaseSize = static_cast<size_t>(parsedLeaseSize);
+    return true;
+}
+
 int localParallelThreadCount()
 {
 #if defined(ASSEMBLYCPP_USE_OPENMP)
@@ -326,35 +404,29 @@ bool mpiGraphsAgree(const molGraph &graph)
 
 bool runParallelSearch(molGraph &graph, ofstream &output)
 {
+    size_t branchLeaseSize = 1;
+    if (!configuredParallelBranchLeaseSize(branchLeaseSize)) return false;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     const uint64_t parallelStartedNanoseconds = searchTelemetryEnabled
         ? searchTelemetryWallNanoseconds()
         : 0;
 #endif
     const int localThreads = localParallelThreadCount();
-    int shardOffset = 0;
-    int totalShards = localThreads;
+    int globalWorkerOffset = 0;
 #if defined(ASSEMBLYCPP_USE_MPI)
     MPI_Exscan(
         &localThreads,
-        &shardOffset,
+        &globalWorkerOffset,
         1,
         MPI_INT,
         MPI_SUM,
         MPI_COMM_WORLD
     );
-    if (assemblyCppMpiRank == 0) shardOffset = 0;
-    MPI_Allreduce(
-        &localThreads,
-        &totalShards,
-        1,
-        MPI_INT,
-        MPI_SUM,
-        MPI_COMM_WORLD
-    );
+    if (assemblyCppMpiRank == 0) globalWorkerOffset = 0;
 #endif
 
     std::atomic<int> processBest(std::numeric_limits<int>::max());
+    std::atomic<size_t> branchLeaseCursor(0);
     vector<ParallelReplicaResult> replicas(
         static_cast<size_t>(localThreads)
     );
@@ -363,8 +435,15 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     {
         ParallelReplicaResult &result = replicas[threadIndex];
         result.started = true;
-        searchShardIndex = static_cast<size_t>(shardOffset + threadIndex);
-        searchShardCount = static_cast<size_t>(totalShards);
+#if defined(ASSEMBLYCPP_USE_MPI)
+        searchRankPartitionIndex = static_cast<size_t>(assemblyCppMpiRank);
+        searchRankPartitionCount = static_cast<size_t>(assemblyCppMpiSize);
+#else
+        searchRankPartitionIndex = 0;
+        searchRankPartitionCount = 1;
+#endif
+        searchBranchLeaseSize = branchLeaseSize;
+        sharedBranchLeaseCursor = &branchLeaseCursor;
         sharedAssemblyIndex = &processBest;
         suppressSearchOutput = true;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -410,18 +489,25 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                 0,
 #endif
                 static_cast<uint64_t>(threadIndex),
-                static_cast<uint64_t>(shardOffset + threadIndex),
-                static_cast<uint64_t>(searchShardIndex),
-                static_cast<uint64_t>(searchShardCount),
-                static_cast<uint64_t>(searchShardBranchOrdinal),
+                static_cast<uint64_t>(globalWorkerOffset + threadIndex),
+                static_cast<uint64_t>(searchRankPartitionIndex),
+                static_cast<uint64_t>(searchRankPartitionCount),
+                static_cast<uint64_t>(searchRootBranchOrdinal),
+                static_cast<uint64_t>(searchBranchLeaseCount),
+                static_cast<uint64_t>(searchBranchAssignmentCount),
                 workerElapsedNanoseconds
             );
         }
 #endif
+        sharedBranchLeaseCursor = nullptr;
         sharedAssemblyIndex = nullptr;
         suppressSearchOutput = false;
-        searchShardIndex = 0;
-        searchShardCount = 1;
+        searchRankPartitionIndex = 0;
+        searchRankPartitionCount = 1;
+        searchRootBranchOrdinal = 0;
+        searchBranchLeaseSize = 1;
+        searchBranchLeaseCount = 0;
+        searchBranchAssignmentCount = 0;
     };
 
 #if defined(ASSEMBLYCPP_USE_OPENMP)
@@ -600,6 +686,7 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                 parallelMode,
                 aggregationScope,
                 rankCount,
+                static_cast<uint64_t>(branchLeaseSize),
                 globalParallelElapsedNanoseconds,
                 globalSucceeded != 0 &&
                     globalRuntimeLimit == 0 &&

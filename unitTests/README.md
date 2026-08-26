@@ -25,8 +25,10 @@ ctest --preset parallel-tests
 
 The parallel harness repeats serial/OpenMP calculations across 1, 2, and 4
 workers, including the 63/64/65 and 127/128/129 edge-mask boundaries and a
-disconnected molecule. When MPI targets are available, the same harness also
-checks all-rank aggregation for MPI and hybrid telemetry.
+disconnected molecule. It exercises both one-branch and chunked dynamic leases.
+When MPI targets are available, the same harness also checks rank-partitioned
+MPI and hybrid aggregation, exact lease reductions, and complete branch
+coverage.
 
 Run the Python harness directly when selecting cases or controlling parallelism:
 

@@ -23,6 +23,7 @@ REPOSITORY_ROOT = TEST_DIRECTORY.parent
 DEFAULT_MANIFEST = REPOSITORY_ROOT / "benchmarks" / "cases.tsv"
 SKIP_RETURN_CODE = 77
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
+DEFAULT_BRANCH_LEASE_SIZE = 4
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class ParallelTarget:
     topology: ParallelTopology
     mpiexec: Path | None = None
     numproc_flag: str = "-n"
+    branch_lease_size: int | None = None
 
 
 PARITY_CASES = (
@@ -260,11 +262,17 @@ def run_solver(
     topology: ParallelTopology | None = None,
     mpiexec: Path | None = None,
     numproc_flag: str = "-n",
+    branch_lease_size: int | None = None,
     telemetry: bool = False,
 ) -> tuple[int, dict[str, Any] | None]:
     environment = os.environ.copy()
     if topology is not None:
         environment["ASSEMBLYCPP_PARALLEL_MIN_BONDS"] = "0"
+        # A default-mode test must not inherit a developer's local override.
+        environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
+        if branch_lease_size is not None:
+            require(branch_lease_size > 0, "branch lease size must be positive")
+            environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(branch_lease_size)
     if topology is not None and topology.mode in {"openmp", "hybrid"}:
         require(
             len(set(topology.threads_per_rank)) == 1,
@@ -400,10 +408,17 @@ def validate_counter_sum(
         )
 
 
+def modulo_partition_size(total: int, index: int, count: int) -> int:
+    if total <= index:
+        return 0
+    return 1 + (total - 1 - index) // count
+
+
 def validate_parallel_telemetry(
     document: Mapping[str, Any],
     case: SolverCase,
     topology: ParallelTopology,
+    expected_lease_size: int | None = None,
 ) -> None:
     requested_workers = topology.worker_count
     prefix = f"{case.name} ({topology.description})"
@@ -429,14 +444,37 @@ def validate_parallel_telemetry(
         parallel.get("branch_scan_complete") is True,
         f"{prefix}: parallel.branch_scan_complete must be true",
     )
-    shard_ownership = require_mapping(
-        parallel.get("shard_ownership"), f"{prefix}: parallel.shard_ownership"
+    branch_scheduler = require_mapping(
+        parallel.get("branch_scheduler"), f"{prefix}: parallel.branch_scheduler"
     )
     require(
-        shard_ownership.get("strategy") == "root_branch_ordinal_modulo_worker_count"
-        and shard_ownership.get("complete") is True
-        and shard_ownership.get("shard_count") == requested_workers,
-        f"{prefix}: parallel.shard_ownership is inconsistent",
+        "shard_ownership" not in parallel,
+        f"{prefix}: legacy static shard ownership must be absent",
+    )
+    require(
+        branch_scheduler.get("strategy")
+        == "dynamic_leases_with_static_mpi_rank_partition",
+        f"{prefix}: parallel.branch_scheduler.strategy is incorrect",
+    )
+    lease_size = require_nonnegative_integer(
+        branch_scheduler.get("lease_size"),
+        f"{prefix}: parallel.branch_scheduler.lease_size",
+    )
+    require(lease_size > 0, f"{prefix}: branch lease size must be positive")
+    if expected_lease_size is not None:
+        require(
+            lease_size == expected_lease_size,
+            f"{prefix}: branch lease size {lease_size} does not match requested "
+            f"size {expected_lease_size}",
+        )
+    require(
+        branch_scheduler.get("rank_partition_count") == topology.rank_count,
+        f"{prefix}: branch scheduler rank partition count must be "
+        f"{topology.rank_count}",
+    )
+    require(
+        branch_scheduler.get("complete") is True,
+        f"{prefix}: parallel.branch_scheduler.complete must be true",
     )
 
     require(
@@ -468,7 +506,7 @@ def validate_parallel_telemetry(
     )
 
     global_indices: list[int] = []
-    shard_indices: list[int] = []
+    worker_ranks: list[int] = []
     rank_local_indices = [set() for _ in range(topology.rank_count)]
     rank_offsets: list[int] = []
     offset = 0
@@ -494,23 +532,19 @@ def validate_parallel_telemetry(
             f"{worker_path}: rank/local/global index mismatch",
         )
         rank_local_indices[rank].add(local_index)
+        worker_ranks.append(rank)
         global_indices.append(global_index)
-        shard = require_mapping(worker.get("shard"), f"{worker_path}.shard")
-        shard_index = require_nonnegative_integer(
-            shard.get("index"), f"{worker_path}.shard.index"
-        )
-        shard_count = require_nonnegative_integer(
-            shard.get("count"), f"{worker_path}.shard.count"
+        rank_partition = require_mapping(
+            worker.get("rank_partition"), f"{worker_path}.rank_partition"
         )
         require(
-            shard_count == requested_workers,
-            f"{worker_path}.shard.count must be {requested_workers}",
+            rank_partition.get("index") == rank,
+            f"{worker_path}: rank partition index must equal rank",
         )
         require(
-            shard_index == global_index,
-            f"{worker_path}: shard index must equal global worker index",
+            rank_partition.get("count") == topology.rank_count,
+            f"{worker_path}.rank_partition.count must be {topology.rank_count}",
         )
-        shard_indices.append(shard_index)
 
         processed = require_mapping(
             worker.get("processed_graph"), f"{worker_path}.processed_graph"
@@ -527,10 +561,6 @@ def validate_parallel_telemetry(
     require(
         sorted(global_indices) == expected_indices,
         f"{prefix}: global worker indices are not contiguous",
-    )
-    require(
-        sorted(shard_indices) == expected_indices,
-        f"{prefix}: shard ownership is not one-to-one",
     )
     for rank, local_indices in enumerate(rank_local_indices):
         require(
@@ -550,7 +580,9 @@ def validate_parallel_telemetry(
     )
 
     worker_branch_candidates: list[int] = []
+    branch_leases = 0
     branch_assignments = 0
+    assignments_per_rank = [0 for _ in range(topology.rank_count)]
     worker_elapsed = 0
     worker_busy = 0
     maximum_worker_elapsed = 0
@@ -562,11 +594,21 @@ def validate_parallel_telemetry(
         assignments = require_nonnegative_integer(
             worker.get("branch_assignments"), f"{worker_path}.branch_assignments"
         )
+        leases = require_nonnegative_integer(
+            worker.get("branch_leases"), f"{worker_path}.branch_leases"
+        )
         require(
             assignments <= candidates, f"{worker_path}: assignments exceed candidates"
         )
+        require(
+            (assignments == 0 and leases == 0)
+            or (assignments > 0 and 0 < leases <= assignments <= leases * lease_size),
+            f"{worker_path}: utilized lease count is inconsistent with assignments",
+        )
         worker_branch_candidates.append(candidates)
+        branch_leases += leases
         branch_assignments += assignments
+        assignments_per_rank[worker_ranks[index]] += assignments
         elapsed = require_nonnegative_integer(
             worker.get("elapsed_nanoseconds"), f"{worker_path}.elapsed_nanoseconds"
         )
@@ -586,6 +628,10 @@ def validate_parallel_telemetry(
         aggregate.get("branch_assignments"),
         f"{prefix}: parallel.aggregate.branch_assignments",
     )
+    aggregate_leases = require_nonnegative_integer(
+        aggregate.get("branch_leases"),
+        f"{prefix}: parallel.aggregate.branch_leases",
+    )
     require(
         len(set(worker_branch_candidates)) == 1
         and aggregate_candidates == worker_branch_candidates[0],
@@ -595,11 +641,24 @@ def validate_parallel_telemetry(
         aggregate_assignments == branch_assignments,
         f"{prefix}: aggregate branch assignment total is incorrect",
     )
+    require(
+        aggregate_leases == branch_leases,
+        f"{prefix}: aggregate utilized lease total is incorrect",
+    )
     require(aggregate_assignments > 0, f"{prefix}: no branch was assigned")
     require(
         aggregate_assignments == aggregate_candidates,
         f"{prefix}: complete branch scan did not assign every candidate",
     )
+    for rank, assignments in enumerate(assignments_per_rank):
+        expected_assignments = modulo_partition_size(
+            aggregate_candidates, rank, topology.rank_count
+        )
+        require(
+            assignments == expected_assignments,
+            f"{prefix}: rank {rank} assigned {assignments} branches, expected "
+            f"{expected_assignments} from its static rank partition",
+        )
     aggregate_elapsed = require_nonnegative_integer(
         aggregate.get("elapsed_nanoseconds"),
         f"{prefix}: parallel.aggregate.elapsed_nanoseconds",
@@ -664,7 +723,56 @@ def run_parity_suite(
             f"{case.name}: serial/OpenMP index mismatch: {observed}",
         )
         print(f"PASS parity {case.name}: index {case.expected_index}")
+    runs += run_invalid_lease_configuration_suite(openmp, cases[0], timeout)
     return runs
+
+
+def run_invalid_lease_configuration_suite(
+    openmp: Path,
+    case: SolverCase,
+    timeout: float,
+) -> int:
+    invalid_values = ("0", "", "nonnumeric")
+    for value in invalid_values:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "OMP_NUM_THREADS": "2",
+                "OMP_THREAD_LIMIT": "2",
+                "OMP_DYNAMIC": "FALSE",
+                "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0",
+                "ASSEMBLYCPP_BRANCH_LEASE_SIZE": value,
+            }
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="assemblycpp-invalid-lease-"
+        ) as temporary:
+            working_directory = Path(temporary)
+            input_name = "input.mol" if case.source.suffix == ".mol" else "input"
+            shutil.copy2(case.source, working_directory / input_name)
+            try:
+                completed = run_command(
+                    [str(openmp), input_name, "--pathway=0"],
+                    working_directory,
+                    environment,
+                    timeout,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise TestFailure(
+                    f"invalid branch lease size {value!r} exceeded {timeout:g}s"
+                ) from error
+        display_value = repr(value)
+        require(
+            completed.returncode != 0,
+            f"invalid branch lease size {display_value} was accepted",
+        )
+        require(
+            "ASSEMBLYCPP_BRANCH_LEASE_SIZE" in completed.stderr,
+            f"invalid branch lease size {display_value} did not name its "
+            "environment variable in stderr",
+        )
+    print("PASS configuration: rejected lease sizes 0, empty, and nonnumeric")
+    return len(invalid_values)
 
 
 def run_distributed_parity_suite(
@@ -683,6 +791,7 @@ def run_distributed_parity_suite(
             topology=target.topology,
             mpiexec=target.mpiexec,
             numproc_flag=target.numproc_flag,
+            branch_lease_size=target.branch_lease_size,
         )
         runs += 2
         require(
@@ -716,31 +825,44 @@ def run_telemetry_suite(
         )
         for workers in (2, 4):
             topology = ParallelTopology("openmp", (workers,))
-            indices: list[int] = []
-            for _ in range(repetitions):
-                index, document = run_solver(
-                    telemetry_openmp,
-                    case,
-                    timeout,
-                    topology=topology,
-                    telemetry=True,
-                )
-                runs += 1
+            for lease_size in (1, DEFAULT_BRANCH_LEASE_SIZE):
+                indices: list[int] = []
+                for _ in range(repetitions):
+                    index, document = run_solver(
+                        telemetry_openmp,
+                        case,
+                        timeout,
+                        topology=topology,
+                        branch_lease_size=lease_size,
+                        telemetry=True,
+                    )
+                    runs += 1
+                    require(
+                        document is not None,
+                        f"{case.name}: telemetry document is absent",
+                    )
+                    require(
+                        index == serial_index,
+                        f"{case.name}: {workers}-worker/lease-{lease_size} "
+                        f"telemetry index {index} does not match serial index "
+                        f"{serial_index}",
+                    )
+                    validate_parallel_telemetry(
+                        document,
+                        case,
+                        topology,
+                        expected_lease_size=lease_size,
+                    )
+                    indices.append(index)
                 require(
-                    document is not None, f"{case.name}: telemetry document is absent"
+                    len(set(indices)) == 1,
+                    f"{case.name}: repeated {workers}-worker/lease-{lease_size} "
+                    f"telemetry runs returned {indices}",
                 )
-                require(
-                    index == serial_index,
-                    f"{case.name}: {workers}-worker telemetry index {index} "
-                    f"does not match serial index {serial_index}",
-                )
-                validate_parallel_telemetry(document, case, topology)
-                indices.append(index)
-            require(
-                len(set(indices)) == 1,
-                f"{case.name}: repeated {workers}-worker telemetry runs returned {indices}",
-            )
-        print(f"PASS telemetry {case.name}: 2/4-worker reductions and index parity")
+        print(
+            f"PASS telemetry {case.name}: 2/4-worker lease-1/4 reductions "
+            "and index parity"
+        )
     return runs
 
 
@@ -761,6 +883,7 @@ def run_distributed_telemetry_suite(
             topology=target.topology,
             mpiexec=target.mpiexec,
             numproc_flag=target.numproc_flag,
+            branch_lease_size=target.branch_lease_size,
             telemetry=True,
         )
         runs += 2
@@ -774,7 +897,16 @@ def run_distributed_telemetry_suite(
             f"match serial index {serial_index}",
         )
         require(document is not None, f"{case.name}: telemetry document is absent")
-        validate_parallel_telemetry(document, case, target.topology)
+        validate_parallel_telemetry(
+            document,
+            case,
+            target.topology,
+            expected_lease_size=(
+                target.branch_lease_size
+                if target.branch_lease_size is not None
+                else DEFAULT_BRANCH_LEASE_SIZE
+            ),
+        )
         print(f"PASS telemetry {case.name}: {target.label} reduction and index parity")
     return runs
 

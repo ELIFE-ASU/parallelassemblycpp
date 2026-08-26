@@ -304,6 +304,54 @@ class BenchmarkTests(unittest.TestCase):
             ):
                 phase[name] = None
 
+    def add_valid_dynamic_parallel_telemetry(
+        self,
+        telemetry: dict[str, object],
+        mode: str = "openmp",
+    ) -> None:
+        self.add_valid_parallel_telemetry(telemetry)
+        parallel = telemetry["parallel"]
+        assert isinstance(parallel, dict)
+        del parallel["shard_ownership"]
+        parallel["branch_scheduler"] = {
+            "strategy": "dynamic_leases_with_static_mpi_rank_partition",
+            "lease_size": 2,
+            "rank_partition_count": 1 if mode == "openmp" else 2,
+            "complete": True,
+        }
+        aggregate = parallel["aggregate"]
+        workers = parallel["workers"]
+        assert isinstance(aggregate, dict)
+        assert isinstance(workers, list)
+        aggregate["branch_leases"] = 2
+
+        if mode == "openmp":
+            ranks = (0, 0)
+            local_worker_indexes = (0, 1)
+            rank_count = 1
+        else:
+            parallel["mode"] = mode
+            parallel["aggregation_scope"] = "all_mpi_ranks"
+            parallel["rank_count"] = 2
+            parallel["local_threads"] = 1
+            parallel["local_threads_per_rank"] = [1, 1]
+            ranks = (0, 1)
+            local_worker_indexes = (0, 0)
+            rank_count = 2
+
+        for worker, rank, local_worker_index in zip(
+            workers,
+            ranks,
+            local_worker_indexes,
+            strict=True,
+        ):
+            assert isinstance(worker, dict)
+            del worker["shard"]
+            worker["rank"] = rank
+            worker["local_worker_index"] = local_worker_index
+            worker["rank_partition"] = {"index": rank, "count": rank_count}
+            worker["branch_leases"] = 1
+
     def create_forwarding_launcher(self, directory: Path) -> Path:
         launcher = directory / "forwarding launcher"
         launcher.write_text(
@@ -1199,6 +1247,157 @@ class BenchmarkTests(unittest.TestCase):
                 )
             self.assertIn("Parallel worker telemetry", summary_output.getvalue())
             self.assertIn("openmp:2w", summary_output.getvalue())
+
+            dynamic_telemetry = json.loads(json.dumps(telemetry))
+            self.add_valid_dynamic_parallel_telemetry(dynamic_telemetry)
+            dynamic_path = directory / "parallel-dynamic-openmp.json"
+            dynamic_path.write_text(
+                json.dumps(dynamic_telemetry),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(dynamic_path)
+            self.assertNotIn("shard_ownership", parsed["parallel"])
+            self.assertEqual(
+                parsed["parallel"]["branch_scheduler"]["lease_size"],
+                2,
+            )
+            self.assertEqual(parsed["parallel"]["aggregate"]["branch_leases"], 2)
+
+            mpi_dynamic_telemetry = json.loads(json.dumps(telemetry))
+            self.add_valid_dynamic_parallel_telemetry(
+                mpi_dynamic_telemetry,
+                mode="mpi",
+            )
+            mpi_dynamic_path = directory / "parallel-dynamic-mpi.json"
+            mpi_dynamic_path.write_text(
+                json.dumps(mpi_dynamic_telemetry),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(mpi_dynamic_path)
+            self.assertEqual(parsed["parallel"]["rank_count"], 2)
+            self.assertEqual(
+                [
+                    worker["rank_partition"]["index"]
+                    for worker in parsed["parallel"]["workers"]
+                ],
+                [0, 1],
+            )
+
+            redistributed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
+            redistributed_dynamic["parallel"]["workers"][0][
+                "branch_assignments"
+            ] = 2
+            redistributed_dynamic["parallel"]["workers"][1][
+                "branch_assignments"
+            ] = 0
+            redistributed_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
+            redistributed_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
+            redistributed_path = directory / "parallel-dynamic-rank-redistribution.json"
+            redistributed_path.write_text(
+                json.dumps(redistributed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "rank 0 branch assignments do not match partition",
+            ):
+                benchmark.parse_search_telemetry(redistributed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["branch_scheduler"]["lease_size"] = 0
+            malformed_path = directory / "parallel-dynamic-lease-size.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent branch scheduler",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][1]["rank_partition"][
+                "index"
+            ] = 0
+            malformed_path = directory / "parallel-dynamic-rank-partition.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker rank partition",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["aggregate"]["branch_leases"] = 3
+            malformed_path = directory / "parallel-dynamic-aggregate-leases.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate branch leases do not match workers",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][0]["branch_leases"] = 0
+            malformed_path = directory / "parallel-dynamic-worker-leases.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent worker leases",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            idle_lease_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            idle_lease_dynamic["parallel"]["workers"][1][
+                "branch_assignments"
+            ] = 0
+            idle_lease_dynamic["parallel"]["aggregate"]["branch_assignments"] = 1
+            idle_lease_dynamic["parallel"]["branch_scan_complete"] = False
+            idle_lease_path = directory / "parallel-dynamic-idle-lease.json"
+            idle_lease_path.write_text(
+                json.dumps(idle_lease_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent worker leases",
+            ):
+                benchmark.parse_search_telemetry(idle_lease_path)
+
+            idle_lease_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
+            idle_lease_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
+            idle_lease_path.write_text(
+                json.dumps(idle_lease_dynamic),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(idle_lease_path)
+            self.assertEqual(
+                parsed["parallel"]["workers"][1]["branch_leases"],
+                0,
+            )
+
+            incomplete_dynamic = json.loads(json.dumps(idle_lease_dynamic))
+            incomplete_dynamic["parallel"]["branch_scan_complete"] = True
+            incomplete_path = directory / "parallel-dynamic-incomplete-scan.json"
+            incomplete_path.write_text(
+                json.dumps(incomplete_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "complete branch scan has incomplete assignments",
+            ):
+                benchmark.parse_search_telemetry(incomplete_path)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["enabled"] = False

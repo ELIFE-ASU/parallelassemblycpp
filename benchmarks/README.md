@@ -78,13 +78,13 @@ python benchmarks/benchmark.py \
 Telemetry is excluded from timing aggregates. It records graph size, retained
 masks, matching and canonicalisation activity, cache rates, phase clock ticks,
 and phase memory. Parallel telemetry additionally records rank/thread topology,
-modulo-shard ownership, root-branch coverage, steady-clock worker timing, and
-all 31 raw counters per worker plus their exact aggregate. Parallel phase memory
-is disabled because `/proc` peak resets are process-wide. A cache rate is `null`
-when no lookup occurred. Aggregate elapsed time is the critical parallel-region
-wall time; worker elapsed and busy values are sums, and busy is instrumented
-phase coverage rather than CPU utilization. Legacy VF2 counters remain in the
-schema but are zero with the exact cyclic canonicaliser.
+dynamic branch leases, MPI rank partitions, root-branch coverage, steady-clock
+worker timing, and all 31 raw counters per worker plus their exact aggregate.
+Parallel phase memory is disabled because `/proc` peak resets are process-wide.
+A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
+critical parallel-region wall time; worker elapsed and busy values are sums,
+and busy is instrumented phase coverage rather than CPU utilization. Legacy VF2
+counters remain in the schema but are zero with the exact cyclic canonicaliser.
 
 ## Paired comparisons
 
@@ -178,7 +178,11 @@ mpirun --map-by slot --bind-to core -n 4 \
 
 These placement flags use Open MPI syntax. Each worker owns its search caches
 and repeats deterministic setup, so parallel mode targets long calculations
-rather than short inputs. Only MPI rank zero writes output.
+rather than short inputs. OpenMP threads dynamically lease rank-local root
+branches; MPI ranks retain deterministic modulo partitions so no branch is
+duplicated across processes. The positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE`
+environment variable changes the lease size from its default of four. Only MPI
+rank zero writes output.
 
 The runner accepts separate launchers and environment variables for each role:
 

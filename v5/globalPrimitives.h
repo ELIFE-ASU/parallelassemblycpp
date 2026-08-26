@@ -91,11 +91,16 @@ ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
 ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
 ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>> intermediateMAs;
 
-// Parallel builds replicate the complete solver state and divide only the
-// first-level branches. These controls are local to each replica.
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchShardIndex = 0;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchShardCount = 1;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchShardBranchOrdinal = 0;
+// Parallel builds replicate the complete solver state. MPI ranks retain a
+// deterministic modulo partition of root branches, while workers inside a
+// rank dynamically claim rank-local ranges from one shared cursor.
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionIndex = 0;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionCount = 1;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchRootBranchOrdinal = 0;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseSize = 1;
+ASSEMBLYCPP_SEARCH_LOCAL std::atomic<size_t> *sharedBranchLeaseCursor = nullptr;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseCount = 0;
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchAssignmentCount = 0;
 ASSEMBLYCPP_SEARCH_LOCAL std::atomic<int> *sharedAssemblyIndex = nullptr;
 ASSEMBLYCPP_SEARCH_LOCAL bool suppressSearchOutput = false;
 

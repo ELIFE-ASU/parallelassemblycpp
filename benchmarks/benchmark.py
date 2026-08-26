@@ -1221,18 +1221,43 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     ) or local_threads != uniform_threads:
         invalid_parallel("inconsistent uniform local thread count")
 
-    shard_ownership = parallel.get("shard_ownership")
-    if not isinstance(shard_ownership, dict):
-        invalid_parallel("missing shard ownership")
-    assert isinstance(shard_ownership, dict)
-    if (
-        shard_ownership.get("strategy")
-        != "root_branch_ordinal_modulo_worker_count"
-        or type(shard_ownership.get("complete")) is not bool
-        or not shard_ownership["complete"]
-        or shard_ownership.get("shard_count") != worker_count
-    ):
-        invalid_parallel("inconsistent shard ownership")
+    has_static_shards = "shard_ownership" in parallel
+    has_dynamic_leases = "branch_scheduler" in parallel
+    if has_static_shards == has_dynamic_leases:
+        invalid_parallel("expected exactly one branch scheduling description")
+    lease_size: int | None = None
+    scheduler_complete = True
+    if has_static_shards:
+        shard_ownership = parallel["shard_ownership"]
+        if not isinstance(shard_ownership, dict):
+            invalid_parallel("missing shard ownership")
+        assert isinstance(shard_ownership, dict)
+        if (
+            shard_ownership.get("strategy")
+            != "root_branch_ordinal_modulo_worker_count"
+            or type(shard_ownership.get("complete")) is not bool
+            or not shard_ownership["complete"]
+            or shard_ownership.get("shard_count") != worker_count
+        ):
+            invalid_parallel("inconsistent shard ownership")
+    else:
+        branch_scheduler = parallel["branch_scheduler"]
+        if not isinstance(branch_scheduler, dict):
+            invalid_parallel("missing branch scheduler")
+        assert isinstance(branch_scheduler, dict)
+        lease_size = branch_scheduler.get("lease_size")
+        rank_partition_count = branch_scheduler.get("rank_partition_count")
+        scheduler_complete = branch_scheduler.get("complete")
+        if (
+            branch_scheduler.get("strategy")
+            != "dynamic_leases_with_static_mpi_rank_partition"
+            or not is_nonnegative_integer(lease_size)
+            or lease_size == 0
+            or not is_nonnegative_integer(rank_partition_count)
+            or rank_partition_count != rank_count
+            or type(scheduler_complete) is not bool
+        ):
+            invalid_parallel("inconsistent branch scheduler")
     if type(parallel.get("branch_scan_complete")) is not bool:
         invalid_parallel("invalid branch scan status")
 
@@ -1262,6 +1287,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("invalid aggregate branch count")
     if aggregate["worker_busy_nanoseconds"] > aggregate["worker_elapsed_nanoseconds"]:
         invalid_parallel("aggregate busy time exceeds elapsed worker time")
+    aggregate_branch_leases = aggregate.get("branch_leases")
+    if has_dynamic_leases and not is_nonnegative_integer(aggregate_branch_leases):
+        invalid_parallel("invalid aggregate branch lease count")
 
     workers = parallel.get("workers")
     if not isinstance(workers, list) or len(workers) != worker_count:
@@ -1273,6 +1301,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     }
     global_ids = set()
     shard_ids = set()
+    rank_branch_assignments = [0] * rank_count
+    total_branch_leases = 0
     total_branch_assignments = 0
     total_elapsed = 0
     total_busy = 0
@@ -1302,14 +1332,31 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         rank_local_ids[rank].add(local_worker_index)
         global_ids.add(global_worker_index)
 
-        shard = worker.get("shard")
-        if (
-            not isinstance(shard, dict)
-            or shard.get("index") != global_worker_index
-            or shard.get("count") != worker_count
-        ):
-            invalid_parallel(f"invalid worker shard at record {worker_index}")
-        shard_ids.add(shard["index"])
+        branch_leases = 0
+        if has_static_shards:
+            shard = worker.get("shard")
+            if (
+                not isinstance(shard, dict)
+                or shard.get("index") != global_worker_index
+                or shard.get("count") != worker_count
+            ):
+                invalid_parallel(f"invalid worker shard at record {worker_index}")
+            shard_ids.add(shard["index"])
+        else:
+            rank_partition = worker.get("rank_partition")
+            branch_leases = worker.get("branch_leases")
+            if (
+                not isinstance(rank_partition, dict)
+                or not is_nonnegative_integer(rank_partition.get("index"))
+                or rank_partition.get("index") != rank
+                or not is_nonnegative_integer(rank_partition.get("count"))
+                or rank_partition.get("count") != rank_count
+            ):
+                invalid_parallel(
+                    f"invalid worker rank partition at record {worker_index}"
+                )
+            if not is_nonnegative_integer(branch_leases):
+                invalid_parallel(f"invalid worker lease count at record {worker_index}")
 
         branch_candidates = worker.get("branch_candidates")
         branch_assignments = worker.get("branch_assignments")
@@ -1322,9 +1369,25 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             invalid_parallel(f"invalid worker measurement at record {worker_index}")
         if branch_assignments > branch_candidates:
             invalid_parallel(f"worker assignments exceed branches at record {worker_index}")
+        if has_dynamic_leases and (
+            (branch_assignments == 0 and branch_leases != 0)
+            or (
+                branch_assignments > 0
+                and (
+                    branch_leases == 0
+                    or branch_leases > branch_assignments
+                    or branch_assignments > branch_leases * lease_size
+                )
+            )
+        ):
+            invalid_parallel(
+                f"inconsistent worker leases at record {worker_index}"
+            )
         if busy > elapsed:
             invalid_parallel(f"worker busy time exceeds elapsed time at record {worker_index}")
         worker_branch_candidates.append(branch_candidates)
+        rank_branch_assignments[rank] += branch_assignments
+        total_branch_leases += branch_leases
         total_branch_assignments += branch_assignments
         total_elapsed += elapsed
         total_busy += busy
@@ -1370,7 +1433,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             parallel_counters(worker.get("counters"), f"worker {worker_index}")
         )
 
-    if global_ids != set(range(worker_count)) or shard_ids != set(range(worker_count)):
+    if global_ids != set(range(worker_count)) or (
+        has_static_shards and shard_ids != set(range(worker_count))
+    ):
         invalid_parallel("worker or shard indexes are not contiguous")
     if any(
         rank_local_ids[rank] != set(range(threads_per_rank[rank]))
@@ -1379,6 +1444,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("local worker indexes are not contiguous")
     if aggregate["branch_assignments"] != total_branch_assignments:
         invalid_parallel("aggregate branch assignments do not match workers")
+    if has_dynamic_leases and aggregate_branch_leases != total_branch_leases:
+        invalid_parallel("aggregate branch leases do not match workers")
     if aggregate["worker_elapsed_nanoseconds"] != total_elapsed:
         invalid_parallel("aggregate worker elapsed time does not match workers")
     if aggregate["worker_busy_nanoseconds"] != total_busy:
@@ -1399,9 +1466,23 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("aggregate branch count does not match workers")
     if parallel["branch_scan_complete"] and (
         not candidates_agree
+        or not scheduler_complete
         or total_branch_assignments != expected_branch_candidates
     ):
         invalid_parallel("complete branch scan has incomplete assignments")
+    if has_dynamic_leases and parallel["branch_scan_complete"]:
+        assert expected_branch_candidates is not None
+        for rank, assignments in enumerate(rank_branch_assignments):
+            expected_assignments = (
+                0
+                if expected_branch_candidates <= rank
+                else 1
+                + (expected_branch_candidates - 1 - rank) // rank_count
+            )
+            if assignments != expected_assignments:
+                invalid_parallel(
+                    f"rank {rank} branch assignments do not match partition"
+                )
 
     legacy_counters = {
         "retained_mask_attempts": counters["retained_mask_attempts"],

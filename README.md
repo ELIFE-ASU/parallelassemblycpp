@@ -143,6 +143,10 @@ intermediate output disabled, and an unlimited runtime. Telemetry is available
 from the `AssemblyCppOMPTelemetry`, `AssemblyCppMPITelemetry`, and
 `AssemblyCppHybridTelemetry` targets. Other workloads run serially. Set
 `ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` only when testing smaller scaling inputs.
+OpenMP workers dynamically lease root branches as they become available; hybrid
+workers do the same within each MPI rank while ranks retain disjoint modulo
+partitions. `ASSEMBLYCPP_BRANCH_LEASE_SIZE` selects a positive lease size and
+defaults to four branches, balancing lease overhead against tail imbalance.
 
 ## Tests
 

@@ -131,9 +131,10 @@ struct ParallelSearchWorkerTelemetry
     uint64_t mpiRank = 0;
     uint64_t localWorkerIndex = 0;
     uint64_t globalWorkerIndex = 0;
-    uint64_t shardIndex = 0;
-    uint64_t shardCount = 1;
+    uint64_t rankPartitionIndex = 0;
+    uint64_t rankPartitionCount = 1;
     uint64_t branchCandidates = 0;
+    uint64_t branchLeases = 0;
     uint64_t branchAssignments = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t busyNanoseconds = 0;
@@ -162,13 +163,15 @@ struct ParallelSearchTelemetrySummary
 {
     bool enabled = false;
     bool branchScanComplete = false;
-    bool shardOwnershipComplete = false;
+    bool branchSchedulerComplete = false;
     bool branchCandidateCountsAgree = false;
     std::string mode;
     std::string aggregationScope;
     uint64_t rankCount = 1;
     uint64_t workerCount = 1;
+    uint64_t branchLeaseSize = 1;
     uint64_t branchCandidateCount = 0;
+    uint64_t branchLeaseCount = 0;
     uint64_t branchAssignmentCount = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t workerElapsedNanoseconds = 0;
@@ -523,9 +526,11 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     uint64_t mpiRank,
     uint64_t localWorkerIndex,
     uint64_t globalWorkerIndex,
-    uint64_t shardIndex,
-    uint64_t shardCount,
+    uint64_t rankPartitionIndex,
+    uint64_t rankPartitionCount,
     uint64_t branchCandidates,
+    uint64_t branchLeases,
+    uint64_t branchAssignments,
     uint64_t elapsedNanoseconds
 )
 {
@@ -534,12 +539,11 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     result.mpiRank = mpiRank;
     result.localWorkerIndex = localWorkerIndex;
     result.globalWorkerIndex = globalWorkerIndex;
-    result.shardIndex = shardIndex;
-    result.shardCount = shardCount;
+    result.rankPartitionIndex = rankPartitionIndex;
+    result.rankPartitionCount = rankPartitionCount;
     result.branchCandidates = branchCandidates;
-    if (shardCount != 0 && branchCandidates > shardIndex)
-        result.branchAssignments =
-            1 + (branchCandidates - 1 - shardIndex) / shardCount;
+    result.branchLeases = branchLeases;
+    result.branchAssignments = branchAssignments;
     result.elapsedNanoseconds = elapsedNanoseconds;
     result.processedAtoms = searchTelemetry.processedAtoms;
     result.processedEdges = searchTelemetry.processedEdges;
@@ -571,6 +575,7 @@ inline void configureParallelSearchTelemetry(
     std::string mode,
     std::string aggregationScope,
     uint64_t rankCount,
+    uint64_t branchLeaseSize,
     uint64_t elapsedNanoseconds,
     bool completedSearch,
     std::vector<ParallelSearchWorkerTelemetry> workers
@@ -594,14 +599,15 @@ inline void configureParallelSearchTelemetry(
     summary.aggregationScope = std::move(aggregationScope);
     summary.rankCount = std::max<uint64_t>(1, rankCount);
     summary.workerCount = static_cast<uint64_t>(workers.size());
+    summary.branchLeaseSize = branchLeaseSize;
     summary.elapsedNanoseconds = elapsedNanoseconds;
     summary.localThreadsPerRank.assign(summary.rankCount, 0);
-    summary.shardOwnershipComplete = true;
+    summary.branchSchedulerComplete = branchLeaseSize > 0;
     summary.branchCandidateCountsAgree = true;
     summary.branchCandidateCount = workers.front().branchCandidates;
 
     std::vector<bool> seenGlobalWorker(summary.workerCount, false);
-    std::vector<bool> seenShard(summary.workerCount, false);
+    std::vector<uint64_t> branchAssignmentsPerRank(summary.rankCount, 0);
     const ParallelSearchWorkerTelemetry &first = workers.front();
     SearchTelemetryState merged;
     merged.collectPhaseMemory = false;
@@ -613,22 +619,34 @@ inline void configureParallelSearchTelemetry(
     for (const ParallelSearchWorkerTelemetry &worker : workers)
     {
         if (worker.mpiRank < summary.rankCount)
+        {
             ++summary.localThreadsPerRank[worker.mpiRank];
-        else summary.shardOwnershipComplete = false;
+            branchAssignmentsPerRank[worker.mpiRank] +=
+                worker.branchAssignments;
+        }
+        else summary.branchSchedulerComplete = false;
 
         if (
             worker.globalWorkerIndex >= summary.workerCount ||
             seenGlobalWorker[worker.globalWorkerIndex]
-        ) summary.shardOwnershipComplete = false;
+        ) summary.branchSchedulerComplete = false;
         else seenGlobalWorker[worker.globalWorkerIndex] = true;
 
         if (
-            worker.shardIndex >= summary.workerCount ||
-            seenShard[worker.shardIndex] ||
-            worker.shardCount != summary.workerCount ||
-            worker.shardIndex != worker.globalWorkerIndex
-        ) summary.shardOwnershipComplete = false;
-        else seenShard[worker.shardIndex] = true;
+            worker.rankPartitionIndex != worker.mpiRank ||
+            worker.rankPartitionCount != summary.rankCount
+        ) summary.branchSchedulerComplete = false;
+
+        if (
+            (worker.branchAssignments == 0 && worker.branchLeases != 0) ||
+            (worker.branchAssignments > 0 && (
+                summary.branchLeaseSize == 0 ||
+                worker.branchLeases == 0 ||
+                worker.branchLeases > worker.branchAssignments ||
+                1 + (worker.branchAssignments - 1) / summary.branchLeaseSize >
+                    worker.branchLeases
+            ))
+        ) summary.branchSchedulerComplete = false;
 
         if (worker.branchCandidates != summary.branchCandidateCount)
             summary.branchCandidateCountsAgree = false;
@@ -639,6 +657,7 @@ inline void configureParallelSearchTelemetry(
             worker.residualCacheEligible != first.residualCacheEligible
         ) summary.branchCandidateCountsAgree = false;
 
+        summary.branchLeaseCount += worker.branchLeases;
         summary.branchAssignmentCount += worker.branchAssignments;
         summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
         summary.workerBusyNanoseconds += worker.busyNanoseconds;
@@ -657,11 +676,26 @@ inline void configureParallelSearchTelemetry(
     for (size_t i = 0; i < merged.phases.size(); ++i)
         merged.phases[i].clockTicks = first.phaseClockTicks[i];
 
-    summary.branchScanComplete =
+    if (summary.branchCandidateCountsAgree)
+    {
+        for (uint64_t rank = 0; rank < summary.rankCount; ++rank)
+        {
+            const uint64_t expectedAssignments =
+                summary.branchCandidateCount <= rank
+                ? 0
+                : 1 +
+                    (summary.branchCandidateCount - 1 - rank) /
+                    summary.rankCount;
+            if (branchAssignmentsPerRank[rank] != expectedAssignments)
+                summary.branchSchedulerComplete = false;
+        }
+    }
+    summary.branchSchedulerComplete =
         completedSearch &&
-        summary.shardOwnershipComplete &&
+        summary.branchSchedulerComplete &&
         summary.branchCandidateCountsAgree &&
         summary.branchAssignmentCount == summary.branchCandidateCount;
+    summary.branchScanComplete = summary.branchSchedulerComplete;
     summary.workers = std::move(workers);
     merged.counters = summary.aggregateCounters;
     searchTelemetry = std::move(merged);
@@ -769,12 +803,15 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
               "\"parallel_region_steady_clock\",\n"
            << "    \"busy_timing_method\": "
               "\"instrumented_phase_wall_time\",\n"
-           << "    \"shard_ownership\": {\n"
+           << "    \"branch_scheduler\": {\n"
            << "      \"strategy\": "
-              "\"root_branch_ordinal_modulo_worker_count\",\n"
+              "\"dynamic_leases_with_static_mpi_rank_partition\",\n"
+           << "      \"lease_size\": "
+           << parallel.branchLeaseSize << ",\n"
+           << "      \"rank_partition_count\": "
+           << parallel.rankCount << ",\n"
            << "      \"complete\": "
-           << (parallel.shardOwnershipComplete ? "true" : "false") << ",\n"
-           << "      \"shard_count\": " << parallel.workerCount << "\n"
+           << (parallel.branchSchedulerComplete ? "true" : "false") << "\n"
            << "    },\n"
            << "    \"branch_scan_complete\": "
            << (parallel.branchScanComplete ? "true" : "false") << ",\n"
@@ -784,6 +821,8 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
         output << parallel.branchCandidateCount;
     else output << "null";
     output << ",\n"
+           << "      \"branch_leases\": "
+           << parallel.branchLeaseCount << ",\n"
            << "      \"branch_assignments\": "
            << parallel.branchAssignmentCount << ",\n"
            << "      \"elapsed_nanoseconds\": "
@@ -811,12 +850,16 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
                << worker.localWorkerIndex << ",\n"
                << "        \"global_worker_index\": "
                << worker.globalWorkerIndex << ",\n"
-               << "        \"shard\": {\n"
-               << "          \"index\": " << worker.shardIndex << ",\n"
-               << "          \"count\": " << worker.shardCount << "\n"
+               << "        \"rank_partition\": {\n"
+               << "          \"index\": "
+               << worker.rankPartitionIndex << ",\n"
+               << "          \"count\": "
+               << worker.rankPartitionCount << "\n"
                << "        },\n"
                << "        \"branch_candidates\": "
                << worker.branchCandidates << ",\n"
+               << "        \"branch_leases\": "
+               << worker.branchLeases << ",\n"
                << "        \"branch_assignments\": "
                << worker.branchAssignments << ",\n"
                << "        \"elapsed_nanoseconds\": "

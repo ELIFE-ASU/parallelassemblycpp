@@ -1206,6 +1206,40 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
 #endif
     assemblyState candidate;
     candidate.reserveFragments(input.fragments.size() + 2);
+    size_t branchLeaseBegin = 0;
+    size_t branchLeaseEnd = 0;
+    bool branchLeaseUsed = false;
+    auto claimNextBranchLease = [&]() -> bool
+    {
+        size_t begin = sharedBranchLeaseCursor->load(std::memory_order_relaxed);
+        while (true)
+        {
+            if (begin == std::numeric_limits<size_t>::max())
+            {
+                branchLeaseBegin = begin;
+                branchLeaseEnd = begin;
+                branchLeaseUsed = false;
+                return false;
+            }
+            const size_t remaining =
+                std::numeric_limits<size_t>::max() - begin;
+            const size_t end = searchBranchLeaseSize > remaining
+                ? std::numeric_limits<size_t>::max()
+                : begin + searchBranchLeaseSize;
+            if (sharedBranchLeaseCursor->compare_exchange_weak(
+                begin,
+                end,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed
+            ))
+            {
+                branchLeaseBegin = begin;
+                branchLeaseEnd = end;
+                branchLeaseUsed = false;
+                return true;
+            }
+        }
+    };
     for (int j = stmapVector.size() - 1; j >= 0; j--)
     {
         if (searchShouldStop()) return;
@@ -1216,11 +1250,28 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
             initialDuplicateSet &ss = entry.duplicates;
             auto matchingVisitor = [&](validMatchings &matching)
             {
-                const size_t branchOrdinal = searchShardBranchOrdinal++;
-                if (
-                    searchShardCount > 1 &&
-                    branchOrdinal % searchShardCount != searchShardIndex
-                ) return true;
+                const size_t branchOrdinal = searchRootBranchOrdinal++;
+                if (sharedBranchLeaseCursor != nullptr)
+                {
+                    if (
+                        branchOrdinal % searchRankPartitionCount !=
+                        searchRankPartitionIndex
+                    ) return true;
+                    const size_t partitionOrdinal =
+                        branchOrdinal / searchRankPartitionCount;
+                    while (partitionOrdinal >= branchLeaseEnd)
+                    {
+                        if (!claimNextBranchLease()) return true;
+                        if (partitionOrdinal < branchLeaseBegin) return true;
+                    }
+                    if (partitionOrdinal < branchLeaseBegin) return true;
+                    if (!branchLeaseUsed)
+                    {
+                        ++searchBranchLeaseCount;
+                        branchLeaseUsed = true;
+                    }
+                    ++searchBranchAssignmentCount;
+                }
                 if (sharedAssemblyIndex != nullptr)
                     AI = min(
                         AI,
@@ -1404,7 +1455,9 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     clearTreeCanonInterner();
     DAG.clear();
     intermediateMAs.clear();
-    searchShardBranchOrdinal = 0;
+    searchRootBranchOrdinal = 0;
+    searchBranchLeaseCount = 0;
+    searchBranchAssignmentCount = 0;
     totalBonds = mg.totalBonds;
     originalEdgeList = mg.writeEdgeList();
     disjointFragments = mg.disjointFragments();
