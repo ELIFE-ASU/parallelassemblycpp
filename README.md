@@ -145,8 +145,11 @@ from the `AssemblyCppOMPTelemetry`, `AssemblyCppMPITelemetry`, and
 `ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` only when testing smaller scaling inputs.
 OpenMP workers dynamically lease root branches as they become available; hybrid
 workers do the same within each MPI rank while ranks retain disjoint modulo
-partitions. `ASSEMBLYCPP_BRANCH_LEASE_SIZE` selects a positive lease size and
-defaults to four branches, balancing lease overhead against tail imbalance.
+partitions. Root enumeration and DAG construction run once per process;
+workers receive stable job indices and reconstruct masks in their own
+thread-local arenas. `ASSEMBLYCPP_BRANCH_LEASE_SIZE` selects a positive lease
+size and defaults to four branches, balancing lease overhead against tail
+imbalance.
 
 ## Tests
 

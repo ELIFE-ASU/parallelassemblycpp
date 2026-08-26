@@ -9,7 +9,8 @@
 bool initialRecursiveEnumeration(
     assemblyState &_target,
     vector<initialDuplicateClassLevel> &stmapVector,
-    duplicateClassIndexWorkspace &classIndex
+    duplicateClassIndexWorkspace &classIndex,
+    vector<dagLevel> &dag
 )
 {
     vector<initialDagLevel> tempDag(2);
@@ -129,7 +130,7 @@ bool initialRecursiveEnumeration(
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     setSearchTelemetryPhase(SearchTelemetryPhase::dagConversion);
 #endif
-    convertDag(tempDag);
+    convertDag(tempDag, dag);
     if (searchShouldStop()) return false;
     return alive;
 }
@@ -142,6 +143,7 @@ bool initialRecursiveEnumeration(
  * @return Maximum duplicate size reached
  */
 int dagRecursiveEnumeration(
+    const vector<dagLevel> &dag,
     assemblyState &_target,
     vector<dagDuplicateClassLevel> &stmapVector,
     vector<vector<EdgeMask>> &targetMasks,
@@ -168,6 +170,7 @@ int dagRecursiveEnumeration(
                 EdgeMask b = 0; b.set(j);
                 potentialDuplicate m(std::move(b), i, j);
                 dagGenerate(
+                    dag,
                     m,
                     stmapVector[0],
                     classIndex,
@@ -199,6 +202,7 @@ int dagRecursiveEnumeration(
             {
                 if (searchShouldStop()) return 0;
                 active |= dagDuplicateGenerator(
+                    dag,
                     ss,
                     stmapVector.back(),
                     classIndex,
@@ -486,34 +490,6 @@ int pairSpecificGenericBound(
     return result;
 }
 
-struct assemblyPathWitness
-{
-    vector<assemblyPathStep> current;
-    vector<assemblyPathStep> best;
-};
-
-struct assemblySearchStorage
-{
-    assemblyTranspositionTable states;
-    assemblyPathWitness *pathway = nullptr;
-    duplicateClassIndexWorkspace duplicateClassIndex;
-    vi candidateKey;
-
-    explicit assemblySearchStorage(assemblyPathWitness *_pathway = nullptr):
-        states(1024),
-        pathway(_pathway)
-    {
-        // One search-wide scratch key is safe because every table operation
-        // finishes before the synchronous recursive call can reuse it.
-        candidateKey.reserve(univEdgeList.size() + 1);
-        if (pathway != nullptr)
-        {
-            pathway->current.reserve(univEdgeList.size());
-            pathway->best.reserve(univEdgeList.size());
-        }
-    }
-};
-
 struct homogeneousPathResidualKey
 {
     // At most two removed parents and four residual path components.
@@ -757,6 +733,7 @@ enum class matchingEquivalenceMode
 
 template<matchingEquivalenceMode equivalenceMode, bool trackPath>
 void dagRecursiveAssemblyWithWorkspaceImpl(
+    const vector<dagLevel> &dag,
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -806,6 +783,7 @@ void recordImprovedAssemblyIndex(
 
 template<matchingEquivalenceMode equivalenceMode, bool trackPath>
 bool continueAssemblySearchWithWorkspace(
+    const vector<dagLevel> &dag,
     assemblyState &candidate,
     validMatchings &matching,
     span<const int> candidateKey,
@@ -857,6 +835,7 @@ bool continueAssemblySearchWithWorkspace(
         );
     }
     dagRecursiveAssemblyWithWorkspaceImpl<equivalenceMode, trackPath>(
+        dag,
         candidate,
         AI,
         fragmentationWorkspace,
@@ -876,6 +855,7 @@ bool continueAssemblySearchWithWorkspace(
  */
 template<matchingEquivalenceMode equivalenceMode, bool trackPath>
 void dagRecursiveAssemblyWithWorkspaceImpl(
+    const vector<dagLevel> &dag,
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -893,6 +873,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     vector<dagDuplicateClassLevel> stmapVector;
     vector<vector<EdgeMask> > targetMasks;
     int maxFragSize = dagRecursiveEnumeration(
+        dag,
         input,
         stmapVector,
         targetMasks,
@@ -1108,6 +1089,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             equivalenceMode,
                             trackPath
                         >(
+                            dag,
                             candidate,
                             matching,
                             candidateKey,
@@ -1180,6 +1162,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
  */
 template<matchingEquivalenceMode equivalenceMode, bool trackPath>
 void initialRecursiveAssemblyWithWorkspaceImpl(
+    vector<dagLevel> &dag,
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -1196,7 +1179,8 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
     const bool hasInitialMatchings = initialRecursiveEnumeration(
         input,
         stmapVector,
-        searchStorage.duplicateClassIndex
+        searchStorage.duplicateClassIndex,
+        dag
     );
     if (enumerationLimitReached || searchShouldStop()) return;
 
@@ -1301,6 +1285,7 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
                         equivalenceMode,
                         trackPath
                     >(
+                        dag,
                         candidate,
                         matching,
                         candidateKey,
@@ -1355,6 +1340,7 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
 
 template<bool trackPath>
 void initialRecursiveAssemblyWithWorkspace(
+    vector<dagLevel> &dag,
     assemblyState &input,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -1366,19 +1352,20 @@ void initialRecursiveAssemblyWithWorkspace(
         initialRecursiveAssemblyWithWorkspaceImpl<
             matchingEquivalenceMode::homogeneousPath,
             trackPath
-        >(input, AI, fragmentationWorkspace, searchStorage);
+        >(dag, input, AI, fragmentationWorkspace, searchStorage);
     }
     else
     {
         initialRecursiveAssemblyWithWorkspaceImpl<
             matchingEquivalenceMode::none,
             trackPath
-        >(input, AI, fragmentationWorkspace, searchStorage);
+        >(dag, input, AI, fragmentationWorkspace, searchStorage);
     }
 }
 
 template<bool trackPath>
 bool runImprovedAssemblySearch(
+    vector<dagLevel> &dag,
     assemblyState &root,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
@@ -1394,6 +1381,7 @@ bool runImprovedAssemblySearch(
     ));
 
     initialRecursiveAssemblyWithWorkspace<trackPath>(
+        dag,
         root,
         AI,
         fragmentationWorkspace,
@@ -1436,6 +1424,431 @@ bool runImprovedAssemblySearch(
     return true;
 }
 
+/** Serialize the root occurrences once and retain only primitive job indices. */
+bool buildRootJobDescriptors(
+    assemblyState &root,
+    vector<initialDuplicateClassLevel> &levels,
+    SearchContext &context
+)
+{
+    const size_t wordCount = EdgeMask::activeWordCount();
+    size_t totalOccurrences = 0;
+    for (const initialDuplicateClassLevel &level : levels)
+    {
+        for (const auto &entry : level.classes)
+        {
+            const size_t count = entry.duplicates.list.size();
+            if (count > numeric_limits<size_t>::max() - totalOccurrences)
+                throw length_error("root occurrences exceed capacity");
+            totalOccurrences += count;
+        }
+    }
+    if (
+        wordCount != 0 &&
+        totalOccurrences >
+            numeric_limits<size_t>::max() / wordCount
+    )
+    {
+        throw length_error("serialized root masks exceed capacity");
+    }
+    context.rootOccurrences.reserve(totalOccurrences);
+    context.occurrenceWords.reserve(totalOccurrences * wordCount);
+
+    for (int levelIndex = static_cast<int>(levels.size()) - 1;
+         levelIndex >= 0;
+         --levelIndex)
+    {
+        if (searchShouldStop()) return false;
+        initialDuplicateClassLevel &level = levels[levelIndex];
+        for (auto &entry : level.classes)
+        {
+            if (searchShouldStop()) return false;
+            initialDuplicateSet &duplicates = entry.duplicates;
+            if (
+                duplicates.size >
+                static_cast<size_t>(numeric_limits<uint32_t>::max()) ||
+                duplicates.size >
+                static_cast<size_t>(numeric_limits<int>::max())
+            )
+            {
+                throw length_error("root duplicate size exceeds job capacity");
+            }
+
+            const size_t occurrenceBase = context.rootOccurrences.size();
+            if (
+                duplicates.list.size() >
+                numeric_limits<size_t>::max() - occurrenceBase
+            )
+            {
+                throw length_error("root occurrences exceed capacity");
+            }
+            if (
+                wordCount != 0 &&
+                duplicates.list.size() >
+                    (numeric_limits<size_t>::max() -
+                        context.occurrenceWords.size()) / wordCount
+            )
+            {
+                throw length_error("serialized root masks exceed capacity");
+            }
+            for (const initialPotentialDuplicate &occurrence : duplicates.list)
+            {
+                context.rootOccurrences.push_back({
+                    context.occurrenceWords.size(),
+                    static_cast<int32_t>(occurrence.fragment)
+                });
+                for (size_t word = 0; word < wordCount; ++word)
+                {
+                    context.occurrenceWords.push_back(
+                        occurrence.mask.activeWord(word)
+                    );
+                }
+            }
+
+            size_t firstOccurrence = 0;
+            size_t secondOccurrence = 0;
+            auto recordPair = [&](validMatchings &)
+            {
+                context.rootJobs.push_back({
+                    occurrenceBase + firstOccurrence,
+                    occurrenceBase + secondOccurrence,
+                    static_cast<int32_t>(entry.canonicalId),
+                    static_cast<uint32_t>(duplicates.size)
+                });
+                return true;
+            };
+
+            bool completed;
+            if (!context.homogeneousPathEdgePositions.empty())
+            {
+                homogeneousPathEquivalentMatchings equivalentMatchings(
+                    root,
+                    duplicates,
+                    context.homogeneousPathEdgePositions
+                );
+                completed = duplicates.visitMatchingsInReverse(
+                    [&](validMatchings &matching,
+                        size_t first,
+                        size_t second)
+                    {
+                        firstOccurrence = first;
+                        secondOccurrence = second;
+                        return equivalentMatchings.enabled &&
+                            equivalentMatchings.skip(matching, first, second);
+                    },
+                    recordPair
+                );
+            }
+            else
+            {
+                completed = duplicates.visitMatchingsInReverse(
+                    [&](validMatchings &, size_t first, size_t second)
+                    {
+                        firstOccurrence = first;
+                        secondOccurrence = second;
+                        return false;
+                    },
+                    recordPair
+                );
+            }
+            if (!completed) return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Build the mask-free, read-only state shared by one process's workers.
+ * Root-owned masks are explicitly released before the producer thread can
+ * enter the worker pool and reconfigure its thread-local mask arena.
+ */
+void prepareParallelSearchContext(molGraph &mg, SearchContext &context)
+{
+    context.startedAt = clock();
+    startTime = context.startedAt;
+    searchStopPollCountdown = 0;
+    searchStopInnerPollCountdown = 0;
+    runtimeLimitReached = false;
+    enumerationLimitReached = false;
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+    intermediateMAs.clear();
+
+    totalBonds = mg.totalBonds;
+    disjointFragments = mg.disjointFragments();
+    vector<edgeL> removedEdges;
+    targetMolecule = preprocessWriteback(mg, removedEdges);
+    univEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+
+    // Release the persistent mask before configure() clears this TLS arena.
+    std::destroy_at(std::addressof(allEdges));
+    EdgeMask::configure(univEdgeList.size());
+    std::construct_at(std::addressof(allEdges));
+    AtomMask::configure(targetMolecule.mg.size());
+
+    context.homogeneousPathEdgePositions.clear();
+    configureHomogeneousPathEdgePositions(
+        context.homogeneousPathEdgePositions
+    );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    configureSearchTelemetryGraph(
+        targetMolecule.mg.size(),
+        univEdgeList.size(),
+        EdgeMask::activeWordCount(),
+        ufdsMaskWorkspace::decompositionCacheEligible(univEdgeList.size())
+    );
+    setSearchTelemetryPhase(SearchTelemetryPhase::initialEnumeration);
+#endif
+
+    allEdges.set();
+    assemblyState root;
+    root.appendFragment(
+        allEdges,
+        static_cast<int>(univEdgeList.size()),
+        unknownCanonicalId,
+        false
+    );
+    context.rootAssemblyIndex = root.AI();
+
+    vector<initialDuplicateClassLevel> levels;
+    duplicateClassIndexWorkspace classIndex;
+    const bool hasInitialMatchings = initialRecursiveEnumeration(
+        root,
+        levels,
+        classIndex,
+        context.dag
+    );
+    if (
+        hasInitialMatchings &&
+        !enumerationLimitReached &&
+        !searchShouldStop()
+    )
+    {
+        static_cast<void>(buildRootJobDescriptors(root, levels, context));
+    }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
+#endif
+
+    context.bondCount = totalBonds;
+    context.componentCount = disjointFragments;
+    context.enumerationLimit = enumerationLimitReached;
+
+    // These caches contain no active-word masks and can seed worker-local
+    // canonical IDs. Move them only after DAG conversion and job serialization.
+    context.canonicalSeed.graphHashes = std::move(graphHashMap);
+    context.canonicalSeed.atomInterner = std::move(treeCanonAtomInterner);
+    context.canonicalSeed.leafInterner = std::move(treeCanonLeafInterner);
+    context.canonicalSeed.treeInterner = std::move(treeCanonInterner);
+
+    // Destroy every producer-owned wide mask before this same thread becomes
+    // OpenMP worker zero and calls EdgeMask::configure again.
+    levels.clear();
+    root.clearFragments();
+    bitsetHashTable.clear();
+    std::destroy_at(std::addressof(allEdges));
+    EdgeMask::configure(univEdgeList.size());
+    std::construct_at(std::addressof(allEdges));
+
+    context.processedMolecule = std::move(targetMolecule);
+    context.universeEdges = std::move(univEdgeList);
+}
+
+/** Configure only thread-local state from an immutable, mask-free context. */
+void configureParallelWorker(const SearchContext &context)
+{
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+    std::destroy_at(std::addressof(allEdges));
+    EdgeMask::configure(context.universeEdges.size());
+    std::construct_at(std::addressof(allEdges));
+    AtomMask::configure(context.processedMolecule.mg.size());
+
+    startTime = context.startedAt;
+    searchStopPollCountdown = 0;
+    searchStopInnerPollCountdown = 0;
+    runtimeLimitReached = false;
+    enumerationLimitReached = context.enumerationLimit;
+    totalBonds = context.bondCount;
+    disjointFragments = context.componentCount;
+    targetMolecule = context.processedMolecule;
+    univEdgeList = context.universeEdges;
+
+    treeCanonAtomInterner = context.canonicalSeed.atomInterner;
+    treeCanonLeafInterner = context.canonicalSeed.leafInterner;
+    treeCanonInterner = context.canonicalSeed.treeInterner;
+    graphHashMap = context.canonicalSeed.graphHashes;
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    configureSearchTelemetryGraph(
+        targetMolecule.mg.size(),
+        univEdgeList.size(),
+        EdgeMask::activeWordCount(),
+        ufdsMaskWorkspace::decompositionCacheEligible(univEdgeList.size())
+    );
+#endif
+}
+
+/** Release all worker-owned masks while still on their allocating thread. */
+void clearParallelWorkerMasks()
+{
+    bitsetHashTable.clear();
+    allEdges.reset();
+}
+
+EdgeMask reconstructRootOccurrence(
+    const SearchContext &context,
+    size_t occurrenceIndex
+)
+{
+    if (occurrenceIndex >= context.rootOccurrences.size())
+        throw logic_error("root job occurrence is out of range");
+    const rootOccurrenceDescriptor &occurrence =
+        context.rootOccurrences[occurrenceIndex];
+    const size_t wordCount = EdgeMask::activeWordCount();
+    if (
+        occurrence.wordOffset > context.occurrenceWords.size() ||
+        wordCount > context.occurrenceWords.size() - occurrence.wordOffset
+    )
+    {
+        throw logic_error("serialized root mask is incomplete");
+    }
+    return EdgeMask::fromActiveWords(
+        context.occurrenceWords.data() + occurrence.wordOffset
+    );
+}
+
+template<matchingEquivalenceMode equivalenceMode>
+bool runParallelRootJobImpl(
+    const SearchContext &context,
+    size_t jobIndex,
+    WorkerContext &worker
+)
+{
+    if (jobIndex >= context.rootJobs.size())
+        throw logic_error("root job index is out of range");
+    const rootJobDescriptor &job = context.rootJobs[jobIndex];
+    const rootOccurrenceDescriptor &firstOccurrence =
+        context.rootOccurrences[job.firstOccurrence];
+    const rootOccurrenceDescriptor &secondOccurrence =
+        context.rootOccurrences[job.secondOccurrence];
+    EdgeMask first = reconstructRootOccurrence(context, job.firstOccurrence);
+    EdgeMask second = reconstructRootOccurrence(context, job.secondOccurrence);
+    validMatchings matching(
+        first,
+        second,
+        firstOccurrence.fragment,
+        secondOccurrence.fragment,
+        static_cast<int>(job.duplicateSize)
+    );
+
+    if (sharedAssemblyIndex != nullptr)
+    {
+        worker.assemblyIndex = min(
+            worker.assemblyIndex,
+            sharedAssemblyIndex->load(std::memory_order_relaxed)
+        );
+    }
+    worker.candidate.clearFragments();
+    fragmentAssemblyStateWithoutCanonisationWithWorkspace(
+        worker.root,
+        matching,
+        job.canonicalId,
+        worker.candidate,
+        worker.fragmentation
+    );
+    if (searchShouldStop()) return false;
+
+    const int sumDupBonds = matching.maxFragSize - 1;
+    worker.candidate.sumDupBonds = sumDupBonds;
+    if (worker.candidate.lowBoundAI() >= worker.assemblyIndex) return true;
+
+    vi &candidateKey = worker.search.candidateKey;
+    if (!canoniseAssemblyStateAndBuildKey(
+        worker.candidate,
+        candidateKey,
+        worker.fragmentation
+    )) return false;
+    return continueAssemblySearchWithWorkspace<equivalenceMode, false>(
+        context.dag,
+        worker.candidate,
+        matching,
+        candidateKey,
+        sumDupBonds,
+        worker.assemblyIndex,
+        worker.fragmentation,
+        worker.search
+    );
+}
+
+bool runParallelRootJob(
+    const SearchContext &context,
+    size_t jobIndex,
+    WorkerContext &worker
+)
+{
+    if (!worker.fragmentation.homogeneousPathEdgePositions.empty())
+    {
+        return runParallelRootJobImpl<
+            matchingEquivalenceMode::homogeneousPath
+        >(context, jobIndex, worker);
+    }
+    return runParallelRootJobImpl<matchingEquivalenceMode::none>(
+        context,
+        jobIndex,
+        worker
+    );
+}
+
+/** Dynamically lease stable rank-local job indices to one worker. */
+void runParallelRootJobs(
+    const SearchContext &context,
+    WorkerContext &worker,
+    std::atomic<size_t> &leaseCursor
+)
+{
+    searchRootBranchOrdinal = context.rootJobs.size();
+    const size_t rankJobCount =
+        context.rootJobs.size() <= searchRankPartitionIndex
+        ? 0
+        : 1 +
+            (context.rootJobs.size() - 1 - searchRankPartitionIndex) /
+                searchRankPartitionCount;
+
+    while (!searchShouldStop())
+    {
+        size_t begin = leaseCursor.load(std::memory_order_relaxed);
+        size_t end = begin;
+        do
+        {
+            if (begin >= rankJobCount) return;
+            end = searchBranchLeaseSize > rankJobCount - begin
+                ? rankJobCount
+                : begin + searchBranchLeaseSize;
+        }
+        while (!leaseCursor.compare_exchange_weak(
+            begin,
+            end,
+            std::memory_order_relaxed,
+            std::memory_order_relaxed
+        ));
+
+        ++searchBranchLeaseCount;
+        for (size_t partitionOrdinal = begin;
+             partitionOrdinal < end;
+             ++partitionOrdinal)
+        {
+            const size_t jobIndex = searchRankPartitionIndex +
+                partitionOrdinal * searchRankPartitionCount;
+            ++searchBranchAssignmentCount;
+            if (!runParallelRootJob(context, jobIndex, worker)) return;
+        }
+    }
+}
+
 /**
  * @brief Function that calls the recursive assembly function
  * 
@@ -1453,7 +1866,6 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     bitsetHashTable.clear();
     graphHashMap.clear();
     clearTreeCanonInterner();
-    DAG.clear();
     intermediateMAs.clear();
     searchRootBranchOrdinal = 0;
     searchBranchLeaseCount = 0;
@@ -1496,12 +1908,14 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
         unknownCanonicalId,
         false
     );
+    vector<dagLevel> dag;
     int AI = std::numeric_limits<int>::max();
     if (isPathway)
     {
         assemblyPathWitness pathwayWitness;
         assemblySearchStorage searchStorage(&pathwayWitness);
         return runImprovedAssemblySearch<true>(
+            dag,
             as,
             AI,
             fragmentationWorkspace,
@@ -1513,6 +1927,7 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
 
     assemblySearchStorage searchStorage;
     return runImprovedAssemblySearch<false>(
+        dag,
         as,
         AI,
         fragmentationWorkspace,

@@ -85,6 +85,7 @@ constexpr int ceilLog2(int value)
 #include "fragmentation.h"
 #include "assemblyTranspositionTable.h"
 #include "pathwayGenerator.h"
+#include "searchContext.h"
 #include "improvedBnB.h"
 #include "signalHandler.h"
 #include "ioflag.h"
@@ -425,7 +426,48 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     if (assemblyCppMpiRank == 0) globalWorkerOffset = 0;
 #endif
 
-    std::atomic<int> processBest(std::numeric_limits<int>::max());
+    SearchContext searchContext;
+    string preparationError;
+    int preparationSucceeded = 1;
+    try
+    {
+        prepareParallelSearchContext(graph, searchContext);
+    }
+    catch (const std::exception &exception)
+    {
+        preparationError = exception.what();
+        preparationSucceeded = 0;
+    }
+    catch (...)
+    {
+        preparationError = "unknown parallel root preparation failure";
+        preparationSucceeded = 0;
+    }
+#if defined(ASSEMBLYCPP_USE_MPI)
+    int allPreparationsSucceeded = preparationSucceeded;
+    MPI_Allreduce(
+        &preparationSucceeded,
+        &allPreparationsSucceeded,
+        1,
+        MPI_INT,
+        MPI_MIN,
+        MPI_COMM_WORLD
+    );
+    preparationSucceeded = allPreparationsSucceeded;
+#endif
+    if (preparationSucceeded == 0)
+    {
+        if (isPrimaryProcess())
+        {
+            if (preparationError.empty())
+                preparationError = "another MPI rank could not prepare the root";
+            cerr << "error: parallel root preparation failed: "
+                 << preparationError << '\n';
+        }
+        return false;
+    }
+
+    std::atomic<int> processBest(searchContext.rootAssemblyIndex);
     std::atomic<size_t> branchLeaseCursor(0);
     vector<ParallelReplicaResult> replicas(
         static_cast<size_t>(localThreads)
@@ -450,27 +492,55 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         uint64_t workerStartedNanoseconds = 0;
         if (searchTelemetryEnabled)
         {
-            workerStartedNanoseconds = searchTelemetryWallNanoseconds();
-            // Process-wide /proc peak resets cannot safely describe concurrent
-            // workers. Parallel workers collect counters and wall time only.
-            resetSearchTelemetry(false);
+            if (threadIndex == 0)
+            {
+                // Worker zero owns the setup telemetry already collected by
+                // this process's one root enumeration.
+                workerStartedNanoseconds = parallelStartedNanoseconds;
+                searchTelemetry.collectPhaseMemory = false;
+            }
+            else
+            {
+                workerStartedNanoseconds = searchTelemetryWallNanoseconds();
+                // Process-wide /proc peak resets cannot safely describe
+                // concurrent workers. Siblings collect counters and time only.
+                resetSearchTelemetry(false);
+            }
         }
 #endif
         try
         {
-            molGraph workerGraph = graph;
-            ofstream discardedOutput;
-            result.succeeded = improvedBnB(workerGraph, discardedOutput);
-            result.assemblyIndex = lastCalculatedAssemblyIndex;
+            configureParallelWorker(searchContext);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            if (searchTelemetryEnabled && threadIndex != 0)
+                setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
+#endif
+            {
+                // Construct and destroy every EdgeMask-owning object on this
+                // worker; only the primitive job index crosses the queue.
+                WorkerContext worker(searchContext);
+                runParallelRootJobs(
+                    searchContext,
+                    worker,
+                    branchLeaseCursor
+                );
+                result.assemblyIndex = compensateDisjointAssemblyIndex(
+                    worker.assemblyIndex
+                );
+            }
+            clearParallelWorkerMasks();
+            result.succeeded = true;
             result.runtimeLimitReached = runtimeLimitReached;
             result.enumerationLimitReached = enumerationLimitReached;
         }
         catch (const std::exception &exception)
         {
+            clearParallelWorkerMasks();
             result.error = exception.what();
         }
         catch (...)
         {
+            clearParallelWorkerMasks();
             result.error = "unknown parallel worker failure";
         }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -542,7 +612,9 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     }
 #endif
 
-    int localAssemblyIndex = std::numeric_limits<int>::max();
+    int localAssemblyIndex = compensateDisjointAssemblyIndex(
+        processBest.load(std::memory_order_relaxed)
+    );
     int localSucceeded = 1;
     int localRuntimeLimit = 0;
     int localEnumerationLimit = 0;

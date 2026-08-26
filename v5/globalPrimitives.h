@@ -91,9 +91,9 @@ ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
 ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
 ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>> intermediateMAs;
 
-// Parallel builds replicate the complete solver state. MPI ranks retain a
-// deterministic modulo partition of root branches, while workers inside a
-// rank dynamically claim rank-local ranges from one shared cursor.
+// MPI ranks retain a deterministic modulo partition of the immutable root-job
+// table, while workers inside a rank dynamically claim rank-local ranges from
+// one shared cursor. The remaining values are worker-local search controls.
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionIndex = 0;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionCount = 1;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchRootBranchOrdinal = 0;

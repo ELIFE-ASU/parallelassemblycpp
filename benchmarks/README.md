@@ -176,13 +176,14 @@ mpirun --map-by slot --bind-to core -n 4 \
     --pathway=0 --telemetry=1
 ```
 
-These placement flags use Open MPI syntax. Each worker owns its search caches
-and repeats deterministic setup, so parallel mode targets long calculations
-rather than short inputs. OpenMP threads dynamically lease rank-local root
-branches; MPI ranks retain deterministic modulo partitions so no branch is
-duplicated across processes. The positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE`
-environment variable changes the lease size from its default of four. Only MPI
-rank zero writes output.
+These placement flags use Open MPI syntax. Each process enumerates the root
+once, then shares an immutable processed graph, runtime DAG, and serialized
+root-job table. Workers own their fragmentation scratch and search caches and
+dynamically lease rank-local job indices; MPI ranks retain deterministic modulo
+partitions so no job is duplicated across processes. Wide masks are rebuilt
+inside the receiving worker from serialized words. The positive
+`ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable changes the lease size
+from its default of four. Only MPI rank zero writes output.
 
 The runner accepts separate launchers and environment variables for each role:
 

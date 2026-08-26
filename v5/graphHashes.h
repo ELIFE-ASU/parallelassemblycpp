@@ -342,8 +342,8 @@ struct canonicalisationGraphWorkspace
     }
 };
 
-// Enumeration, canonical maps, and interners are already process-global and
-// single-threaded; the flat miss-path storage follows the same lifecycle.
+// Canonical maps, interners, and miss-path scratch are worker-local in OpenMP
+// builds and calculation-local otherwise.
 inline ASSEMBLYCPP_SEARCH_LOCAL canonicalisationGraphWorkspace
     canonicalisationGraphScratch;
 

@@ -24,6 +24,7 @@ DEFAULT_MANIFEST = REPOSITORY_ROOT / "benchmarks" / "cases.tsv"
 SKIP_RETURN_CODE = 77
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 DEFAULT_BRANCH_LEASE_SIZE = 4
+ROOT_ENUMERATION_PHASES = ("initial_enumeration", "dag_conversion")
 
 
 @dataclass(frozen=True)
@@ -414,6 +415,66 @@ def modulo_partition_size(total: int, index: int, count: int) -> int:
     return 1 + (total - 1 - index) // count
 
 
+def validate_root_enumeration_phases(
+    document: Mapping[str, Any],
+    workers: Sequence[Mapping[str, Any]],
+    worker_ranks: Sequence[int],
+    topology: ParallelTopology,
+    prefix: str,
+) -> None:
+    """Require process-owned root setup to run once on each MPI rank."""
+    memory = require_mapping(document.get("memory"), f"{prefix}: memory")
+    aggregate_phases = require_mapping(
+        memory.get("phases"), f"{prefix}: memory.phases"
+    )
+    for phase_name in ROOT_ENUMERATION_PHASES:
+        activations_per_rank = [0 for _ in range(topology.rank_count)]
+        worker_activation_total = 0
+        for index, worker in enumerate(workers):
+            worker_path = f"{prefix}: parallel.workers[{index}]"
+            phases = require_mapping(worker.get("phases"), f"{worker_path}.phases")
+            phase = require_mapping(
+                phases.get(phase_name), f"{worker_path}.phases.{phase_name}"
+            )
+            activations = require_nonnegative_integer(
+                phase.get("activations"),
+                f"{worker_path}.phases.{phase_name}.activations",
+            )
+            wall_nanoseconds = require_nonnegative_integer(
+                phase.get("wall_nanoseconds"),
+                f"{worker_path}.phases.{phase_name}.wall_nanoseconds",
+            )
+            require(
+                activations != 0 or wall_nanoseconds == 0,
+                f"{worker_path}.phases.{phase_name} has elapsed time without "
+                "an activation",
+            )
+            activations_per_rank[worker_ranks[index]] += activations
+            worker_activation_total += activations
+
+        for rank, activations in enumerate(activations_per_rank):
+            require(
+                activations == 1,
+                f"{prefix}: {phase_name} ran {activations} times on rank {rank}; "
+                "root enumeration must run once per rank, not once per worker",
+            )
+
+        aggregate_phase = require_mapping(
+            aggregate_phases.get(phase_name),
+            f"{prefix}: memory.phases.{phase_name}",
+        )
+        aggregate_activations = require_nonnegative_integer(
+            aggregate_phase.get("activations"),
+            f"{prefix}: memory.phases.{phase_name}.activations",
+        )
+        require(
+            aggregate_activations == worker_activation_total,
+            f"{prefix}: memory.phases.{phase_name}.activations="
+            f"{aggregate_activations} does not equal worker sum "
+            f"{worker_activation_total}",
+        )
+
+
 def validate_parallel_telemetry(
     document: Mapping[str, Any],
     case: SolverCase,
@@ -567,6 +628,14 @@ def validate_parallel_telemetry(
             local_indices == set(range(topology.threads_per_rank[rank])),
             f"{prefix}: rank {rank} local worker indices are not contiguous",
         )
+
+    validate_root_enumeration_phases(
+        document,
+        workers,
+        worker_ranks,
+        topology,
+        prefix,
+    )
 
     aggregate = require_mapping(
         parallel.get("aggregate"), f"{prefix}: parallel.aggregate"

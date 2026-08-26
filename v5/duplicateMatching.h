@@ -767,6 +767,7 @@ private:
 /**
  * @brief Generate the next set of duplicates from the duplicate d
  * 
+ * @param dag Runtime DAG used to enumerate child masks
  * @param d the duplicate from which the next set of duplicates is to be generated
  * @param stmap maps an integer corresponding to a unique index of each non-isomorphic graph to a set of potential duplicates
  * @param fragment the bitset corresponding to the fragment d is a part of
@@ -777,6 +778,7 @@ private:
  * @return false otherwise
  */
 bool dagGenerate(
+    const vector<dagLevel> &dag,
     potentialDuplicate &d,
     dagDuplicateClassLevel &stmap,
     duplicateClassIndexWorkspace &classIndex,
@@ -787,14 +789,14 @@ bool dagGenerate(
 )
 {
     bool overweight = 0;
-    const dagLevel &parentLevel = DAG[size - 1];
+    const dagLevel &parentLevel = dag[size - 1];
     const dagNode &parent = parentLevel.nodes[d.idx];
     if (parent.transitionCount == 0) return overweight;
     const dagTransition *transition =
         parentLevel.transitions.data() + parent.transitionOffset;
     const dagTransition *const transitionEnd =
         transition + parent.transitionCount;
-    const dagNode *const childNodes = DAG[size].nodes.data();
+    const dagNode *const childNodes = dag[size].nodes.data();
     for (; transition != transitionEnd; ++transition)
     {
         if (searchShouldStopPeriodically()) return overweight;
@@ -825,6 +827,7 @@ bool dagGenerate(
 /**
  * @brief Generate the next set of duplicates from the duplicate set ds using the function dagGenerate
  * 
+ * @param dag Runtime DAG used to enumerate child masks
  * @param ds the duplicate set from which the next set is to be generated
  * @param stmap maps an integer corresponding to a unique index of each non-isomorphic graph to a set of potential duplicates
  * @param takenMasks bitsets of all edges which could be part of a duplicate
@@ -836,6 +839,7 @@ bool dagGenerate(
  * @return false 
  */
 bool dagDuplicateGenerator(
+    const vector<dagLevel> &dag,
     dagDuplicateSet &ds,
     dagDuplicateClassLevel &stmap,
     duplicateClassIndexWorkspace &classIndex,
@@ -858,6 +862,7 @@ bool dagDuplicateGenerator(
             if (!last)
             {
                 overweight |= dagGenerate(
+                    dag,
                     duplicate,
                     stmap,
                     classIndex,

@@ -98,7 +98,7 @@ struct treeCanonWorkspace
     }
 };
 
-// Canonical maps and the surrounding search are already single-threaded.
+// Each OpenMP worker owns this scratch through ASSEMBLYCPP_SEARCH_LOCAL.
 inline ASSEMBLYCPP_SEARCH_LOCAL treeCanonWorkspace treeCanonScratch;
 
 /**
