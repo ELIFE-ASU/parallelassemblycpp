@@ -184,6 +184,9 @@ struct ParallelReplicaResult
     bool runtimeLimitReached = false;
     bool enumerationLimitReached = false;
     string error;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    ParallelSearchWorkerTelemetry telemetry;
+#endif
 };
 
 size_t parallelMinimumBonds()
@@ -227,9 +230,6 @@ bool parallelSearchEligible(const molGraph &graph)
         !isPathway &&
         !writeIntermediateMAs &&
         runTimeMax == std::numeric_limits<unsigned long long>::max() &&
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-        !searchTelemetryEnabled &&
-#endif
         hasMultipleParallelWorkers() &&
         static_cast<size_t>(graph.totalBonds) >= parallelMinimumBonds();
 }
@@ -326,6 +326,11 @@ bool mpiGraphsAgree(const molGraph &graph)
 
 bool runParallelSearch(molGraph &graph, ofstream &output)
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    const uint64_t parallelStartedNanoseconds = searchTelemetryEnabled
+        ? searchTelemetryWallNanoseconds()
+        : 0;
+#endif
     const int localThreads = localParallelThreadCount();
     int shardOffset = 0;
     int totalShards = localThreads;
@@ -362,6 +367,16 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         searchShardCount = static_cast<size_t>(totalShards);
         sharedAssemblyIndex = &processBest;
         suppressSearchOutput = true;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        uint64_t workerStartedNanoseconds = 0;
+        if (searchTelemetryEnabled)
+        {
+            workerStartedNanoseconds = searchTelemetryWallNanoseconds();
+            // Process-wide /proc peak resets cannot safely describe concurrent
+            // workers. Parallel workers collect counters and wall time only.
+            resetSearchTelemetry(false);
+        }
+#endif
         try
         {
             molGraph workerGraph = graph;
@@ -379,6 +394,30 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         {
             result.error = "unknown parallel worker failure";
         }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled)
+        {
+            finaliseSearchTelemetry();
+            const uint64_t workerElapsedNanoseconds =
+                telemetryNanosecondDifference(
+                    workerStartedNanoseconds,
+                    searchTelemetryWallNanoseconds()
+                );
+            result.telemetry = captureParallelSearchWorkerTelemetry(
+#if defined(ASSEMBLYCPP_USE_MPI)
+                static_cast<uint64_t>(assemblyCppMpiRank),
+#else
+                0,
+#endif
+                static_cast<uint64_t>(threadIndex),
+                static_cast<uint64_t>(shardOffset + threadIndex),
+                static_cast<uint64_t>(searchShardIndex),
+                static_cast<uint64_t>(searchShardCount),
+                static_cast<uint64_t>(searchShardBranchOrdinal),
+                workerElapsedNanoseconds
+            );
+        }
+#endif
         sharedAssemblyIndex = nullptr;
         suppressSearchOutput = false;
         searchShardIndex = 0;
@@ -392,6 +431,29 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     }
 #else
     runReplica(0);
+#endif
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    uint64_t globalParallelElapsedNanoseconds = 0;
+    if (searchTelemetryEnabled)
+    {
+        const uint64_t localParallelElapsedNanoseconds =
+            telemetryNanosecondDifference(
+                parallelStartedNanoseconds,
+                searchTelemetryWallNanoseconds()
+            );
+        globalParallelElapsedNanoseconds = localParallelElapsedNanoseconds;
+#if defined(ASSEMBLYCPP_USE_MPI)
+        MPI_Allreduce(
+            &localParallelElapsedNanoseconds,
+            &globalParallelElapsedNanoseconds,
+            1,
+            MPI_UINT64_T,
+            MPI_MAX,
+            MPI_COMM_WORLD
+        );
+#endif
+    }
 #endif
 
     int localAssemblyIndex = std::numeric_limits<int>::max();
@@ -453,6 +515,100 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         MPI_MAX,
         MPI_COMM_WORLD
     );
+#endif
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled)
+    {
+        vector<ParallelSearchWorkerTelemetry> localWorkerTelemetry;
+        localWorkerTelemetry.reserve(replicas.size());
+        for (const ParallelReplicaResult &replica : replicas)
+            localWorkerTelemetry.push_back(replica.telemetry);
+
+        vector<ParallelSearchWorkerTelemetry> gatheredWorkerTelemetry;
+#if defined(ASSEMBLYCPP_USE_MPI)
+        const int localTelemetryBytes = static_cast<int>(
+            localWorkerTelemetry.size() *
+            sizeof(ParallelSearchWorkerTelemetry)
+        );
+        vector<int> telemetryBytesPerRank;
+        vector<int> telemetryDisplacements;
+        if (isPrimaryProcess())
+        {
+            telemetryBytesPerRank.resize(
+                static_cast<size_t>(assemblyCppMpiSize)
+            );
+            telemetryDisplacements.resize(
+                static_cast<size_t>(assemblyCppMpiSize)
+            );
+        }
+        MPI_Gather(
+            &localTelemetryBytes,
+            1,
+            MPI_INT,
+            isPrimaryProcess() ? telemetryBytesPerRank.data() : nullptr,
+            1,
+            MPI_INT,
+            0,
+            MPI_COMM_WORLD
+        );
+        if (isPrimaryProcess())
+        {
+            int gatheredBytes = 0;
+            for (int rank = 0; rank < assemblyCppMpiSize; ++rank)
+            {
+                telemetryDisplacements[rank] = gatheredBytes;
+                gatheredBytes += telemetryBytesPerRank[rank];
+            }
+            gatheredWorkerTelemetry.resize(
+                static_cast<size_t>(gatheredBytes) /
+                sizeof(ParallelSearchWorkerTelemetry)
+            );
+        }
+        MPI_Gatherv(
+            localWorkerTelemetry.data(),
+            localTelemetryBytes,
+            MPI_BYTE,
+            isPrimaryProcess() ? gatheredWorkerTelemetry.data() : nullptr,
+            isPrimaryProcess() ? telemetryBytesPerRank.data() : nullptr,
+            isPrimaryProcess() ? telemetryDisplacements.data() : nullptr,
+            MPI_BYTE,
+            0,
+            MPI_COMM_WORLD
+        );
+#else
+        gatheredWorkerTelemetry = std::move(localWorkerTelemetry);
+#endif
+        if (isPrimaryProcess())
+        {
+#if defined(ASSEMBLYCPP_USE_MPI) && defined(ASSEMBLYCPP_USE_OPENMP)
+            constexpr const char *parallelMode = "hybrid";
+#elif defined(ASSEMBLYCPP_USE_MPI)
+            constexpr const char *parallelMode = "mpi";
+#else
+            constexpr const char *parallelMode = "openmp";
+#endif
+#if defined(ASSEMBLYCPP_USE_MPI)
+            constexpr const char *aggregationScope = "all_mpi_ranks";
+            const uint64_t rankCount =
+                static_cast<uint64_t>(assemblyCppMpiSize);
+#else
+            constexpr const char *aggregationScope = "process";
+            constexpr uint64_t rankCount = 1;
+#endif
+            configureParallelSearchTelemetry(
+                parallelMode,
+                aggregationScope,
+                rankCount,
+                globalParallelElapsedNanoseconds,
+                globalSucceeded != 0 &&
+                    globalRuntimeLimit == 0 &&
+                    globalEnumerationLimit == 0 &&
+                    globalUserInterrupt == 0,
+                std::move(gatheredWorkerTelemetry)
+            );
+        }
+    }
 #endif
 
     if (globalUserInterrupt != 0)
@@ -542,6 +698,7 @@ bool assemblyCalculator(const string &input)
 {
     searchCancellationFlag.store(false);
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
+    resetParallelSearchTelemetry();
     resetSearchTelemetry();
 #endif
     const bool explicitMolfile = hasMolfileExtension(input);

@@ -74,7 +74,7 @@ For a molfile, `INPUT` below excludes the `.mol` suffix.
 | `INPUTOut` | Assembly index, search status, and `std::clock` ticks. |
 | `INPUTPathway` | Recovered pathway JSON when `--pathway=1`. |
 | `INPUTIntermediateMAs` | Improved indices when `--write-intermediate-mas=1`. |
-| `INPUTTelemetry.json` | Telemetry counters, cache rates, and phase memory. |
+| `INPUTTelemetry.json` | Search counters and, for parallel runs, per-worker topology, work, and timing. |
 | `memUsage` | Linux `VmPeak` value when `--memory-report=1`. |
 
 An output error produces a non-zero exit status. After a handled Ctrl-C,
@@ -122,6 +122,7 @@ reusable but not thread-safe; use separate processes for concurrent work.
 | `performance` | x86-64-v3 build with a telemetry executable. |
 | `performance-lto` | x86-64-v3 build with link-time optimization. |
 | `parallel` | Experimental OpenMP, MPI, and hybrid executables. |
+| `parallel-tests` | Portable parallel targets with correctness and telemetry tests. |
 | `pgo-generate` / `performance-pgo` | GCC profile generation and profile-use builds. |
 
 Performance presets require an x86-64-v3 processor. The parallel preset also
@@ -138,9 +139,10 @@ cmake --build --preset performance-pgo
 ```
 
 Parallel search requires multiple workers, at least 32 bonds, pathway and
-intermediate output disabled, an unlimited runtime, and telemetry disabled.
-Other workloads run serially. Set `ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` only when
-testing smaller scaling inputs.
+intermediate output disabled, and an unlimited runtime. Telemetry is available
+from the `AssemblyCppOMPTelemetry`, `AssemblyCppMPITelemetry`, and
+`AssemblyCppHybridTelemetry` targets. Other workloads run serially. Set
+`ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` only when testing smaller scaling inputs.
 
 ## Tests
 
@@ -152,8 +154,17 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-Use the `ci` preset instead to run every reviewed regression case. Test data and
-targeted commands are documented in [unitTests/README.md](unitTests/README.md).
+Use the `ci` preset instead to run every reviewed regression case. Run the
+parallel parity and telemetry checks separately with:
+
+```bash
+cmake --preset parallel-tests
+cmake --build --preset parallel-tests
+ctest --preset parallel-tests
+```
+
+Test data and targeted commands are documented in
+[unitTests/README.md](unitTests/README.md).
 
 ## Benchmarks
 

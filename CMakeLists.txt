@@ -465,13 +465,70 @@ if(ASSEMBLYCPP_BUILD_HYBRID)
   assemblycpp_configure_target(AssemblyCppHybrid)
 endif()
 
+if(ASSEMBLYCPP_BUILD_TELEMETRY)
+  add_executable(AssemblyCppTelemetry v5/main.cpp)
+  target_compile_definitions(
+    AssemblyCppTelemetry
+    PRIVATE ASSEMBLY_ENABLE_TELEMETRY
+  )
+  assemblycpp_configure_target(AssemblyCppTelemetry)
+
+  if(ASSEMBLYCPP_BUILD_OPENMP)
+    add_executable(AssemblyCppOMPTelemetry v5/main.cpp)
+    target_compile_definitions(
+      AssemblyCppOMPTelemetry
+      PRIVATE ASSEMBLYCPP_USE_OPENMP ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      AssemblyCppOMPTelemetry
+      PRIVATE OpenMP::OpenMP_CXX
+    )
+    assemblycpp_configure_target(AssemblyCppOMPTelemetry)
+  endif()
+
+  if(ASSEMBLYCPP_BUILD_MPI)
+    add_executable(AssemblyCppMPITelemetry v5/main.cpp)
+    target_compile_definitions(
+      AssemblyCppMPITelemetry
+      PRIVATE ASSEMBLYCPP_USE_MPI ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      AssemblyCppMPITelemetry
+      PRIVATE MPI::MPI_CXX
+    )
+    assemblycpp_configure_target(AssemblyCppMPITelemetry)
+  endif()
+
+  if(ASSEMBLYCPP_BUILD_HYBRID)
+    add_executable(AssemblyCppHybridTelemetry v5/main.cpp)
+    target_compile_definitions(
+      AssemblyCppHybridTelemetry
+      PRIVATE
+        ASSEMBLYCPP_USE_MPI
+        ASSEMBLYCPP_USE_OPENMP
+        ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      AssemblyCppHybridTelemetry
+      PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX
+    )
+    assemblycpp_configure_target(AssemblyCppHybridTelemetry)
+  endif()
+endif()
+
 if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   # Internalize single-file targets while preserving public library symbols.
   target_compile_options(AssemblyCpp PRIVATE -fwhole-program)
   target_compile_options(AssemblyCppLibrary PRIVATE -fwhole-program)
   foreach(
     ASSEMBLYCPP_PARALLEL_TARGET
-    AssemblyCppOMP AssemblyCppMPI AssemblyCppHybrid
+    AssemblyCppOMP
+    AssemblyCppMPI
+    AssemblyCppHybrid
+    AssemblyCppTelemetry
+    AssemblyCppOMPTelemetry
+    AssemblyCppMPITelemetry
+    AssemblyCppHybridTelemetry
   )
     if(TARGET ${ASSEMBLYCPP_PARALLEL_TARGET})
       target_compile_options(
@@ -480,15 +537,6 @@ if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
       )
     endif()
   endforeach()
-endif()
-
-if(ASSEMBLYCPP_BUILD_TELEMETRY)
-  add_executable(AssemblyCppTelemetry v5/main.cpp)
-  target_compile_definitions(
-    AssemblyCppTelemetry
-    PRIVATE ASSEMBLY_ENABLE_TELEMETRY
-  )
-  assemblycpp_configure_target(AssemblyCppTelemetry)
 endif()
 
 install(
@@ -803,6 +851,130 @@ if(BUILD_TESTING)
       regression.telemetry
       PROPERTIES
         LABELS "regression;telemetry"
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  if(TARGET AssemblyCppOMP)
+    add_test(
+      NAME regression.parallel-solver
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        --openmp "$<TARGET_FILE:AssemblyCppOMP>"
+        --repetitions 3
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-solver
+      PROPERTIES
+        LABELS "regression;parallel"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  if(TARGET AssemblyCppOMPTelemetry)
+    add_test(
+      NAME regression.parallel-telemetry
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        --openmp-telemetry "$<TARGET_FILE:AssemblyCppOMPTelemetry>"
+        --telemetry-repetitions 2
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-telemetry
+      PROPERTIES
+        LABELS "regression;parallel;telemetry"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  set(ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS)
+  if(TARGET AssemblyCppMPI)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS
+      --mpi "$<TARGET_FILE:AssemblyCppMPI>"
+    )
+  endif()
+  if(TARGET AssemblyCppHybrid)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS
+      --hybrid "$<TARGET_FILE:AssemblyCppHybrid>"
+    )
+  endif()
+  list(
+    LENGTH ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS
+    ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTION_COUNT
+  )
+  if(ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTION_COUNT GREATER 0)
+    add_test(
+      NAME regression.parallel-distributed
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        ${ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS}
+        --mpiexec "${MPIEXEC_EXECUTABLE}"
+        "--mpiexec-numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-distributed
+      PROPERTIES
+        LABELS "regression;parallel;mpi"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  set(ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS)
+  if(TARGET AssemblyCppMPITelemetry)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS
+      --mpi-telemetry "$<TARGET_FILE:AssemblyCppMPITelemetry>"
+    )
+  endif()
+  if(TARGET AssemblyCppHybridTelemetry)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS
+      --hybrid-telemetry "$<TARGET_FILE:AssemblyCppHybridTelemetry>"
+    )
+  endif()
+  list(
+    LENGTH ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS
+    ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTION_COUNT
+  )
+  if(ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTION_COUNT GREATER 0)
+    add_test(
+      NAME regression.parallel-distributed-telemetry
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        ${ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS}
+        --mpiexec "${MPIEXEC_EXECUTABLE}"
+        "--mpiexec-numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-distributed-telemetry
+      PROPERTIES
+        LABELS "regression;parallel;mpi;telemetry"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
         TIMEOUT 300
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     )

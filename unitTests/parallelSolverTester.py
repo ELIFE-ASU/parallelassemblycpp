@@ -1,0 +1,949 @@
+"""Check serial/parallel solver parity and parallel telemetry reduction."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+TEST_DIRECTORY = Path(__file__).resolve().parent
+REPOSITORY_ROOT = TEST_DIRECTORY.parent
+DEFAULT_MANIFEST = REPOSITORY_ROOT / "benchmarks" / "cases.tsv"
+SKIP_RETURN_CODE = 77
+ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
+
+
+@dataclass(frozen=True)
+class CaseSpec:
+    name: str
+    edges: int
+    active_mask_words: int
+
+
+@dataclass(frozen=True)
+class SolverCase:
+    name: str
+    source: Path
+    expected_index: int
+    edges: int
+    active_mask_words: int
+
+
+@dataclass(frozen=True)
+class ParallelTopology:
+    mode: str
+    threads_per_rank: tuple[int, ...]
+
+    @property
+    def rank_count(self) -> int:
+        return len(self.threads_per_rank)
+
+    @property
+    def worker_count(self) -> int:
+        return sum(self.threads_per_rank)
+
+    @property
+    def aggregation_scope(self) -> str:
+        return "process" if self.mode == "openmp" else "all_mpi_ranks"
+
+    @property
+    def description(self) -> str:
+        threads = self.threads_per_rank[0]
+        return f"{self.mode} {self.rank_count}x{threads} ({self.worker_count} workers)"
+
+
+@dataclass(frozen=True)
+class ParallelTarget:
+    label: str
+    executable: Path
+    topology: ParallelTopology
+    mpiexec: Path | None = None
+    numproc_flag: str = "-n"
+
+
+PARITY_CASES = (
+    CaseSpec("mask-boundary-path-063b", 63, 1),
+    CaseSpec("mask-boundary-path-064b", 64, 1),
+    CaseSpec("mask-boundary-path-065b", 65, 2),
+    CaseSpec("mask-boundary-path-127b", 127, 2),
+    CaseSpec("mask-boundary-path-128b", 128, 2),
+    CaseSpec("mask-boundary-path-129b", 129, 3),
+    # Four disconnected amino-acid components exercise component preprocessing;
+    # default hydrogen removal leaves 31 processed edges from 32 input bonds.
+    CaseSpec("amino-acid-scale-04c", 31, 1),
+)
+TELEMETRY_CASE_NAMES = {
+    "mask-boundary-path-129b",
+    "amino-acid-scale-04c",
+}
+MPI_TOPOLOGY = ParallelTopology("mpi", (1, 1))
+HYBRID_TOPOLOGY = ParallelTopology("hybrid", (2, 2))
+
+
+class TestFailure(RuntimeError):
+    """Raised when a solver result or telemetry invariant is incorrect."""
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least one")
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def resolve_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return (Path.cwd() / path).resolve()
+
+
+def resolve_command_path(path: Path) -> Path:
+    command = str(path)
+    if path.is_absolute() or path.parent != Path("."):
+        return resolve_path(path)
+    discovered = shutil.which(command)
+    return Path(discovered) if discovered is not None else resolve_path(path)
+
+
+def load_cases(manifest_argument: Path) -> list[SolverCase]:
+    manifest = resolve_path(manifest_argument)
+    wanted = {spec.name: spec for spec in PARITY_CASES}
+    found: dict[str, SolverCase] = {}
+    try:
+        with manifest.open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, delimiter="\t")
+            required = {"name", "input", "expected_assembly_index"}
+            if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+                raise TestFailure(
+                    f"invalid benchmark manifest header in {manifest}; "
+                    f"required columns are {sorted(required)}"
+                )
+            for row in reader:
+                name = row["name"].strip()
+                spec = wanted.get(name)
+                if spec is None:
+                    continue
+                if name in found:
+                    raise TestFailure(f"duplicate case {name!r} in {manifest}")
+                source = (manifest.parent / row["input"].strip()).resolve()
+                try:
+                    expected_index = int(row["expected_assembly_index"])
+                except ValueError as error:
+                    raise TestFailure(
+                        f"invalid expected index for {name!r} in {manifest}"
+                    ) from error
+                found[name] = SolverCase(
+                    name=name,
+                    source=source,
+                    expected_index=expected_index,
+                    edges=spec.edges,
+                    active_mask_words=spec.active_mask_words,
+                )
+    except OSError as error:
+        raise TestFailure(
+            f"cannot read benchmark manifest {manifest}: {error}"
+        ) from error
+
+    missing = [spec.name for spec in PARITY_CASES if spec.name not in found]
+    if missing:
+        raise TestFailure(f"benchmark manifest is missing cases: {', '.join(missing)}")
+    cases = [found[spec.name] for spec in PARITY_CASES]
+    absent_fixtures = [str(case.source) for case in cases if not case.source.is_file()]
+    if absent_fixtures:
+        raise TestFailure(f"missing fixture(s): {', '.join(absent_fixtures)}")
+    return cases
+
+
+def executable_status(paths: Sequence[tuple[str, Path | None]]) -> int | None:
+    missing = [
+        f"{name}={path}"
+        for name, path in paths
+        if path is not None and not path.is_file()
+    ]
+    if missing:
+        print(f"SKIP: requested executable is absent: {', '.join(missing)}")
+        return SKIP_RETURN_CODE
+    unusable = [
+        f"{name}={path}"
+        for name, path in paths
+        if path is not None and not os.access(path, os.X_OK)
+    ]
+    if unusable:
+        raise TestFailure(f"solver target is not executable: {', '.join(unusable)}")
+    return None
+
+
+def output_stem(input_path: Path) -> str:
+    return input_path.name.removesuffix(".mol")
+
+
+def format_completed(completed: subprocess.CompletedProcess[str]) -> str:
+    return (
+        f"return code: {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\n"
+        f"stderr:\n{completed.stderr}"
+    )
+
+
+def terminate_command(process: subprocess.Popen[str]) -> None:
+    killed_group = False
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            killed_group = True
+        except ProcessLookupError:
+            killed_group = True
+        except OSError:
+            pass
+    if not killed_group:
+        process.kill()
+
+
+def run_command(
+    arguments: Sequence[str],
+    working_directory: Path,
+    environment: Mapping[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    popen_arguments: dict[str, object] = {
+        "cwd": working_directory,
+        "env": environment,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "posix":
+        popen_arguments["start_new_session"] = True
+    process = subprocess.Popen(arguments, **popen_arguments)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        terminate_command(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            arguments,
+            error.timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from error
+    except BaseException:
+        terminate_command(process)
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+
+
+def run_solver(
+    executable: Path,
+    case: SolverCase,
+    timeout: float,
+    *,
+    topology: ParallelTopology | None = None,
+    mpiexec: Path | None = None,
+    numproc_flag: str = "-n",
+    telemetry: bool = False,
+) -> tuple[int, dict[str, Any] | None]:
+    environment = os.environ.copy()
+    if topology is not None:
+        environment["ASSEMBLYCPP_PARALLEL_MIN_BONDS"] = "0"
+    if topology is not None and topology.mode in {"openmp", "hybrid"}:
+        require(
+            len(set(topology.threads_per_rank)) == 1,
+            f"{topology.mode}: test topology must use uniform thread counts",
+        )
+        worker_text = str(topology.threads_per_rank[0])
+        environment.update(
+            {
+                "OMP_NUM_THREADS": worker_text,
+                "OMP_THREAD_LIMIT": worker_text,
+                "OMP_DYNAMIC": "FALSE",
+            }
+        )
+
+    with tempfile.TemporaryDirectory(prefix="assemblycpp-parallel-") as temporary:
+        working_directory = Path(temporary)
+        input_name = "input.mol" if case.source.suffix == ".mol" else "input"
+        input_path = working_directory / input_name
+        shutil.copy2(case.source, input_path)
+        solver_arguments = [str(executable), input_name, "--pathway=0"]
+        if telemetry:
+            solver_arguments.append("--telemetry=1")
+        if topology is not None and topology.rank_count > 1:
+            require(mpiexec is not None, f"{topology.mode}: mpiexec is required")
+            arguments = [
+                str(mpiexec),
+                numproc_flag,
+                str(topology.rank_count),
+                *solver_arguments,
+            ]
+        else:
+            arguments = solver_arguments
+        try:
+            completed = run_command(
+                arguments,
+                working_directory,
+                environment,
+                timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            configuration = topology.description if topology is not None else "serial"
+            raise TestFailure(
+                f"{case.name}: {executable.name} exceeded {timeout:g}s with "
+                f"{configuration} configuration"
+            ) from error
+        if completed.returncode != 0:
+            raise TestFailure(
+                f"{case.name}: {executable.name} failed\n{format_completed(completed)}"
+            )
+
+        stem = output_stem(input_path)
+        output_path = working_directory / f"{stem}Out"
+        try:
+            output_text = output_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise TestFailure(
+                f"{case.name}: cannot read solver output {output_path}: {error}\n"
+                f"{format_completed(completed)}"
+            ) from error
+        match = ASSEMBLY_INDEX_PATTERN.search(output_text)
+        if match is None:
+            raise TestFailure(
+                f"{case.name}: assembly index is absent from {output_path}\n"
+                f"output file:\n{output_text}\n{format_completed(completed)}"
+            )
+        index = int(match.group(1))
+
+        document: dict[str, Any] | None = None
+        if telemetry:
+            telemetry_path = working_directory / f"{stem}Telemetry.json"
+            try:
+                parsed = json.loads(telemetry_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise TestFailure(
+                    f"{case.name}: cannot read telemetry {telemetry_path}: {error}"
+                ) from error
+            if not isinstance(parsed, dict):
+                raise TestFailure(f"{case.name}: telemetry root must be an object")
+            document = parsed
+        return index, document
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise TestFailure(message)
+
+
+def require_nonnegative_integer(value: object, path: str) -> int:
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+        f"{path} must be a non-negative integer, got {value!r}",
+    )
+    return value
+
+
+def require_mapping(value: object, path: str) -> Mapping[str, Any]:
+    require(isinstance(value, dict), f"{path} must be an object")
+    return value
+
+
+def validate_counter_sum(
+    aggregate: object,
+    worker_values: Sequence[object],
+    path: str,
+) -> None:
+    aggregate_map = require_mapping(aggregate, path)
+    require(bool(aggregate_map), f"{path} must not be empty")
+    worker_maps = [
+        require_mapping(value, f"worker[{index}].counters")
+        for index, value in enumerate(worker_values)
+    ]
+    aggregate_keys = set(aggregate_map)
+    for index, worker_map in enumerate(worker_maps):
+        require(
+            set(worker_map) == aggregate_keys,
+            f"worker[{index}].counters keys differ from {path}",
+        )
+    for key, aggregate_value in aggregate_map.items():
+        child_path = f"{path}.{key}"
+        children = [worker_map[key] for worker_map in worker_maps]
+        if isinstance(aggregate_value, dict):
+            validate_counter_sum(aggregate_value, children, child_path)
+            continue
+        aggregate_integer = require_nonnegative_integer(aggregate_value, child_path)
+        worker_integers = [
+            require_nonnegative_integer(value, f"worker[{index}].counters.{key}")
+            for index, value in enumerate(children)
+        ]
+        require(
+            aggregate_integer == sum(worker_integers),
+            f"{child_path}={aggregate_integer} does not equal worker sum "
+            f"{sum(worker_integers)}",
+        )
+
+
+def validate_parallel_telemetry(
+    document: Mapping[str, Any],
+    case: SolverCase,
+    topology: ParallelTopology,
+) -> None:
+    requested_workers = topology.worker_count
+    prefix = f"{case.name} ({topology.description})"
+    parallel = require_mapping(document.get("parallel"), f"{prefix}: parallel")
+    require(parallel.get("enabled") is True, f"{prefix}: parallel.enabled must be true")
+    require(
+        parallel.get("mode") == topology.mode,
+        f"{prefix}: parallel.mode must be {topology.mode!r}",
+    )
+    require(
+        parallel.get("aggregation_scope") == topology.aggregation_scope,
+        f"{prefix}: parallel.aggregation_scope must be {topology.aggregation_scope!r}",
+    )
+    require(
+        parallel.get("rank_count") == topology.rank_count,
+        f"{prefix}: parallel.rank_count must be {topology.rank_count}",
+    )
+    require(
+        parallel.get("worker_count") == requested_workers,
+        f"{prefix}: parallel.worker_count must be {requested_workers}",
+    )
+    require(
+        parallel.get("branch_scan_complete") is True,
+        f"{prefix}: parallel.branch_scan_complete must be true",
+    )
+    shard_ownership = require_mapping(
+        parallel.get("shard_ownership"), f"{prefix}: parallel.shard_ownership"
+    )
+    require(
+        shard_ownership.get("strategy") == "root_branch_ordinal_modulo_worker_count"
+        and shard_ownership.get("complete") is True
+        and shard_ownership.get("shard_count") == requested_workers,
+        f"{prefix}: parallel.shard_ownership is inconsistent",
+    )
+
+    require(
+        len(set(topology.threads_per_rank)) == 1,
+        f"{prefix}: expected test topology must have uniform local threads",
+    )
+    local_threads = topology.threads_per_rank[0]
+    require(
+        parallel.get("local_threads") == local_threads,
+        f"{prefix}: parallel.local_threads must be {local_threads}",
+    )
+    require(
+        parallel.get("local_threads_per_rank") == list(topology.threads_per_rank),
+        f"{prefix}: parallel.local_threads_per_rank must be "
+        f"{list(topology.threads_per_rank)}",
+    )
+
+    workers_value = parallel.get("workers")
+    require(
+        isinstance(workers_value, list), f"{prefix}: parallel.workers must be an array"
+    )
+    workers: list[Mapping[str, Any]] = [
+        require_mapping(worker, f"{prefix}: parallel.workers[{index}]")
+        for index, worker in enumerate(workers_value)
+    ]
+    require(
+        len(workers) == requested_workers,
+        f"{prefix}: expected {requested_workers} worker records, got {len(workers)}",
+    )
+
+    global_indices: list[int] = []
+    shard_indices: list[int] = []
+    rank_local_indices = [set() for _ in range(topology.rank_count)]
+    rank_offsets: list[int] = []
+    offset = 0
+    for threads in topology.threads_per_rank:
+        rank_offsets.append(offset)
+        offset += threads
+    for index, worker in enumerate(workers):
+        worker_path = f"{prefix}: parallel.workers[{index}]"
+        rank = require_nonnegative_integer(worker.get("rank"), f"{worker_path}.rank")
+        require(rank < topology.rank_count, f"{worker_path}.rank is out of range")
+        local_index = require_nonnegative_integer(
+            worker.get("local_worker_index"), f"{worker_path}.local_worker_index"
+        )
+        require(
+            local_index < topology.threads_per_rank[rank],
+            f"{worker_path}.local_worker_index is out of range",
+        )
+        global_index = require_nonnegative_integer(
+            worker.get("global_worker_index"), f"{worker_path}.global_worker_index"
+        )
+        require(
+            global_index == rank_offsets[rank] + local_index,
+            f"{worker_path}: rank/local/global index mismatch",
+        )
+        rank_local_indices[rank].add(local_index)
+        global_indices.append(global_index)
+        shard = require_mapping(worker.get("shard"), f"{worker_path}.shard")
+        shard_index = require_nonnegative_integer(
+            shard.get("index"), f"{worker_path}.shard.index"
+        )
+        shard_count = require_nonnegative_integer(
+            shard.get("count"), f"{worker_path}.shard.count"
+        )
+        require(
+            shard_count == requested_workers,
+            f"{worker_path}.shard.count must be {requested_workers}",
+        )
+        require(
+            shard_index == global_index,
+            f"{worker_path}: shard index must equal global worker index",
+        )
+        shard_indices.append(shard_index)
+
+        processed = require_mapping(
+            worker.get("processed_graph"), f"{worker_path}.processed_graph"
+        )
+        require(
+            processed.get("edges") == case.edges,
+            f"{worker_path}.processed_graph.edges must be {case.edges}",
+        )
+        require(
+            processed.get("active_mask_words") == case.active_mask_words,
+            f"{worker_path}.processed_graph.active_mask_words must be {case.active_mask_words}",
+        )
+    expected_indices = list(range(requested_workers))
+    require(
+        sorted(global_indices) == expected_indices,
+        f"{prefix}: global worker indices are not contiguous",
+    )
+    require(
+        sorted(shard_indices) == expected_indices,
+        f"{prefix}: shard ownership is not one-to-one",
+    )
+    for rank, local_indices in enumerate(rank_local_indices):
+        require(
+            local_indices == set(range(topology.threads_per_rank[rank])),
+            f"{prefix}: rank {rank} local worker indices are not contiguous",
+        )
+
+    aggregate = require_mapping(
+        parallel.get("aggregate"), f"{prefix}: parallel.aggregate"
+    )
+    # This exact nesting is intentional: reductions must never be inferred from
+    # the process-level telemetry counters.
+    validate_counter_sum(
+        aggregate.get("counters"),
+        [worker.get("counters") for worker in workers],
+        f"{prefix}: parallel.aggregate.counters",
+    )
+
+    worker_branch_candidates: list[int] = []
+    branch_assignments = 0
+    worker_elapsed = 0
+    worker_busy = 0
+    maximum_worker_elapsed = 0
+    for index, worker in enumerate(workers):
+        worker_path = f"{prefix}: parallel.workers[{index}]"
+        candidates = require_nonnegative_integer(
+            worker.get("branch_candidates"), f"{worker_path}.branch_candidates"
+        )
+        assignments = require_nonnegative_integer(
+            worker.get("branch_assignments"), f"{worker_path}.branch_assignments"
+        )
+        require(
+            assignments <= candidates, f"{worker_path}: assignments exceed candidates"
+        )
+        worker_branch_candidates.append(candidates)
+        branch_assignments += assignments
+        elapsed = require_nonnegative_integer(
+            worker.get("elapsed_nanoseconds"), f"{worker_path}.elapsed_nanoseconds"
+        )
+        busy = require_nonnegative_integer(
+            worker.get("busy_nanoseconds"), f"{worker_path}.busy_nanoseconds"
+        )
+        require(busy <= elapsed, f"{worker_path}: busy time exceeds elapsed time")
+        worker_elapsed += elapsed
+        worker_busy += busy
+        maximum_worker_elapsed = max(maximum_worker_elapsed, elapsed)
+
+    aggregate_candidates = require_nonnegative_integer(
+        aggregate.get("branch_candidates"),
+        f"{prefix}: parallel.aggregate.branch_candidates",
+    )
+    aggregate_assignments = require_nonnegative_integer(
+        aggregate.get("branch_assignments"),
+        f"{prefix}: parallel.aggregate.branch_assignments",
+    )
+    require(
+        len(set(worker_branch_candidates)) == 1
+        and aggregate_candidates == worker_branch_candidates[0],
+        f"{prefix}: workers disagree on the scanned branch count",
+    )
+    require(
+        aggregate_assignments == branch_assignments,
+        f"{prefix}: aggregate branch assignment total is incorrect",
+    )
+    require(aggregate_assignments > 0, f"{prefix}: no branch was assigned")
+    require(
+        aggregate_assignments == aggregate_candidates,
+        f"{prefix}: complete branch scan did not assign every candidate",
+    )
+    aggregate_elapsed = require_nonnegative_integer(
+        aggregate.get("elapsed_nanoseconds"),
+        f"{prefix}: parallel.aggregate.elapsed_nanoseconds",
+    )
+    require(
+        aggregate_elapsed >= maximum_worker_elapsed,
+        f"{prefix}: aggregate elapsed time is shorter than a worker",
+    )
+    aggregate_worker_elapsed = require_nonnegative_integer(
+        aggregate.get("worker_elapsed_nanoseconds"),
+        f"{prefix}: parallel.aggregate.worker_elapsed_nanoseconds",
+    )
+    aggregate_worker_busy = require_nonnegative_integer(
+        aggregate.get("worker_busy_nanoseconds"),
+        f"{prefix}: parallel.aggregate.worker_busy_nanoseconds",
+    )
+    require(
+        aggregate_worker_elapsed == worker_elapsed,
+        f"{prefix}: aggregate worker elapsed time is not the worker sum",
+    )
+    require(
+        aggregate_worker_busy == worker_busy,
+        f"{prefix}: aggregate worker busy time is not the worker sum",
+    )
+
+
+def run_parity_suite(
+    serial: Path,
+    openmp: Path,
+    cases: Sequence[SolverCase],
+    repetitions: int,
+    timeout: float,
+) -> int:
+    runs = 0
+    for case in cases:
+        observed: dict[str, list[int]] = {}
+        configurations: tuple[tuple[str, Path, ParallelTopology | None], ...] = (
+            ("serial", serial, None),
+            ("openmp-1", openmp, ParallelTopology("openmp", (1,))),
+            ("openmp-2", openmp, ParallelTopology("openmp", (2,))),
+            ("openmp-4", openmp, ParallelTopology("openmp", (4,))),
+        )
+        for label, executable, topology in configurations:
+            indices = [
+                run_solver(
+                    executable,
+                    case,
+                    timeout,
+                    topology=topology,
+                )[0]
+                for _ in range(repetitions)
+            ]
+            runs += repetitions
+            require(
+                all(index == case.expected_index for index in indices),
+                f"{case.name}: {label} returned {indices}, expected "
+                f"{case.expected_index} on every run",
+            )
+            observed[label] = indices
+        require(
+            len({index for indices in observed.values() for index in indices}) == 1,
+            f"{case.name}: serial/OpenMP index mismatch: {observed}",
+        )
+        print(f"PASS parity {case.name}: index {case.expected_index}")
+    return runs
+
+
+def run_distributed_parity_suite(
+    serial: Path,
+    target: ParallelTarget,
+    cases: Sequence[SolverCase],
+    timeout: float,
+) -> int:
+    runs = 0
+    for case in cases:
+        serial_index, _ = run_solver(serial, case, timeout)
+        parallel_index, _ = run_solver(
+            target.executable,
+            case,
+            timeout,
+            topology=target.topology,
+            mpiexec=target.mpiexec,
+            numproc_flag=target.numproc_flag,
+        )
+        runs += 2
+        require(
+            serial_index == case.expected_index,
+            f"{case.name}: serial index {serial_index}, expected {case.expected_index}",
+        )
+        require(
+            parallel_index == serial_index,
+            f"{case.name}: {target.label} index {parallel_index} does not match "
+            f"serial index {serial_index}",
+        )
+        print(f"PASS parity {case.name}: {target.label} index {case.expected_index}")
+    return runs
+
+
+def run_telemetry_suite(
+    serial: Path,
+    telemetry_openmp: Path,
+    cases: Sequence[SolverCase],
+    repetitions: int,
+    timeout: float,
+) -> int:
+    selected = [case for case in cases if case.name in TELEMETRY_CASE_NAMES]
+    runs = 0
+    for case in selected:
+        serial_index, _ = run_solver(serial, case, timeout)
+        runs += 1
+        require(
+            serial_index == case.expected_index,
+            f"{case.name}: serial index {serial_index}, expected {case.expected_index}",
+        )
+        for workers in (2, 4):
+            topology = ParallelTopology("openmp", (workers,))
+            indices: list[int] = []
+            for _ in range(repetitions):
+                index, document = run_solver(
+                    telemetry_openmp,
+                    case,
+                    timeout,
+                    topology=topology,
+                    telemetry=True,
+                )
+                runs += 1
+                require(
+                    document is not None, f"{case.name}: telemetry document is absent"
+                )
+                require(
+                    index == serial_index,
+                    f"{case.name}: {workers}-worker telemetry index {index} "
+                    f"does not match serial index {serial_index}",
+                )
+                validate_parallel_telemetry(document, case, topology)
+                indices.append(index)
+            require(
+                len(set(indices)) == 1,
+                f"{case.name}: repeated {workers}-worker telemetry runs returned {indices}",
+            )
+        print(f"PASS telemetry {case.name}: 2/4-worker reductions and index parity")
+    return runs
+
+
+def run_distributed_telemetry_suite(
+    serial: Path,
+    target: ParallelTarget,
+    cases: Sequence[SolverCase],
+    timeout: float,
+) -> int:
+    selected = [case for case in cases if case.name in TELEMETRY_CASE_NAMES]
+    runs = 0
+    for case in selected:
+        serial_index, _ = run_solver(serial, case, timeout)
+        index, document = run_solver(
+            target.executable,
+            case,
+            timeout,
+            topology=target.topology,
+            mpiexec=target.mpiexec,
+            numproc_flag=target.numproc_flag,
+            telemetry=True,
+        )
+        runs += 2
+        require(
+            serial_index == case.expected_index,
+            f"{case.name}: serial index {serial_index}, expected {case.expected_index}",
+        )
+        require(
+            index == serial_index,
+            f"{case.name}: {target.label} telemetry index {index} does not "
+            f"match serial index {serial_index}",
+        )
+        require(document is not None, f"{case.name}: telemetry document is absent")
+        validate_parallel_telemetry(document, case, target.topology)
+        print(f"PASS telemetry {case.name}: {target.label} reduction and index parity")
+    return runs
+
+
+def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--serial", type=Path, required=True, help="serial AssemblyCpp target"
+    )
+    parser.add_argument("--openmp", type=Path, help="OpenMP AssemblyCpp target")
+    parser.add_argument(
+        "--openmp-telemetry",
+        type=Path,
+        help="combined OpenMP and telemetry AssemblyCpp target",
+    )
+    parser.add_argument("--mpi", type=Path, help="two-rank MPI AssemblyCpp target")
+    parser.add_argument(
+        "--mpi-telemetry",
+        type=Path,
+        help="combined MPI and telemetry AssemblyCpp target",
+    )
+    parser.add_argument(
+        "--hybrid",
+        type=Path,
+        help="two-rank, two-thread hybrid AssemblyCpp target",
+    )
+    parser.add_argument(
+        "--hybrid-telemetry",
+        type=Path,
+        help="combined hybrid and telemetry AssemblyCpp target",
+    )
+    parser.add_argument(
+        "--mpiexec",
+        type=Path,
+        help="MPI launcher required by MPI and hybrid targets",
+    )
+    parser.add_argument(
+        "--mpiexec-numproc-flag",
+        "--numproc-flag",
+        dest="mpiexec_numproc_flag",
+        default="-n",
+        help="launcher flag placed immediately before the rank count (default: -n)",
+    )
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--repetitions", type=positive_int, default=3)
+    parser.add_argument("--telemetry-repetitions", type=positive_int, default=2)
+    parser.add_argument("--timeout", type=positive_float, default=30.0)
+    parsed = parser.parse_args(arguments)
+    target_names = (
+        "openmp",
+        "openmp_telemetry",
+        "mpi",
+        "mpi_telemetry",
+        "hybrid",
+        "hybrid_telemetry",
+    )
+    if all(getattr(parsed, name) is None for name in target_names):
+        parser.error("at least one parallel solver target is required")
+    distributed_names = ("mpi", "mpi_telemetry", "hybrid", "hybrid_telemetry")
+    distributed_requested = any(
+        getattr(parsed, name) is not None for name in distributed_names
+    )
+    if distributed_requested and parsed.mpiexec is None:
+        parser.error("--mpiexec is required with MPI or hybrid targets")
+    if not parsed.mpiexec_numproc_flag:
+        parser.error("--mpiexec-numproc-flag must not be empty")
+    parsed.serial = resolve_path(parsed.serial)
+    for name in target_names:
+        value = getattr(parsed, name)
+        if value is not None:
+            setattr(parsed, name, resolve_path(value))
+    if parsed.mpiexec is not None:
+        parsed.mpiexec = resolve_command_path(parsed.mpiexec)
+    return parsed
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    try:
+        options = parse_arguments(arguments)
+        status = executable_status(
+            (
+                ("serial", options.serial),
+                ("openmp", options.openmp),
+                ("openmp-telemetry", options.openmp_telemetry),
+                ("mpi", options.mpi),
+                ("mpi-telemetry", options.mpi_telemetry),
+                ("hybrid", options.hybrid),
+                ("hybrid-telemetry", options.hybrid_telemetry),
+                ("mpiexec", options.mpiexec),
+            )
+        )
+        if status is not None:
+            return status
+        cases = load_cases(options.manifest)
+        runs = 0
+        if options.openmp is not None:
+            runs += run_parity_suite(
+                options.serial,
+                options.openmp,
+                cases,
+                options.repetitions,
+                options.timeout,
+            )
+        if options.openmp_telemetry is not None:
+            runs += run_telemetry_suite(
+                options.serial,
+                options.openmp_telemetry,
+                cases,
+                options.telemetry_repetitions,
+                options.timeout,
+            )
+        if options.mpi is not None:
+            runs += run_distributed_parity_suite(
+                options.serial,
+                ParallelTarget(
+                    "mpi-2",
+                    options.mpi,
+                    MPI_TOPOLOGY,
+                    options.mpiexec,
+                    options.mpiexec_numproc_flag,
+                ),
+                cases,
+                options.timeout,
+            )
+        if options.mpi_telemetry is not None:
+            runs += run_distributed_telemetry_suite(
+                options.serial,
+                ParallelTarget(
+                    "mpi-2",
+                    options.mpi_telemetry,
+                    MPI_TOPOLOGY,
+                    options.mpiexec,
+                    options.mpiexec_numproc_flag,
+                ),
+                cases,
+                options.timeout,
+            )
+        if options.hybrid is not None:
+            runs += run_distributed_parity_suite(
+                options.serial,
+                ParallelTarget(
+                    "hybrid-2x2",
+                    options.hybrid,
+                    HYBRID_TOPOLOGY,
+                    options.mpiexec,
+                    options.mpiexec_numproc_flag,
+                ),
+                cases,
+                options.timeout,
+            )
+        if options.hybrid_telemetry is not None:
+            runs += run_distributed_telemetry_suite(
+                options.serial,
+                ParallelTarget(
+                    "hybrid-2x2",
+                    options.hybrid_telemetry,
+                    HYBRID_TOPOLOGY,
+                    options.mpiexec,
+                    options.mpiexec_numproc_flag,
+                ),
+                cases,
+                options.timeout,
+            )
+    except TestFailure as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print(f"PASS: {runs} bounded parallel solver run(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

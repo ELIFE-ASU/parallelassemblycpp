@@ -84,6 +84,16 @@
       }
     },
     {
+      "name": "parallel-tests",
+      "displayName": "Parallel correctness tests",
+      "description": "Portable OpenMP, MPI, hybrid, and telemetry test build",
+      "inherits": "parallel",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "ASSEMBLYCPP_X86_64_V3": false
+      }
+    },
+    {
       "name": "pgo-generate",
       "displayName": "PGO training",
       "description": "GCC-instrumented profile generation build",
@@ -132,6 +142,10 @@
       "configurePreset": "parallel"
     },
     {
+      "name": "parallel-tests",
+      "configurePreset": "parallel-tests"
+    },
+    {
       "name": "pgo-generate",
       "configurePreset": "pgo-generate"
     },
@@ -162,6 +176,21 @@
     {
       "name": "ci",
       "configurePreset": "ci",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "parallel-tests",
+      "configurePreset": "parallel-tests",
+      "filter": {
+        "include": {
+          "label": "parallel"
+        }
+      },
       "output": {
         "outputOnFailure": true
       },

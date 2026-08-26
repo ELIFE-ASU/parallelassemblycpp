@@ -14,6 +14,20 @@ ctest --preset dev
 
 Use the `ci` preset to run the complete regression manifest.
 
+Parallel solver parity and per-worker telemetry invariants use a dedicated
+preset so performance builds remain test-free:
+
+```bash
+cmake --preset parallel-tests
+cmake --build --preset parallel-tests
+ctest --preset parallel-tests
+```
+
+The parallel harness repeats serial/OpenMP calculations across 1, 2, and 4
+workers, including the 63/64/65 and 127/128/129 edge-mask boundaries and a
+disconnected molecule. When MPI targets are available, the same harness also
+checks all-rank aggregation for MPI and hybrid telemetry.
+
 Run the Python harness directly when selecting cases or controlling parallelism:
 
 ```bash

@@ -77,8 +77,14 @@ python benchmarks/benchmark.py \
 
 Telemetry is excluded from timing aggregates. It records graph size, retained
 masks, matching and canonicalisation activity, cache rates, phase clock ticks,
-and phase memory. A cache rate is `null` when no lookup occurred. Legacy VF2
-counters remain in the schema but are zero with the exact cyclic canonicaliser.
+and phase memory. Parallel telemetry additionally records rank/thread topology,
+modulo-shard ownership, root-branch coverage, steady-clock worker timing, and
+all 31 raw counters per worker plus their exact aggregate. Parallel phase memory
+is disabled because `/proc` peak resets are process-wide. A cache rate is `null`
+when no lookup occurred. Aggregate elapsed time is the critical parallel-region
+wall time; worker elapsed and busy values are sums, and busy is instrumented
+phase coverage rather than CPU utilization. Legacy VF2 counters remain in the
+schema but are zero with the exact cyclic canonicaliser.
 
 ## Paired comparisons
 
@@ -140,7 +146,8 @@ or PGO build.
 
 ## Parallel scaling
 
-The `parallel` preset builds serial, OpenMP, MPI, and hybrid executables:
+The `parallel` preset builds serial, OpenMP, MPI, and hybrid executables plus a
+telemetry-enabled sibling for each parallel topology:
 
 ```bash
 cmake --preset parallel
@@ -159,6 +166,14 @@ mpirun --map-by slot --bind-to core -n 4 \
 OMP_NUM_THREADS=2 OMP_PLACES=cores OMP_PROC_BIND=close \
   mpirun --map-by slot:PE=2 --bind-to core -n 2 \
   ./build/parallel/AssemblyCppHybrid molecule.mol --pathway=0
+
+OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
+  ./build/parallel/AssemblyCppOMPTelemetry molecule.mol \
+    --pathway=0 --telemetry=1
+
+mpirun --map-by slot --bind-to core -n 4 \
+  ./build/parallel/AssemblyCppMPITelemetry molecule.mol \
+    --pathway=0 --telemetry=1
 ```
 
 These placement flags use Open MPI syntax. Each worker owns its search caches
@@ -214,4 +229,12 @@ Run the benchmark-tool tests with:
 
 ```bash
 python -m unittest discover -s benchmarks -p 'test_*.py'
+```
+
+Build and run the solver-level parallel parity and telemetry checks with:
+
+```bash
+cmake --preset parallel-tests
+cmake --build --preset parallel-tests
+ctest --preset parallel-tests
 ```

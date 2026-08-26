@@ -43,6 +43,50 @@ CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
 ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SEARCH_TELEMETRY_PHASES = frozenset(
+    (
+        "input_setup",
+        "initial_enumeration",
+        "dag_conversion",
+        "assembly_search",
+        "output",
+    )
+)
+PARALLEL_TELEMETRY_COUNTERS = frozenset(
+    (
+        "retained_mask_attempts",
+        "retained_masks",
+        "duplicate_mask_attempts",
+        "rejected_masks",
+        "matching_visits",
+        "canonicalisation_calls",
+        "canonicalisation_mask_cache_hits",
+        "canonicalisation_mask_cache_misses",
+        "canonical_class_insertions",
+        "canonical_class_reuses",
+        "vf2_calls",
+        "vf2_matches",
+        "residual_decomposition_requests",
+        "residual_cache_eligible_requests",
+        "residual_cache_small_molecule_bypasses",
+        "residual_cache_wide_molecule_bypasses",
+        "residual_cache_small_residual_bypasses",
+        "residual_cache_first_occurrence_bypasses",
+        "residual_cache_runtime_disabled_bypasses",
+        "residual_cache_lookups",
+        "residual_cache_hits",
+        "residual_cache_misses",
+        "residual_cache_admissions",
+        "assembly_cache_lookups",
+        "assembly_cache_hits",
+        "assembly_cache_misses",
+        "assembly_cache_pruned_hits",
+        "assembly_cache_updated_hits",
+        "pair_bound_cache_lookups",
+        "pair_bound_cache_hits",
+        "pair_bound_cache_misses",
+    )
+)
 
 
 class BenchmarkError(RuntimeError):
@@ -721,6 +765,75 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     def is_nonnegative_integer(value: object) -> bool:
         return type(value) is int and value >= 0
 
+    def invalid_parallel(detail: str) -> None:
+        raise BenchmarkError(f"invalid parallel telemetry in {path.name}: {detail}")
+
+    def parallel_counters(
+        value: object,
+        context: str,
+    ) -> dict[str, object]:
+        if (
+            not isinstance(value, dict)
+            or not PARALLEL_TELEMETRY_COUNTERS <= value.keys()
+            or any(
+                not is_nonnegative_integer(value.get(name))
+                for name in PARALLEL_TELEMETRY_COUNTERS
+            )
+        ):
+            invalid_parallel(f"invalid {context} counters")
+        assert isinstance(value, dict)
+        if value["retained_mask_attempts"] != (
+            value["retained_masks"]
+            + value["duplicate_mask_attempts"]
+            + value["rejected_masks"]
+        ):
+            invalid_parallel(f"inconsistent {context} retained-mask counters")
+        if value["vf2_matches"] > value["vf2_calls"]:
+            invalid_parallel(f"inconsistent {context} VF2 counters")
+        if value["canonicalisation_calls"] != (
+            value["canonicalisation_mask_cache_hits"]
+            + value["canonicalisation_mask_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} canonical counters")
+        if value["canonicalisation_mask_cache_misses"] != (
+            value["canonical_class_insertions"]
+            + value["canonical_class_reuses"]
+        ):
+            invalid_parallel(f"inconsistent {context} canonical-class counters")
+        if value["residual_cache_lookups"] != (
+            value["residual_cache_hits"] + value["residual_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} residual-cache counters")
+        if value["residual_decomposition_requests"] != (
+            value["residual_cache_eligible_requests"]
+            + value["residual_cache_small_molecule_bypasses"]
+            + value["residual_cache_wide_molecule_bypasses"]
+        ):
+            invalid_parallel(f"inconsistent {context} residual request counters")
+        if value["residual_cache_eligible_requests"] != (
+            value["residual_cache_small_residual_bypasses"]
+            + value["residual_cache_first_occurrence_bypasses"]
+            + value["residual_cache_runtime_disabled_bypasses"]
+            + value["residual_cache_lookups"]
+        ):
+            invalid_parallel(f"inconsistent {context} residual path counters")
+        if value["residual_cache_admissions"] > value["residual_cache_misses"]:
+            invalid_parallel(f"inconsistent {context} residual admissions")
+        if value["assembly_cache_lookups"] != (
+            value["assembly_cache_hits"] + value["assembly_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} assembly-cache counters")
+        if value["assembly_cache_hits"] != (
+            value["assembly_cache_pruned_hits"]
+            + value["assembly_cache_updated_hits"]
+        ):
+            invalid_parallel(f"inconsistent {context} assembly-cache hits")
+        if value["pair_bound_cache_lookups"] != (
+            value["pair_bound_cache_hits"] + value["pair_bound_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} pair-bound counters")
+        return value
+
     def validate_rate(
         container: dict[str, object],
         name: str,
@@ -993,6 +1106,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             is_nonnegative_integer(phase.get("activations"))
         ):
             raise BenchmarkError(f"invalid phase counter in {path.name}")
+        if "wall_nanoseconds" in phase and not is_nonnegative_integer(
+            phase["wall_nanoseconds"]
+        ):
+            raise BenchmarkError(f"invalid phase wall time in {path.name}")
         if any(
             value is not None and not is_nonnegative_integer(value)
             for value in (phase.get(name) for name in memory_value_names)
@@ -1034,6 +1151,306 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             raise BenchmarkError(f"invalid overall RSS peak in {path.name}")
     elif overall_peak is not None:
         raise BenchmarkError(f"partial phase memory has an overall peak in {path.name}")
+
+    if "parallel" not in telemetry:
+        return telemetry
+    parallel = telemetry["parallel"]
+    if not isinstance(parallel, dict):
+        invalid_parallel("expected an object")
+    assert isinstance(parallel, dict)
+
+    if (
+        memory["method"] != "disabled_parallel"
+        or memory["phase_peaks_complete"]
+        or overall_peak is not None
+        or process_virtual_peak is not None
+        or any(
+            phase.get(name) is not None
+            for phase in phases.values()
+            for name in memory_value_names
+        )
+    ):
+        invalid_parallel("parallel phase memory must be disabled")
+
+    mode = parallel.get("mode")
+    scope = parallel.get("aggregation_scope")
+    if mode not in {"openmp", "mpi", "hybrid"}:
+        invalid_parallel("invalid mode")
+    if scope not in {"process", "all_mpi_ranks"}:
+        invalid_parallel("invalid aggregation scope")
+    if parallel.get("busy_timing_method") != "instrumented_phase_wall_time":
+        invalid_parallel("invalid busy timing method")
+    if parallel.get("elapsed_timing_method") != "parallel_region_steady_clock":
+        invalid_parallel("invalid elapsed timing method")
+    if parallel.get("enabled") is not True:
+        invalid_parallel("parallel telemetry is not enabled")
+
+    rank_count = parallel.get("rank_count")
+    worker_count = parallel.get("worker_count")
+    if not is_nonnegative_integer(rank_count) or rank_count == 0:
+        invalid_parallel("invalid rank count")
+    if not is_nonnegative_integer(worker_count) or worker_count == 0:
+        invalid_parallel("invalid worker count")
+    assert isinstance(rank_count, int)
+    assert isinstance(worker_count, int)
+    if mode == "openmp":
+        if scope != "process" or rank_count != 1:
+            invalid_parallel("OpenMP telemetry must describe one process")
+    elif scope != "all_mpi_ranks":
+        invalid_parallel("MPI telemetry must aggregate all ranks")
+
+    threads_per_rank = parallel.get("local_threads_per_rank")
+    if (
+        not isinstance(threads_per_rank, list)
+        or len(threads_per_rank) != rank_count
+        or any(
+            not is_nonnegative_integer(threads) or threads == 0
+            for threads in threads_per_rank
+        )
+        or sum(threads_per_rank) != worker_count
+    ):
+        invalid_parallel("inconsistent local thread counts")
+    if mode == "mpi" and any(threads != 1 for threads in threads_per_rank):
+        invalid_parallel("MPI telemetry must report one thread per rank")
+    uniform_threads = (
+        threads_per_rank[0] if len(set(threads_per_rank)) == 1 else None
+    )
+    local_threads = parallel.get("local_threads")
+    if (
+        local_threads is not None and not is_nonnegative_integer(local_threads)
+    ) or local_threads != uniform_threads:
+        invalid_parallel("inconsistent uniform local thread count")
+
+    shard_ownership = parallel.get("shard_ownership")
+    if not isinstance(shard_ownership, dict):
+        invalid_parallel("missing shard ownership")
+    assert isinstance(shard_ownership, dict)
+    if (
+        shard_ownership.get("strategy")
+        != "root_branch_ordinal_modulo_worker_count"
+        or type(shard_ownership.get("complete")) is not bool
+        or not shard_ownership["complete"]
+        or shard_ownership.get("shard_count") != worker_count
+    ):
+        invalid_parallel("inconsistent shard ownership")
+    if type(parallel.get("branch_scan_complete")) is not bool:
+        invalid_parallel("invalid branch scan status")
+
+    aggregate = parallel.get("aggregate")
+    if not isinstance(aggregate, dict):
+        invalid_parallel("missing aggregate")
+    assert isinstance(aggregate, dict)
+    aggregate_counters = parallel_counters(
+        aggregate.get("counters"),
+        "aggregate",
+    )
+    aggregate_integer_names = (
+        "branch_assignments",
+        "elapsed_nanoseconds",
+        "worker_elapsed_nanoseconds",
+        "worker_busy_nanoseconds",
+    )
+    if any(
+        not is_nonnegative_integer(aggregate.get(name))
+        for name in aggregate_integer_names
+    ):
+        invalid_parallel("invalid aggregate measurement")
+    aggregate_branch_candidates = aggregate.get("branch_candidates")
+    if aggregate_branch_candidates is not None and not is_nonnegative_integer(
+        aggregate_branch_candidates
+    ):
+        invalid_parallel("invalid aggregate branch count")
+    if aggregate["worker_busy_nanoseconds"] > aggregate["worker_elapsed_nanoseconds"]:
+        invalid_parallel("aggregate busy time exceeds elapsed worker time")
+
+    workers = parallel.get("workers")
+    if not isinstance(workers, list) or len(workers) != worker_count:
+        invalid_parallel("worker count does not match worker records")
+    worker_counters = []
+    worker_branch_candidates = []
+    rank_local_ids: dict[int, set[int]] = {
+        rank: set() for rank in range(rank_count)
+    }
+    global_ids = set()
+    shard_ids = set()
+    total_branch_assignments = 0
+    total_elapsed = 0
+    total_busy = 0
+    maximum_elapsed = 0
+    rank_offsets = []
+    offset = 0
+    for threads in threads_per_rank:
+        rank_offsets.append(offset)
+        offset += threads
+
+    for worker_index, worker in enumerate(workers):
+        if not isinstance(worker, dict):
+            invalid_parallel(f"worker {worker_index} is not an object")
+        rank = worker.get("rank")
+        local_worker_index = worker.get("local_worker_index")
+        global_worker_index = worker.get("global_worker_index")
+        if (
+            not is_nonnegative_integer(rank)
+            or rank >= rank_count
+            or not is_nonnegative_integer(local_worker_index)
+            or local_worker_index >= threads_per_rank[rank]
+            or not is_nonnegative_integer(global_worker_index)
+            or global_worker_index >= worker_count
+            or global_worker_index != rank_offsets[rank] + local_worker_index
+        ):
+            invalid_parallel(f"invalid worker identity at record {worker_index}")
+        rank_local_ids[rank].add(local_worker_index)
+        global_ids.add(global_worker_index)
+
+        shard = worker.get("shard")
+        if (
+            not isinstance(shard, dict)
+            or shard.get("index") != global_worker_index
+            or shard.get("count") != worker_count
+        ):
+            invalid_parallel(f"invalid worker shard at record {worker_index}")
+        shard_ids.add(shard["index"])
+
+        branch_candidates = worker.get("branch_candidates")
+        branch_assignments = worker.get("branch_assignments")
+        elapsed = worker.get("elapsed_nanoseconds")
+        busy = worker.get("busy_nanoseconds")
+        if any(
+            not is_nonnegative_integer(value)
+            for value in (branch_candidates, branch_assignments, elapsed, busy)
+        ):
+            invalid_parallel(f"invalid worker measurement at record {worker_index}")
+        if branch_assignments > branch_candidates:
+            invalid_parallel(f"worker assignments exceed branches at record {worker_index}")
+        if busy > elapsed:
+            invalid_parallel(f"worker busy time exceeds elapsed time at record {worker_index}")
+        worker_branch_candidates.append(branch_candidates)
+        total_branch_assignments += branch_assignments
+        total_elapsed += elapsed
+        total_busy += busy
+        maximum_elapsed = max(maximum_elapsed, elapsed)
+
+        graph = worker.get("processed_graph")
+        if not isinstance(graph, dict):
+            invalid_parallel(f"missing worker graph at record {worker_index}")
+        if any(
+            not is_nonnegative_integer(graph.get(name))
+            for name in ("atoms", "edges", "active_mask_words")
+        ) or type(graph.get("residual_cache_eligible")) is not bool:
+            invalid_parallel(f"invalid worker graph at record {worker_index}")
+        if (
+            graph["atoms"] != processed_graph["atoms"]
+            or graph["edges"] != processed_graph["edges"]
+            or graph["active_mask_words"] != processed_graph["active_mask_words"]
+            or graph["residual_cache_eligible"]
+            != residual["eligible_for_processed_graph"]
+        ):
+            invalid_parallel(f"inconsistent worker graph at record {worker_index}")
+
+        worker_phases = worker.get("phases")
+        if (
+            not isinstance(worker_phases, dict)
+            or set(worker_phases) != SEARCH_TELEMETRY_PHASES
+        ):
+            invalid_parallel(f"invalid worker phases at record {worker_index}")
+        phase_wall_total = 0
+        for phase in worker_phases.values():
+            if not isinstance(phase, dict) or any(
+                not is_nonnegative_integer(phase.get(name))
+                for name in ("wall_nanoseconds", "activations")
+            ):
+                invalid_parallel(f"invalid worker phase at record {worker_index}")
+            if phase["activations"] == 0 and phase["wall_nanoseconds"] != 0:
+                invalid_parallel(f"inactive worker phase has time at record {worker_index}")
+            phase_wall_total += phase["wall_nanoseconds"]
+        if busy != min(phase_wall_total, elapsed):
+            invalid_parallel(f"inconsistent worker busy time at record {worker_index}")
+
+        worker_counters.append(
+            parallel_counters(worker.get("counters"), f"worker {worker_index}")
+        )
+
+    if global_ids != set(range(worker_count)) or shard_ids != set(range(worker_count)):
+        invalid_parallel("worker or shard indexes are not contiguous")
+    if any(
+        rank_local_ids[rank] != set(range(threads_per_rank[rank]))
+        for rank in range(rank_count)
+    ):
+        invalid_parallel("local worker indexes are not contiguous")
+    if aggregate["branch_assignments"] != total_branch_assignments:
+        invalid_parallel("aggregate branch assignments do not match workers")
+    if aggregate["worker_elapsed_nanoseconds"] != total_elapsed:
+        invalid_parallel("aggregate worker elapsed time does not match workers")
+    if aggregate["worker_busy_nanoseconds"] != total_busy:
+        invalid_parallel("aggregate worker busy time does not match workers")
+    if aggregate["elapsed_nanoseconds"] < maximum_elapsed:
+        invalid_parallel("aggregate elapsed time is shorter than a worker")
+    for name in PARALLEL_TELEMETRY_COUNTERS:
+        if aggregate_counters[name] != sum(
+            counters[name] for counters in worker_counters
+        ):
+            invalid_parallel(f"aggregate counter {name} does not match workers")
+
+    candidates_agree = len(set(worker_branch_candidates)) == 1
+    expected_branch_candidates = (
+        worker_branch_candidates[0] if candidates_agree else None
+    )
+    if aggregate_branch_candidates != expected_branch_candidates:
+        invalid_parallel("aggregate branch count does not match workers")
+    if parallel["branch_scan_complete"] and (
+        not candidates_agree
+        or total_branch_assignments != expected_branch_candidates
+    ):
+        invalid_parallel("complete branch scan has incomplete assignments")
+
+    legacy_counters = {
+        "retained_mask_attempts": counters["retained_mask_attempts"],
+        "retained_masks": counters["retained_masks"],
+        "duplicate_mask_attempts": counters["duplicate_mask_attempts"],
+        "rejected_masks": counters["rejected_masks"],
+        "matching_visits": counters["matching_visits"],
+        "canonicalisation_calls": counters["canonicalisation_calls"],
+        "canonicalisation_mask_cache_hits": canonical["hits"],
+        "canonicalisation_mask_cache_misses": canonical["misses"],
+        "canonical_class_insertions": canonical_class["insertions"],
+        "canonical_class_reuses": canonical_class["reuses"],
+        "vf2_calls": counters["vf2_calls"],
+        "vf2_matches": counters["vf2_matches"],
+        "residual_decomposition_requests": residual["requests"],
+        "residual_cache_eligible_requests": residual["eligible_requests"],
+        "residual_cache_small_molecule_bypasses": residual[
+            "small_molecule_bypasses"
+        ],
+        "residual_cache_wide_molecule_bypasses": residual[
+            "wide_molecule_bypasses"
+        ],
+        "residual_cache_small_residual_bypasses": residual[
+            "small_residual_bypasses"
+        ],
+        "residual_cache_first_occurrence_bypasses": residual[
+            "first_occurrence_bypasses"
+        ],
+        "residual_cache_runtime_disabled_bypasses": residual[
+            "runtime_disabled_bypasses"
+        ],
+        "residual_cache_lookups": residual["lookups"],
+        "residual_cache_hits": residual["hits"],
+        "residual_cache_misses": residual["misses"],
+        "residual_cache_admissions": residual["admissions"],
+        "assembly_cache_lookups": assembly_cache["lookups"],
+        "assembly_cache_hits": assembly_cache["hits"],
+        "assembly_cache_misses": assembly_cache["misses"],
+        "assembly_cache_pruned_hits": assembly_cache["pruned_hits"],
+        "assembly_cache_updated_hits": assembly_cache["updated_hits"],
+        "pair_bound_cache_lookups": pair_bound_cache["lookups"],
+        "pair_bound_cache_hits": pair_bound_cache["hits"],
+        "pair_bound_cache_misses": pair_bound_cache["misses"],
+    }
+    if any(
+        aggregate_counters[name] != legacy_counters[name]
+        for name in PARALLEL_TELEMETRY_COUNTERS
+    ):
+        invalid_parallel("aggregate counters do not match legacy telemetry")
     return telemetry
 
 
@@ -1496,6 +1913,51 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
             f"{rate_text(canonical['hit_rate']):>10} "
             f"{rate_text(residual['lookup_hit_rate']):>13} "
             f"{peak_text:>11}"
+        )
+
+    parallel_results = [
+        result
+        for result in results
+        if result.telemetry is not None
+        and isinstance(result.telemetry.get("parallel"), dict)
+    ]
+    if not parallel_results:
+        return
+
+    print("\nParallel worker telemetry")
+    print(
+        f"  {'Case':<{name_width}} {'Topology':>12} {'Branches':>12} "
+        f"{'Critical':>12} {'Imbalance':>10} {'Coverage':>10}"
+    )
+    print("  " + "-" * (name_width + 71))
+    for result in parallel_results:
+        assert result.telemetry is not None
+        parallel = result.telemetry["parallel"]
+        assert isinstance(parallel, dict)
+        aggregate = parallel["aggregate"]
+        workers = parallel["workers"]
+        assert isinstance(aggregate, dict)
+        assert isinstance(workers, list)
+        elapsed_values = [
+            int(worker["elapsed_nanoseconds"])
+            for worker in workers
+            if isinstance(worker, dict)
+        ]
+        mean_elapsed = statistics.fmean(elapsed_values)
+        imbalance = max(elapsed_values) / mean_elapsed if mean_elapsed else 1.0
+        worker_elapsed = int(aggregate["worker_elapsed_nanoseconds"])
+        worker_busy = int(aggregate["worker_busy_nanoseconds"])
+        coverage = worker_busy / worker_elapsed if worker_elapsed else 0.0
+        topology = f"{parallel['mode']}:{parallel['worker_count']}w"
+        branch_candidates = aggregate["branch_candidates"]
+        branch_text = (
+            "n/a" if branch_candidates is None else f"{int(branch_candidates):,}"
+        )
+        critical_ms = int(aggregate["elapsed_nanoseconds"]) / 1_000_000
+        print(
+            f"  {result.case.name:<{name_width}.{name_width}} "
+            f"{topology:>12} {branch_text:>12} {critical_ms:>9.3f} ms "
+            f"{imbalance:>9.3f}x {coverage:>9.1%}"
         )
 
 

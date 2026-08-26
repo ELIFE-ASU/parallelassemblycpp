@@ -153,6 +153,157 @@ class BenchmarkTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
+    def add_valid_parallel_telemetry(
+        self,
+        telemetry: dict[str, object],
+    ) -> None:
+        counters = telemetry["counters"]
+        caches = telemetry["caches"]
+        assert isinstance(counters, dict)
+        assert isinstance(caches, dict)
+        canonical = caches["canonical_mask"]
+        canonical_class = caches["canonical_class"]
+        residual = caches["residual_decomposition"]
+        assembly = caches["assembly_state"]
+        pair_bound = caches["pair_bound"]
+        assert all(
+            isinstance(value, dict)
+            for value in (canonical, canonical_class, residual, assembly, pair_bound)
+        )
+        aggregate_counters = {
+            "retained_mask_attempts": counters["retained_mask_attempts"],
+            "retained_masks": counters["retained_masks"],
+            "duplicate_mask_attempts": counters["duplicate_mask_attempts"],
+            "rejected_masks": counters["rejected_masks"],
+            "matching_visits": counters["matching_visits"],
+            "canonicalisation_calls": counters["canonicalisation_calls"],
+            "canonicalisation_mask_cache_hits": canonical["hits"],
+            "canonicalisation_mask_cache_misses": canonical["misses"],
+            "canonical_class_insertions": canonical_class["insertions"],
+            "canonical_class_reuses": canonical_class["reuses"],
+            "vf2_calls": counters["vf2_calls"],
+            "vf2_matches": counters["vf2_matches"],
+            "residual_decomposition_requests": residual["requests"],
+            "residual_cache_eligible_requests": residual["eligible_requests"],
+            "residual_cache_small_molecule_bypasses": residual[
+                "small_molecule_bypasses"
+            ],
+            "residual_cache_wide_molecule_bypasses": residual[
+                "wide_molecule_bypasses"
+            ],
+            "residual_cache_small_residual_bypasses": residual[
+                "small_residual_bypasses"
+            ],
+            "residual_cache_first_occurrence_bypasses": residual[
+                "first_occurrence_bypasses"
+            ],
+            "residual_cache_runtime_disabled_bypasses": residual[
+                "runtime_disabled_bypasses"
+            ],
+            "residual_cache_lookups": residual["lookups"],
+            "residual_cache_hits": residual["hits"],
+            "residual_cache_misses": residual["misses"],
+            "residual_cache_admissions": residual["admissions"],
+            "assembly_cache_lookups": assembly["lookups"],
+            "assembly_cache_hits": assembly["hits"],
+            "assembly_cache_misses": assembly["misses"],
+            "assembly_cache_pruned_hits": assembly["pruned_hits"],
+            "assembly_cache_updated_hits": assembly["updated_hits"],
+            "pair_bound_cache_lookups": pair_bound["lookups"],
+            "pair_bound_cache_hits": pair_bound["hits"],
+            "pair_bound_cache_misses": pair_bound["misses"],
+        }
+        empty_counters = {
+            name: 0 for name in benchmark.PARALLEL_TELEMETRY_COUNTERS
+        }
+        graph = telemetry["processed_graph"]
+        assert isinstance(graph, dict)
+        worker_graph = {
+            **graph,
+            "residual_cache_eligible": residual["eligible_for_processed_graph"],
+        }
+
+        def phases(wall_nanoseconds: int) -> dict[str, dict[str, int]]:
+            return {
+                name: {"wall_nanoseconds": wall_nanoseconds, "activations": 1}
+                for name in benchmark.SEARCH_TELEMETRY_PHASES
+            }
+
+        workers = [
+            {
+                "rank": 0,
+                "local_worker_index": 0,
+                "global_worker_index": 0,
+                "shard": {"index": 0, "count": 2},
+                "branch_candidates": 2,
+                "branch_assignments": 1,
+                "elapsed_nanoseconds": 100,
+                "busy_nanoseconds": 50,
+                "processed_graph": worker_graph,
+                "phases": phases(10),
+                "counters": aggregate_counters,
+            },
+            {
+                "rank": 0,
+                "local_worker_index": 1,
+                "global_worker_index": 1,
+                "shard": {"index": 1, "count": 2},
+                "branch_candidates": 2,
+                "branch_assignments": 1,
+                "elapsed_nanoseconds": 80,
+                "busy_nanoseconds": 30,
+                "processed_graph": worker_graph,
+                "phases": phases(6),
+                "counters": empty_counters,
+            },
+        ]
+        telemetry["parallel"] = {
+            "enabled": True,
+            "mode": "openmp",
+            "aggregation_scope": "process",
+            "elapsed_timing_method": "parallel_region_steady_clock",
+            "busy_timing_method": "instrumented_phase_wall_time",
+            "rank_count": 1,
+            "local_threads": 2,
+            "local_threads_per_rank": [2],
+            "worker_count": 2,
+            "shard_ownership": {
+                "strategy": "root_branch_ordinal_modulo_worker_count",
+                "complete": True,
+                "shard_count": 2,
+            },
+            "branch_scan_complete": True,
+            "aggregate": {
+                "counters": aggregate_counters,
+                "branch_candidates": 2,
+                "branch_assignments": 2,
+                "elapsed_nanoseconds": 100,
+                "worker_elapsed_nanoseconds": 180,
+                "worker_busy_nanoseconds": 80,
+            },
+            "workers": workers,
+        }
+
+        memory = telemetry["memory"]
+        assert isinstance(memory, dict)
+        memory["method"] = "disabled_parallel"
+        memory["phase_peaks_complete"] = False
+        memory["overall_peak_resident_kib"] = None
+        memory["process_peak_virtual_kib"] = None
+        memory_phases = memory["phases"]
+        assert isinstance(memory_phases, dict)
+        for phase in memory_phases.values():
+            assert isinstance(phase, dict)
+            phase["wall_nanoseconds"] = 1
+            for name in (
+                "start_rss_kib",
+                "peak_rss_kib",
+                "end_rss_kib",
+                "start_virtual_kib",
+                "end_virtual_kib",
+            ):
+                phase[name] = None
+
     def create_forwarding_launcher(self, directory: Path) -> Path:
         launcher = directory / "forwarding launcher"
         launcher.write_text(
@@ -1013,6 +1164,145 @@ class BenchmarkTests(unittest.TestCase):
             wider_path.write_text(json.dumps(wider), encoding="utf-8")
             parsed = benchmark.parse_search_telemetry(wider_path)
             self.assertEqual(parsed["processed_graph"]["active_mask_words"], 9)
+
+            self.assertNotIn("parallel", telemetry)
+            parallel_telemetry = json.loads(json.dumps(telemetry))
+            self.add_valid_parallel_telemetry(parallel_telemetry)
+            parallel_path = directory / "parallel-telemetry.json"
+            parallel_path.write_text(
+                json.dumps(parallel_telemetry),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(parallel_path)
+            self.assertEqual(parsed["parallel"]["worker_count"], 2)
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["worker_busy_nanoseconds"],
+                80,
+            )
+            summary_output = io.StringIO()
+            with contextlib.redirect_stdout(summary_output):
+                benchmark.print_telemetry_summary(
+                    [
+                        benchmark.CaseResult(
+                            case=benchmark.BenchmarkCase(
+                                "parallel-sample",
+                                directory / "input.mol",
+                                7,
+                                "reviewed",
+                                ("quick",),
+                                "parallel telemetry",
+                            ),
+                            measurements=(benchmark.Measurement(1.0, 1, 7),),
+                            telemetry=parsed,
+                        )
+                    ]
+                )
+            self.assertIn("Parallel worker telemetry", summary_output.getvalue())
+            self.assertIn("openmp:2w", summary_output.getvalue())
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["enabled"] = False
+            malformed_path = directory / "parallel-disabled.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "parallel telemetry is not enabled",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][1][
+                "global_worker_index"
+            ] = 0
+            malformed_path = directory / "parallel-duplicate-worker.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker identity",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][0][
+                "busy_nanoseconds"
+            ] = 101
+            malformed_path = directory / "parallel-worker-busy.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "worker busy time exceeds elapsed time",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["aggregate"]["counters"][
+                "matching_visits"
+            ] += 1
+            malformed_path = directory / "parallel-counter-sum.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate counter matching_visits does not match workers",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][1][
+                "branch_candidates"
+            ] = 3
+            malformed_path = directory / "parallel-branch-disagreement.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate branch count does not match workers",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            del malformed_parallel["parallel"]["workers"][0]["phases"]["output"]
+            malformed_path = directory / "parallel-worker-phases.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker phases",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["aggregate"]["counters"][
+                "matching_visits"
+            ] += 1
+            malformed_parallel["parallel"]["workers"][0]["counters"][
+                "matching_visits"
+            ] += 1
+            malformed_path = directory / "parallel-legacy-mismatch.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate counters do not match legacy telemetry",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
 
     def test_json_output_rejects_protected_paths_before_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
