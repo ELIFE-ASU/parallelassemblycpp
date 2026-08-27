@@ -136,6 +136,10 @@ struct ParallelSearchWorkerTelemetry
     uint64_t branchCandidates = 0;
     uint64_t branchLeases = 0;
     uint64_t branchAssignments = 0;
+    uint64_t depthTwoTasksSpawned = 0;
+    uint64_t depthTwoTasksExecuted = 0;
+    uint64_t proactiveTailRefills = 0;
+    uint64_t warmStartBranches = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t busyNanoseconds = 0;
     uint64_t processedAtoms = 0;
@@ -173,6 +177,10 @@ struct ParallelSearchTelemetrySummary
     uint64_t branchCandidateCount = 0;
     uint64_t branchLeaseCount = 0;
     uint64_t branchAssignmentCount = 0;
+    uint64_t depthTwoTaskSpawnCount = 0;
+    uint64_t depthTwoTaskExecutionCount = 0;
+    uint64_t proactiveTailRefillCount = 0;
+    uint64_t warmStartBranchCount = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t workerElapsedNanoseconds = 0;
     uint64_t workerBusyNanoseconds = 0;
@@ -531,6 +539,10 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     uint64_t branchCandidates,
     uint64_t branchLeases,
     uint64_t branchAssignments,
+    uint64_t depthTwoTasksSpawned,
+    uint64_t depthTwoTasksExecuted,
+    uint64_t proactiveTailRefills,
+    uint64_t warmStartBranches,
     uint64_t elapsedNanoseconds
 )
 {
@@ -544,6 +556,10 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     result.branchCandidates = branchCandidates;
     result.branchLeases = branchLeases;
     result.branchAssignments = branchAssignments;
+    result.depthTwoTasksSpawned = depthTwoTasksSpawned;
+    result.depthTwoTasksExecuted = depthTwoTasksExecuted;
+    result.proactiveTailRefills = proactiveTailRefills;
+    result.warmStartBranches = warmStartBranches;
     result.elapsedNanoseconds = elapsedNanoseconds;
     result.processedAtoms = searchTelemetry.processedAtoms;
     result.processedEdges = searchTelemetry.processedEdges;
@@ -659,6 +675,10 @@ inline void configureParallelSearchTelemetry(
 
         summary.branchLeaseCount += worker.branchLeases;
         summary.branchAssignmentCount += worker.branchAssignments;
+        summary.depthTwoTaskSpawnCount += worker.depthTwoTasksSpawned;
+        summary.depthTwoTaskExecutionCount += worker.depthTwoTasksExecuted;
+        summary.proactiveTailRefillCount += worker.proactiveTailRefills;
+        summary.warmStartBranchCount += worker.warmStartBranches;
         summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
         summary.workerBusyNanoseconds += worker.busyNanoseconds;
         addSearchTelemetryCounters(summary.aggregateCounters, worker.counters);
@@ -694,7 +714,11 @@ inline void configureParallelSearchTelemetry(
         completedSearch &&
         summary.branchSchedulerComplete &&
         summary.branchCandidateCountsAgree &&
-        summary.branchAssignmentCount == summary.branchCandidateCount;
+        summary.branchAssignmentCount == summary.branchCandidateCount &&
+        summary.depthTwoTaskSpawnCount ==
+            summary.depthTwoTaskExecutionCount &&
+        summary.warmStartBranchCount ==
+            (summary.branchCandidateCount == 0 ? 0 : summary.rankCount);
     summary.branchScanComplete = summary.branchSchedulerComplete;
     summary.workers = std::move(workers);
     merged.counters = summary.aggregateCounters;
@@ -810,6 +834,17 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.branchLeaseSize << ",\n"
            << "      \"rank_partition_count\": "
            << parallel.rankCount << ",\n"
+           << "      \"adaptive_splitting\": {\n"
+           << "        \"minimum_queued_tasks_per_worker\": "
+           << parallelMinimumQueuedTasksPerWorker << ",\n"
+           << "        \"target_queued_tasks_per_worker\": "
+           << parallelTargetQueuedTasksPerWorker << ",\n"
+           << "        \"maximum_queued_tasks_per_worker\": "
+           << parallelMaximumQueuedTasksPerWorker << ",\n"
+           << "        \"maximum_depth\": "
+           << parallelMaximumTaskDepth << ",\n"
+           << "        \"warm_start\": \"largest_duplicate_first\"\n"
+           << "      },\n"
            << "      \"complete\": "
            << (parallel.branchSchedulerComplete ? "true" : "false") << "\n"
            << "    },\n"
@@ -825,6 +860,14 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.branchLeaseCount << ",\n"
            << "      \"branch_assignments\": "
            << parallel.branchAssignmentCount << ",\n"
+           << "      \"depth_two_tasks_spawned\": "
+           << parallel.depthTwoTaskSpawnCount << ",\n"
+           << "      \"depth_two_tasks_executed\": "
+           << parallel.depthTwoTaskExecutionCount << ",\n"
+           << "      \"proactive_tail_refills\": "
+           << parallel.proactiveTailRefillCount << ",\n"
+           << "      \"warm_start_branches\": "
+           << parallel.warmStartBranchCount << ",\n"
            << "      \"elapsed_nanoseconds\": "
            << parallel.elapsedNanoseconds << ",\n"
            << "      \"worker_elapsed_nanoseconds\": "
@@ -862,6 +905,14 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
                << worker.branchLeases << ",\n"
                << "        \"branch_assignments\": "
                << worker.branchAssignments << ",\n"
+               << "        \"depth_two_tasks_spawned\": "
+               << worker.depthTwoTasksSpawned << ",\n"
+               << "        \"depth_two_tasks_executed\": "
+               << worker.depthTwoTasksExecuted << ",\n"
+               << "        \"proactive_tail_refills\": "
+               << worker.proactiveTailRefills << ",\n"
+               << "        \"warm_start_branches\": "
+               << worker.warmStartBranches << ",\n"
                << "        \"elapsed_nanoseconds\": "
                << worker.elapsedNanoseconds << ",\n"
                << "        \"busy_nanoseconds\": "

@@ -25,6 +25,13 @@ SKIP_RETURN_CODE = 77
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 DEFAULT_BRANCH_LEASE_SIZE = 4
 ROOT_ENUMERATION_PHASES = ("initial_enumeration", "dag_conversion")
+ADAPTIVE_SPLITTING_POLICY = {
+    "minimum_queued_tasks_per_worker": 8,
+    "target_queued_tasks_per_worker": 16,
+    "maximum_queued_tasks_per_worker": 32,
+    "maximum_depth": 2,
+    "warm_start": "largest_duplicate_first",
+}
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,28 @@ TELEMETRY_CASE_NAMES = {
     "mask-boundary-path-129b",
     "amino-acid-scale-04c",
 }
+SPARSE_ADAPTIVE_TELEMETRY_CASE = SolverCase(
+    name="sparse-1253",
+    source=TEST_DIRECTORY / "1253.mol",
+    expected_index=9,
+    # Hydrogen removal leaves twelve processed bonds in this sparse fixture.
+    edges=12,
+    active_mask_words=1,
+)
+LATE_REFILL_ADAPTIVE_TELEMETRY_CASE = SolverCase(
+    name="late-refill-amino-acid-scale-09c",
+    source=(
+        REPOSITORY_ROOT
+        / "benchmarks"
+        / "inputs"
+        / "scaling"
+        / "amino_acid_scaling_09c_077a.mol"
+    ),
+    expected_index=25,
+    # Hydrogen removal leaves 66 processed bonds from 68 input bonds.
+    edges=66,
+    active_mask_words=2,
+)
 MPI_TOPOLOGY = ParallelTopology("mpi", (1, 1))
 HYBRID_TOPOLOGY = ParallelTopology("hybrid", (2, 2))
 
@@ -480,6 +509,9 @@ def validate_parallel_telemetry(
     case: SolverCase,
     topology: ParallelTopology,
     expected_lease_size: int | None = None,
+    *,
+    require_adaptive_splitting: bool = False,
+    require_depth_two_tasks: bool = False,
 ) -> None:
     requested_workers = topology.worker_count
     prefix = f"{case.name} ({topology.description})"
@@ -536,6 +568,32 @@ def validate_parallel_telemetry(
     require(
         branch_scheduler.get("complete") is True,
         f"{prefix}: parallel.branch_scheduler.complete must be true",
+    )
+    adaptive_splitting: Mapping[str, Any] | None = None
+    if "adaptive_splitting" in branch_scheduler:
+        adaptive_splitting = require_mapping(
+            branch_scheduler.get("adaptive_splitting"),
+            f"{prefix}: parallel.branch_scheduler.adaptive_splitting",
+        )
+        for name, expected in ADAPTIVE_SPLITTING_POLICY.items():
+            path = f"{prefix}: parallel.branch_scheduler.adaptive_splitting.{name}"
+            if isinstance(expected, int):
+                actual: object = require_nonnegative_integer(
+                    adaptive_splitting.get(name), path
+                )
+            else:
+                actual = adaptive_splitting.get(name)
+            require(
+                actual == expected,
+                f"{path} must be {expected!r}, got {actual!r}",
+            )
+    require(
+        not require_adaptive_splitting or adaptive_splitting is not None,
+        f"{prefix}: adaptive splitting telemetry is absent",
+    )
+    require(
+        not require_depth_two_tasks or adaptive_splitting is not None,
+        f"{prefix}: cannot require depth-two tasks without adaptive telemetry",
     )
 
     require(
@@ -652,6 +710,11 @@ def validate_parallel_telemetry(
     branch_leases = 0
     branch_assignments = 0
     assignments_per_rank = [0 for _ in range(topology.rank_count)]
+    depth_two_tasks_spawned = 0
+    depth_two_tasks_executed = 0
+    proactive_tail_refills = 0
+    warm_start_branches = 0
+    warm_starts_per_rank = [0 for _ in range(topology.rank_count)]
     worker_elapsed = 0
     worker_busy = 0
     maximum_worker_elapsed = 0
@@ -678,6 +741,32 @@ def validate_parallel_telemetry(
         branch_leases += leases
         branch_assignments += assignments
         assignments_per_rank[worker_ranks[index]] += assignments
+        if adaptive_splitting is not None:
+            spawned = require_nonnegative_integer(
+                worker.get("depth_two_tasks_spawned"),
+                f"{worker_path}.depth_two_tasks_spawned",
+            )
+            executed = require_nonnegative_integer(
+                worker.get("depth_two_tasks_executed"),
+                f"{worker_path}.depth_two_tasks_executed",
+            )
+            tail_refills = require_nonnegative_integer(
+                worker.get("proactive_tail_refills"),
+                f"{worker_path}.proactive_tail_refills",
+            )
+            warm_starts = require_nonnegative_integer(
+                worker.get("warm_start_branches"),
+                f"{worker_path}.warm_start_branches",
+            )
+            require(
+                warm_starts <= 1,
+                f"{worker_path}: worker warmed more than one root branch",
+            )
+            depth_two_tasks_spawned += spawned
+            depth_two_tasks_executed += executed
+            proactive_tail_refills += tail_refills
+            warm_start_branches += warm_starts
+            warm_starts_per_rank[worker_ranks[index]] += warm_starts
         elapsed = require_nonnegative_integer(
             worker.get("elapsed_nanoseconds"), f"{worker_path}.elapsed_nanoseconds"
         )
@@ -719,6 +808,59 @@ def validate_parallel_telemetry(
         aggregate_assignments == aggregate_candidates,
         f"{prefix}: complete branch scan did not assign every candidate",
     )
+    if adaptive_splitting is not None:
+        aggregate_spawned = require_nonnegative_integer(
+            aggregate.get("depth_two_tasks_spawned"),
+            f"{prefix}: parallel.aggregate.depth_two_tasks_spawned",
+        )
+        aggregate_executed = require_nonnegative_integer(
+            aggregate.get("depth_two_tasks_executed"),
+            f"{prefix}: parallel.aggregate.depth_two_tasks_executed",
+        )
+        aggregate_tail_refills = require_nonnegative_integer(
+            aggregate.get("proactive_tail_refills"),
+            f"{prefix}: parallel.aggregate.proactive_tail_refills",
+        )
+        aggregate_warm_starts = require_nonnegative_integer(
+            aggregate.get("warm_start_branches"),
+            f"{prefix}: parallel.aggregate.warm_start_branches",
+        )
+        require(
+            aggregate_spawned == depth_two_tasks_spawned,
+            f"{prefix}: aggregate depth-two spawn total is not the worker sum",
+        )
+        require(
+            aggregate_executed == depth_two_tasks_executed,
+            f"{prefix}: aggregate depth-two execution total is not the worker sum",
+        )
+        require(
+            aggregate_tail_refills == proactive_tail_refills,
+            f"{prefix}: aggregate proactive tail-refill total is not the worker sum",
+        )
+        require(
+            aggregate_warm_starts == warm_start_branches,
+            f"{prefix}: aggregate warm-start total is not the worker sum",
+        )
+        require(
+            aggregate_spawned == aggregate_executed,
+            f"{prefix}: spawned depth-two tasks were not each executed once",
+        )
+        expected_warm_starts_per_rank = 1 if aggregate_candidates > 0 else 0
+        for rank, warm_starts in enumerate(warm_starts_per_rank):
+            require(
+                warm_starts == expected_warm_starts_per_rank,
+                f"{prefix}: rank {rank} warmed {warm_starts} root branches, "
+                f"expected {expected_warm_starts_per_rank}",
+            )
+        require(
+            aggregate_warm_starts
+            == expected_warm_starts_per_rank * topology.rank_count,
+            f"{prefix}: aggregate warm-start count is incorrect",
+        )
+        require(
+            not require_depth_two_tasks or aggregate_spawned > 0,
+            f"{prefix}: adaptive frontier did not expose depth-two work",
+        )
     for rank, assignments in enumerate(assignments_per_rank):
         expected_assignments = modulo_partition_size(
             aggregate_candidates, rank, topology.rank_count
@@ -935,6 +1077,120 @@ def run_telemetry_suite(
     return runs
 
 
+def run_sparse_adaptive_telemetry_suite(
+    serial: Path,
+    telemetry_openmp: Path,
+    timeout: float,
+) -> int:
+    """Force the adaptive depth-two path on one small, sparse molecule."""
+    case = SPARSE_ADAPTIVE_TELEMETRY_CASE
+    serial_index, _ = run_solver(serial, case, timeout)
+    require(
+        serial_index == case.expected_index,
+        f"{case.name}: serial index {serial_index}, expected {case.expected_index}",
+    )
+
+    topology = ParallelTopology("openmp", (4,))
+    index, document = run_solver(
+        telemetry_openmp,
+        case,
+        timeout,
+        topology=topology,
+        telemetry=True,
+    )
+    require(document is not None, f"{case.name}: telemetry document is absent")
+    require(
+        index == serial_index,
+        f"{case.name}: adaptive telemetry index {index} does not match serial "
+        f"index {serial_index}",
+    )
+    validate_parallel_telemetry(
+        document,
+        case,
+        topology,
+        require_adaptive_splitting=True,
+        require_depth_two_tasks=True,
+    )
+    print(
+        f"PASS telemetry {case.name}: forced-parallel depth-two work and "
+        "index parity"
+    )
+    return 2
+
+
+def run_late_refill_adaptive_telemetry_suite(
+    serial: Path,
+    telemetry_openmp: Path,
+    timeout: float,
+) -> int:
+    """Require depth-two refill after a large root frontier falls below target."""
+    case = LATE_REFILL_ADAPTIVE_TELEMETRY_CASE
+    serial_index, _ = run_solver(serial, case, timeout)
+    require(
+        serial_index == case.expected_index,
+        f"{case.name}: serial index {serial_index}, expected {case.expected_index}",
+    )
+
+    topology = ParallelTopology("openmp", (4,))
+    index, document = run_solver(
+        telemetry_openmp,
+        case,
+        timeout,
+        topology=topology,
+        telemetry=True,
+    )
+    require(document is not None, f"{case.name}: telemetry document is absent")
+    require(
+        index == serial_index,
+        f"{case.name}: adaptive telemetry index {index} does not match serial "
+        f"index {serial_index}",
+    )
+    validate_parallel_telemetry(
+        document,
+        case,
+        topology,
+        require_adaptive_splitting=True,
+        require_depth_two_tasks=True,
+    )
+
+    parallel = require_mapping(document.get("parallel"), f"{case.name}: parallel")
+    aggregate = require_mapping(
+        parallel.get("aggregate"), f"{case.name}: parallel.aggregate"
+    )
+    root_candidates = require_nonnegative_integer(
+        aggregate.get("branch_candidates"),
+        f"{case.name}: parallel.aggregate.branch_candidates",
+    )
+    large_frontier_threshold = (
+        4
+        * topology.worker_count
+        * ADAPTIVE_SPLITTING_POLICY["target_queued_tasks_per_worker"]
+    )
+    require(
+        root_candidates >= large_frontier_threshold,
+        f"{case.name}: root frontier {root_candidates} must start at or above "
+        f"the {large_frontier_threshold}-task large-frontier threshold",
+    )
+    proactive_tail_refills = require_nonnegative_integer(
+        aggregate.get("proactive_tail_refills"),
+        f"{case.name}: parallel.aggregate.proactive_tail_refills",
+    )
+    require(
+        proactive_tail_refills > 0,
+        f"{case.name}: large root frontier did not trigger a proactive tail refill",
+    )
+    low_watermark = (
+        topology.worker_count
+        * ADAPTIVE_SPLITTING_POLICY["minimum_queued_tasks_per_worker"]
+    )
+    print(
+        f"PASS telemetry {case.name}: late depth-two refill from "
+        f"{root_candidates} roots across the {low_watermark}-task low "
+        f"watermark and index parity"
+    )
+    return 2
+
+
 def run_distributed_telemetry_suite(
     serial: Path,
     target: ParallelTarget,
@@ -970,11 +1226,7 @@ def run_distributed_telemetry_suite(
             document,
             case,
             target.topology,
-            expected_lease_size=(
-                target.branch_lease_size
-                if target.branch_lease_size is not None
-                else DEFAULT_BRANCH_LEASE_SIZE
-            ),
+            expected_lease_size=target.branch_lease_size,
         )
         print(f"PASS telemetry {case.name}: {target.label} reduction and index parity")
     return runs
@@ -1085,6 +1337,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.openmp_telemetry,
                 cases,
                 options.telemetry_repetitions,
+                options.timeout,
+            )
+            runs += run_sparse_adaptive_telemetry_suite(
+                options.serial,
+                options.openmp_telemetry,
+                options.timeout,
+            )
+            runs += run_late_refill_adaptive_telemetry_suite(
+                options.serial,
+                options.openmp_telemetry,
                 options.timeout,
             )
         if options.mpi is not None:

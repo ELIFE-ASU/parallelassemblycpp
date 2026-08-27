@@ -3,19 +3,24 @@
 #include <atomic>
 #include <bit>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <csignal>
+#include <condition_variable>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <memory_resource>
+#include <mutex>
 #include <new>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -205,9 +210,10 @@ size_t parallelMinimumBonds()
 
 bool configuredParallelBranchLeaseSize(size_t &leaseSize)
 {
-    constexpr size_t defaultLeaseSize = 4;
     const char *configured = std::getenv("ASSEMBLYCPP_BRANCH_LEASE_SIZE");
-    uint64_t parsedLeaseSize = defaultLeaseSize;
+    // Zero is the internal sentinel for the adaptive default. A user-provided
+    // value must remain strictly positive.
+    uint64_t parsedLeaseSize = 0;
     bool valid = true;
     if (configured != nullptr && *configured != '\0')
     {
@@ -240,7 +246,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     {
         if (isPrimaryProcess())
             cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
-                    "integer on every MPI rank\n";
+                    "integer or unset on every MPI rank\n";
         return false;
     }
     uint64_t minimumLeaseSize = parsedLeaseSize;
@@ -265,7 +271,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     {
         if (isPrimaryProcess())
             cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must have the same "
-                    "value on every MPI rank\n";
+                    "value (or be unset) on every MPI rank\n";
         return false;
     }
     parsedLeaseSize = minimumLeaseSize;
@@ -279,6 +285,34 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
 #endif
     leaseSize = static_cast<size_t>(parsedLeaseSize);
     return true;
+}
+
+/** Choose about sixteen root leases per worker, bounded away from zero. */
+size_t adaptiveParallelBranchLeaseSize(
+    size_t rootJobCount,
+    size_t workerCount
+)
+{
+    constexpr size_t targetLeasesPerWorker =
+        ParallelTaskScheduler::targetTasksPerWorker;
+    workerCount = max<size_t>(1, workerCount);
+    const size_t denominator =
+        workerCount > numeric_limits<size_t>::max() / targetLeasesPerWorker
+        ? numeric_limits<size_t>::max()
+        : workerCount * targetLeasesPerWorker;
+    if (rootJobCount == 0) return 1;
+    const size_t sparseThreshold =
+        workerCount > numeric_limits<size_t>::max() /
+            parallelPromisingFrontierLeaseSize
+        ? numeric_limits<size_t>::max()
+        : workerCount * parallelPromisingFrontierLeaseSize;
+    if (rootJobCount < sparseThreshold) return 1;
+    const size_t guided = rootJobCount <= denominator
+        ? 1
+        : 1 + (rootJobCount - 1) / denominator;
+    return guided < ParallelTaskScheduler::minimumTasksPerWorker
+        ? parallelPromisingFrontierLeaseSize
+        : guided;
 }
 
 int localParallelThreadCount()
@@ -413,8 +447,17 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         : 0;
 #endif
     const int localThreads = localParallelThreadCount();
+    int globalWorkerCount = localThreads;
     int globalWorkerOffset = 0;
 #if defined(ASSEMBLYCPP_USE_MPI)
+    MPI_Allreduce(
+        &localThreads,
+        &globalWorkerCount,
+        1,
+        MPI_INT,
+        MPI_SUM,
+        MPI_COMM_WORLD
+    );
     MPI_Exscan(
         &localThreads,
         &globalWorkerOffset,
@@ -467,8 +510,32 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         return false;
     }
 
+    const bool adaptiveBranchLeases = branchLeaseSize == 0;
+    if (adaptiveBranchLeases)
+    {
+        branchLeaseSize = adaptiveParallelBranchLeaseSize(
+            searchContext.rootJobs.size(),
+            static_cast<size_t>(max(1, globalWorkerCount))
+        );
+    }
+
     std::atomic<int> processBest(searchContext.rootAssemblyIndex);
-    std::atomic<size_t> branchLeaseCursor(0);
+    std::atomic_bool warmStartReady(false);
+#if defined(ASSEMBLYCPP_USE_MPI)
+    const size_t rankPartitionIndex = static_cast<size_t>(assemblyCppMpiRank);
+    const size_t rankPartitionCount = static_cast<size_t>(assemblyCppMpiSize);
+#else
+    constexpr size_t rankPartitionIndex = 0;
+    constexpr size_t rankPartitionCount = 1;
+#endif
+    ParallelTaskScheduler taskScheduler(
+        searchContext.rootJobs.size(),
+        rankPartitionIndex,
+        rankPartitionCount,
+        static_cast<size_t>(localThreads),
+        branchLeaseSize,
+        adaptiveBranchLeases
+    );
     vector<ParallelReplicaResult> replicas(
         static_cast<size_t>(localThreads)
     );
@@ -485,9 +552,17 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         searchRankPartitionCount = 1;
 #endif
         searchBranchLeaseSize = branchLeaseSize;
-        sharedBranchLeaseCursor = &branchLeaseCursor;
+        parallelTaskScheduler = taskScheduler.depthTwoTasksEnabled()
+            ? &taskScheduler
+            : nullptr;
         sharedAssemblyIndex = &processBest;
         suppressSearchOutput = true;
+        searchDepthTwoTasksSpawned = 0;
+        searchDepthTwoTasksExecuted = 0;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        searchProactiveTailRefills = 0;
+#endif
+        searchWarmStartBranches = 0;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         uint64_t workerStartedNanoseconds = 0;
         if (searchTelemetryEnabled)
@@ -519,10 +594,21 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                 // Construct and destroy every EdgeMask-owning object on this
                 // worker; only the primitive job index crosses the queue.
                 WorkerContext worker(searchContext);
+                if (threadIndex == 0)
+                {
+                    warmStartParallelIncumbent(
+                        searchContext,
+                        taskScheduler.warmStartRootJob(),
+                        worker
+                    );
+                    warmStartReady.store(true, std::memory_order_release);
+                    warmStartReady.notify_all();
+                }
+                else warmStartReady.wait(false, std::memory_order_acquire);
                 runParallelRootJobs(
                     searchContext,
                     worker,
-                    branchLeaseCursor
+                    taskScheduler
                 );
                 result.assemblyIndex = compensateDisjointAssemblyIndex(
                     worker.assemblyIndex
@@ -535,11 +621,25 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         }
         catch (const std::exception &exception)
         {
+            searchCancellationFlag.store(true);
+            taskScheduler.cancel();
+            if (threadIndex == 0)
+            {
+                warmStartReady.store(true, std::memory_order_release);
+                warmStartReady.notify_all();
+            }
             clearParallelWorkerMasks();
             result.error = exception.what();
         }
         catch (...)
         {
+            searchCancellationFlag.store(true);
+            taskScheduler.cancel();
+            if (threadIndex == 0)
+            {
+                warmStartReady.store(true, std::memory_order_release);
+                warmStartReady.notify_all();
+            }
             clearParallelWorkerMasks();
             result.error = "unknown parallel worker failure";
         }
@@ -565,11 +665,15 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                 static_cast<uint64_t>(searchRootBranchOrdinal),
                 static_cast<uint64_t>(searchBranchLeaseCount),
                 static_cast<uint64_t>(searchBranchAssignmentCount),
+                static_cast<uint64_t>(searchDepthTwoTasksSpawned),
+                static_cast<uint64_t>(searchDepthTwoTasksExecuted),
+                static_cast<uint64_t>(searchProactiveTailRefills),
+                static_cast<uint64_t>(searchWarmStartBranches),
                 workerElapsedNanoseconds
             );
         }
 #endif
-        sharedBranchLeaseCursor = nullptr;
+        parallelTaskScheduler = nullptr;
         sharedAssemblyIndex = nullptr;
         suppressSearchOutput = false;
         searchRankPartitionIndex = 0;
@@ -578,6 +682,12 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         searchBranchLeaseSize = 1;
         searchBranchLeaseCount = 0;
         searchBranchAssignmentCount = 0;
+        searchDepthTwoTasksSpawned = 0;
+        searchDepthTwoTasksExecuted = 0;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        searchProactiveTailRefills = 0;
+#endif
+        searchWarmStartBranches = 0;
     };
 
 #if defined(ASSEMBLYCPP_USE_OPENMP)

@@ -78,8 +78,9 @@ python benchmarks/benchmark.py \
 Telemetry is excluded from timing aggregates. It records graph size, retained
 masks, matching and canonicalisation activity, cache rates, phase clock ticks,
 and phase memory. Parallel telemetry additionally records rank/thread topology,
-dynamic branch leases, MPI rank partitions, root-branch coverage, steady-clock
-worker timing, and all 31 raw counters per worker plus their exact aggregate.
+dynamic branch leases, MPI rank partitions, root-branch coverage, depth-two
+task transfers, incumbent warm starts, steady-clock worker timing, and all 31
+raw counters per worker plus their exact aggregate.
 Parallel phase memory is disabled because `/proc` peak resets are process-wide.
 A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
 critical parallel-region wall time; worker elapsed and busy values are sums,
@@ -181,9 +182,26 @@ once, then shares an immutable processed graph, runtime DAG, and serialized
 root-job table. Workers own their fragmentation scratch and search caches and
 dynamically lease rank-local job indices; MPI ranks retain deterministic modulo
 partitions so no job is duplicated across processes. Wide masks are rebuilt
-inside the receiving worker from serialized words. The positive
-`ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable changes the lease size
-from its default of four. Only MPI rank zero writes output.
+inside the receiving worker from serialized words.
+
+The default root scheduler uses fixed leases of four for compact frontiers and
+guided leases for larger ones. It assigns the promising leading frontier in
+groups of at most four, keeps about sixteen claimable root tasks per worker
+through the bulk, and shrinks toward single jobs at the tail. Root jobs take
+priority over transferred work. When the initial root frontier is markedly
+below eight jobs per local worker, or half the local workers remain idle behind
+active root work, a root search may expose immediate children to a rank-local
+depth-two queue. Frontiers that begin with at least sixty-four roots per worker
+also arm donation when their unclaimed tail drops below eight per worker, so a
+final root can hand off its first child before idleness is observed. The queue
+targets sixteen and is capped at thirty-two tasks per local worker. The largest
+initial duplicate is evaluated first to publish a valid first-step incumbent
+before concurrent searching begins. Depth-two transfer is disabled in an
+MPI-only rank with one local worker, but remains available within hybrid ranks.
+
+Set the positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
+fixed root lease size instead of guided sizing. Only MPI rank zero writes
+output.
 
 The runner accepts separate launchers and environment variables for each role:
 

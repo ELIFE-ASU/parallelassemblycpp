@@ -731,7 +731,11 @@ enum class matchingEquivalenceMode
     homogeneousPath
 };
 
-template<matchingEquivalenceMode equivalenceMode, bool trackPath>
+template<
+    matchingEquivalenceMode equivalenceMode,
+    bool trackPath,
+    bool allowDepthTwoDonation = false
+>
 void dagRecursiveAssemblyWithWorkspaceImpl(
     const vector<dagLevel> &dag,
     assemblyState &input,
@@ -781,16 +785,20 @@ void recordImprovedAssemblyIndex(
     if (writeIntermediateMAs) intermediateMAs.emplace_back(time, AI);
 }
 
-template<matchingEquivalenceMode equivalenceMode, bool trackPath>
-bool continueAssemblySearchWithWorkspace(
+template<
+    matchingEquivalenceMode equivalenceMode,
+    bool trackPath,
+    bool allowDepthTwoDonation = false
+>
+bool continueCanonicalAssemblySearchWithWorkspace(
     const vector<dagLevel> &dag,
     assemblyState &candidate,
-    validMatchings &matching,
     span<const int> candidateKey,
     int sumDupBonds,
     int &AI,
     ufdsMaskWorkspace &fragmentationWorkspace,
-    assemblySearchStorage &searchStorage
+    assemblySearchStorage &searchStorage,
+    validMatchings *matching = nullptr
 )
 {
     if (searchShouldStop()) return false;
@@ -830,11 +838,17 @@ bool continueAssemblySearchWithWorkspace(
 
     if constexpr (trackPath)
     {
+        if (matching == nullptr)
+            throw logic_error("path-tracking search is missing its matching");
         searchStorage.pathway->current.push_back(
-            assemblyPathStep{matching.first, matching.second}
+            assemblyPathStep{matching->first, matching->second}
         );
     }
-    dagRecursiveAssemblyWithWorkspaceImpl<equivalenceMode, trackPath>(
+    dagRecursiveAssemblyWithWorkspaceImpl<
+        equivalenceMode,
+        trackPath,
+        allowDepthTwoDonation
+    >(
         dag,
         candidate,
         AI,
@@ -845,6 +859,38 @@ bool continueAssemblySearchWithWorkspace(
     return !searchShouldStop();
 }
 
+template<
+    matchingEquivalenceMode equivalenceMode,
+    bool trackPath,
+    bool allowDepthTwoDonation = false
+>
+bool continueAssemblySearchWithWorkspace(
+    const vector<dagLevel> &dag,
+    assemblyState &candidate,
+    validMatchings &matching,
+    span<const int> candidateKey,
+    int sumDupBonds,
+    int &AI,
+    ufdsMaskWorkspace &fragmentationWorkspace,
+    assemblySearchStorage &searchStorage
+)
+{
+    return continueCanonicalAssemblySearchWithWorkspace<
+        equivalenceMode,
+        trackPath,
+        allowDepthTwoDonation
+    >(
+        dag,
+        candidate,
+        candidateKey,
+        sumDupBonds,
+        AI,
+        fragmentationWorkspace,
+        searchStorage,
+        &matching
+    );
+}
+
 /**
  * @brief The recursive function that enumerates duplicates and generates assembly states on all but the first pass
  * of the assembly algorithm
@@ -853,7 +899,11 @@ bool continueAssemblySearchWithWorkspace(
  * @param AI The global minimum assembly index found
  * @param fragmentationWorkspace Buffers reused across the search
  */
-template<matchingEquivalenceMode equivalenceMode, bool trackPath>
+template<
+    matchingEquivalenceMode equivalenceMode,
+    bool trackPath,
+    bool allowDepthTwoDonation
+>
 void dagRecursiveAssemblyWithWorkspaceImpl(
     const vector<dagLevel> &dag,
     assemblyState &input,
@@ -1079,12 +1129,35 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                         fragmentationCutoff;
                     if (candidateAIBound < AI)
                     {
+#if defined(ASSEMBLYCPP_USE_OPENMP) || defined(ASSEMBLYCPP_USE_MPI)
+                        if constexpr (allowDepthTwoDonation && !trackPath)
+                        {
+                            if (
+                                parallelTaskScheduler != nullptr &&
+                                parallelTaskScheduler
+                                    ->depthTwoRefillRequested() &&
+                                parallelTaskScheduler->tryEnqueueDepthTwo(
+                                    candidate,
+                                    candidateAIBound
+                                )
+                            ) [[unlikely]]
+                            {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                ++searchDepthTwoTasksSpawned;
+#endif
+                                return true;
+                            }
+                        }
+#endif
                         vi &candidateKey = searchStorage.candidateKey;
                         if (!canoniseAssemblyStateAndBuildKey(
                             candidate,
                             candidateKey,
                             fragmentationWorkspace
                         )) return false;
+                        // The default false specialization is deliberate:
+                        // only this root state's immediate children may be
+                        // donated, never descendants of an inline child.
                         if (!continueAssemblySearchWithWorkspace<
                             equivalenceMode,
                             trackPath
@@ -1554,6 +1627,9 @@ bool buildRootJobDescriptors(
             if (!completed) return false;
         }
     }
+
+    // Levels were visited largest-first, so the leading job is already the
+    // strongest cheap incumbent candidate without a separate sorting pass.
     return true;
 }
 
@@ -1772,7 +1848,11 @@ bool runParallelRootJobImpl(
         candidateKey,
         worker.fragmentation
     )) return false;
-    return continueAssemblySearchWithWorkspace<equivalenceMode, false>(
+    return continueAssemblySearchWithWorkspace<
+        equivalenceMode,
+        false,
+        true
+    >(
         context.dag,
         worker.candidate,
         matching,
@@ -1803,49 +1883,212 @@ bool runParallelRootJob(
     );
 }
 
-/** Dynamically lease stable rank-local job indices to one worker. */
+/** Evaluate the strongest one-step branch before workers enter the queue. */
+void warmStartParallelIncumbent(
+    const SearchContext &context,
+    size_t jobIndex,
+    WorkerContext &worker
+)
+{
+    if (jobIndex >= context.rootJobs.size()) return;
+    const rootJobDescriptor &job = context.rootJobs[jobIndex];
+    const rootOccurrenceDescriptor &firstOccurrence =
+        context.rootOccurrences[job.firstOccurrence];
+    const rootOccurrenceDescriptor &secondOccurrence =
+        context.rootOccurrences[job.secondOccurrence];
+    EdgeMask first = reconstructRootOccurrence(context, job.firstOccurrence);
+    EdgeMask second = reconstructRootOccurrence(context, job.secondOccurrence);
+    validMatchings matching(
+        first,
+        second,
+        firstOccurrence.fragment,
+        secondOccurrence.fragment,
+        static_cast<int>(job.duplicateSize)
+    );
+    worker.candidate.clearFragments();
+    fragmentAssemblyStateWithoutCanonisationWithWorkspace(
+        worker.root,
+        matching,
+        job.canonicalId,
+        worker.candidate,
+        worker.fragmentation
+    );
+    worker.candidate.sumDupBonds = matching.maxFragSize - 1;
+    recordImprovedAssemblyIndex<false>(
+        worker.candidate,
+        worker.assemblyIndex,
+        worker.search
+    );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    ++searchWarmStartBranches;
+#endif
+}
+
+void reconstructDepthTwoTask(
+    const parallelDepthTwoTaskDescriptor &task,
+    assemblyState &state
+)
+{
+    state.clearFragments();
+    state.reserveFragments(task.fragments.size());
+    const size_t wordCount = EdgeMask::activeWordCount();
+    for (const parallelTaskFragmentDescriptor &fragment : task.fragments)
+    {
+        if (
+            fragment.wordOffset > task.fragmentWords.size() ||
+            wordCount > task.fragmentWords.size() - fragment.wordOffset
+        ) throw logic_error("serialized depth-two task mask is incomplete");
+        EdgeMask mask = EdgeMask::fromActiveWords(
+            task.fragmentWords.data() + fragment.wordOffset
+        );
+        state.appendFragment(
+            mask,
+            static_cast<int>(fragment.edgeCount),
+            unknownCanonicalId,
+            fragment.connected
+        );
+    }
+    state.sumDupBonds = task.sumDupBonds;
+}
+
+template<matchingEquivalenceMode equivalenceMode>
+bool runParallelDepthTwoJobImpl(
+    const SearchContext &context,
+    const parallelDepthTwoTaskDescriptor &task,
+    WorkerContext &worker
+)
+{
+    if (sharedAssemblyIndex != nullptr)
+    {
+        worker.assemblyIndex = min(
+            worker.assemblyIndex,
+            sharedAssemblyIndex->load(std::memory_order_relaxed)
+        );
+    }
+    if (task.lowerBoundAssemblyIndex >= worker.assemblyIndex) return true;
+    // The previous root may have ended on a bound-pruned raw fragmentation.
+    // Its deferred cache binding does not describe this transferred state.
+    worker.fragmentation.beginFragmentation();
+    reconstructDepthTwoTask(task, worker.candidate);
+    if (searchShouldStop()) return false;
+
+    vi &candidateKey = worker.search.candidateKey;
+    if (!canoniseAssemblyStateAndBuildKey(
+        worker.candidate,
+        candidateKey,
+        worker.fragmentation
+    )) return false;
+    return continueCanonicalAssemblySearchWithWorkspace<
+        equivalenceMode,
+        false
+    >(
+        context.dag,
+        worker.candidate,
+        candidateKey,
+        worker.candidate.sumDupBonds,
+        worker.assemblyIndex,
+        worker.fragmentation,
+        worker.search
+    );
+}
+
+bool runParallelDepthTwoJob(
+    const SearchContext &context,
+    const parallelDepthTwoTaskDescriptor &task,
+    WorkerContext &worker
+)
+{
+    if (!worker.fragmentation.homogeneousPathEdgePositions.empty())
+    {
+        return runParallelDepthTwoJobImpl<
+            matchingEquivalenceMode::homogeneousPath
+        >(context, task, worker);
+    }
+    return runParallelDepthTwoJobImpl<matchingEquivalenceMode::none>(
+        context,
+        task,
+        worker
+    );
+}
+
+/** Dynamically lease roots and consume adaptively exposed depth-two work. */
 void runParallelRootJobs(
     const SearchContext &context,
     WorkerContext &worker,
-    std::atomic<size_t> &leaseCursor
+    ParallelTaskScheduler &scheduler
 )
 {
     searchRootBranchOrdinal = context.rootJobs.size();
-    const size_t rankJobCount =
-        context.rootJobs.size() <= searchRankPartitionIndex
-        ? 0
-        : 1 +
-            (context.rootJobs.size() - 1 - searchRankPartitionIndex) /
-                searchRankPartitionCount;
-
     while (!searchShouldStop())
     {
-        size_t begin = leaseCursor.load(std::memory_order_relaxed);
-        size_t end = begin;
-        do
+        size_t begin = 0;
+        size_t end = 0;
+        if (scheduler.claimRootLease(begin, end))
         {
-            if (begin >= rankJobCount) return;
-            end = searchBranchLeaseSize > rankJobCount - begin
-                ? rankJobCount
-                : begin + searchBranchLeaseSize;
+            ++searchBranchLeaseCount;
+            for (size_t partitionOrdinal = begin;
+                 partitionOrdinal < end;
+                 ++partitionOrdinal)
+            {
+                const size_t jobIndex = searchRankPartitionIndex +
+                    partitionOrdinal * searchRankPartitionCount;
+                ++searchBranchAssignmentCount;
+                bool completed = false;
+                try
+                {
+                    completed = runParallelRootJob(context, jobIndex, worker);
+                }
+                catch (...)
+                {
+                    scheduler.completeRootLease(partitionOrdinal - begin);
+                    throw;
+                }
+                if (!completed)
+                {
+                    scheduler.completeRootLease(
+                        partitionOrdinal - begin + 1
+                    );
+                    return;
+                }
+            }
+            scheduler.completeRootLease(end - begin);
+            continue;
         }
-        while (!leaseCursor.compare_exchange_weak(
-            begin,
-            end,
-            std::memory_order_relaxed,
-            std::memory_order_relaxed
-        ));
 
-        ++searchBranchLeaseCount;
-        for (size_t partitionOrdinal = begin;
-             partitionOrdinal < end;
-             ++partitionOrdinal)
+        if (!scheduler.depthTwoTasksEnabled()) return;
+
+        // Root work remains the normal scheduling frontier. Depth-two tasks
+        // are consumed only after no root lease is immediately claimable.
+        parallelDepthTwoTaskDescriptor task;
+        const ParallelTaskScheduler::WorkAvailability availability =
+            scheduler.nextWork(task);
+        if (
+            availability ==
+                ParallelTaskScheduler::WorkAvailability::depthTwo
+        )
         {
-            const size_t jobIndex = searchRankPartitionIndex +
-                partitionOrdinal * searchRankPartitionCount;
-            ++searchBranchAssignmentCount;
-            if (!runParallelRootJob(context, jobIndex, worker)) return;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            ++searchDepthTwoTasksExecuted;
+#endif
+            bool completed = false;
+            try
+            {
+                completed = runParallelDepthTwoJob(context, task, worker);
+            }
+            catch (...)
+            {
+                scheduler.completeDepthTwoJob();
+                throw;
+            }
+            scheduler.completeDepthTwoJob();
+            if (!completed) return;
+            continue;
         }
+
+        if (
+            availability == ParallelTaskScheduler::WorkAvailability::complete
+        ) return;
+        scheduler.waitForWork();
     }
 }
 

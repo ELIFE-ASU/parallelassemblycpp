@@ -101,8 +101,17 @@ ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseSize = 1;
 ASSEMBLYCPP_SEARCH_LOCAL std::atomic<size_t> *sharedBranchLeaseCursor = nullptr;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseCount = 0;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchAssignmentCount = 0;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+ASSEMBLYCPP_SEARCH_LOCAL size_t searchProactiveTailRefills = 0;
+#endif
 ASSEMBLYCPP_SEARCH_LOCAL std::atomic<int> *sharedAssemblyIndex = nullptr;
 ASSEMBLYCPP_SEARCH_LOCAL bool suppressSearchOutput = false;
+
+constexpr size_t parallelMinimumQueuedTasksPerWorker = 8;
+constexpr size_t parallelTargetQueuedTasksPerWorker = 16;
+constexpr size_t parallelMaximumQueuedTasksPerWorker = 32;
+constexpr size_t parallelPromisingFrontierLeaseSize = 4;
+constexpr unsigned int parallelMaximumTaskDepth = 2;
 
 bool interruptionRequested()
 {
