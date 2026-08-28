@@ -2,11 +2,13 @@
 #define ASSEMBLY_TRANSPOSITION_TABLE_H
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <memory_resource>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
@@ -69,6 +71,14 @@ public:
         }
 
         return insertMiss(key, hash, sumDupBonds, found);
+    }
+
+    /** Hash a borrowed key before entering an optional external lock. */
+    [[nodiscard]] static std::uint32_t keyHash(
+        std::span<const int> key
+    ) noexcept
+    {
+        return hashKey(key);
     }
 
     [[nodiscard]] std::size_t size() const noexcept
@@ -305,6 +315,305 @@ private:
                 insertWithoutLookup(expanded, entry);
         }
         slots.swap(expanded);
+    }
+};
+
+/**
+ * @brief Exact process-shared L2 table split across independent lock shards.
+ *
+ * A worker computes and canonicalises its complete key before calling this
+ * table. Hashing, key copying, and node allocation happen before the shard
+ * lock; the fixed-bucket critical section is limited to one exact checked
+ * pointer link, score improvement, or dominated lookup and never resizes.
+ */
+class sharedAssemblyTranspositionTable
+{
+public:
+    static constexpr std::size_t shardCount = 64;
+
+    explicit sharedAssemblyTranspositionTable(std::size_t workerCount = 0)
+    {
+        workerPools.reserve(workerCount);
+        for (std::size_t worker = 0; worker < workerCount; ++worker)
+        {
+            workerPools.push_back(std::make_unique<
+                std::pmr::monotonic_buffer_resource
+            >(64 * 1024, std::pmr::new_delete_resource()));
+        }
+    }
+
+    ~sharedAssemblyTranspositionTable()
+    {
+        for (shard &selected : shards)
+        {
+            for (entry *head : selected.buckets)
+            {
+                while (head != nullptr)
+                {
+                    entry *next = head->next;
+                    const bool pooled = head->pooled != 0;
+                    const std::size_t bytes =
+                        sizeof(entry) + sizeof(int) * head->length;
+                    std::destroy_at(head);
+                    if (!pooled)
+                    {
+                        std::pmr::new_delete_resource()->deallocate(
+                            head,
+                            bytes,
+                            alignof(entry)
+                        );
+                    }
+                    head = next;
+                }
+            }
+        }
+    }
+
+    sharedAssemblyTranspositionTable(
+        const sharedAssemblyTranspositionTable &
+    ) = delete;
+    sharedAssemblyTranspositionTable &operator=(
+        const sharedAssemblyTranspositionTable &
+    ) = delete;
+
+    struct consideration
+    {
+        assemblyTranspositionTable::result outcome;
+        int bestSumDupBonds;
+    };
+
+    assemblyTranspositionTable::result consider(
+        std::span<const int> key,
+        int sumDupBonds
+    )
+    {
+        return considerWithBest(key, sumDupBonds).outcome;
+    }
+
+    consideration considerWithBest(
+        std::span<const int> key,
+        int sumDupBonds
+    )
+    {
+        return considerWithResource(
+            key,
+            sumDupBonds,
+            *std::pmr::new_delete_resource(),
+            false
+        );
+    }
+
+    consideration considerWithBestForWorker(
+        std::span<const int> key,
+        int sumDupBonds,
+        std::size_t workerIndex
+    )
+    {
+        // A worker index selects an unsynchronised monotonic arena. Concurrent
+        // callers must therefore use distinct indices; the OpenMP wiring
+        // assigns its stable thread index for the lifetime of the search.
+        if (workerIndex >= workerPools.size())
+            throw std::out_of_range("shared-table worker index is invalid");
+        return considerWithResource(
+            key,
+            sumDupBonds,
+            *workerPools[workerIndex],
+            true
+        );
+    }
+
+    [[nodiscard]] std::size_t workerCount() const noexcept
+    {
+        return workerPools.size();
+    }
+
+    [[nodiscard]] std::size_t size() const
+    {
+        std::size_t result = 0;
+        for (std::size_t index = 0; index < shardCount; ++index)
+        {
+            const shard &selected = shards[index];
+            std::lock_guard lock(selected.mutex);
+            result += selected.sizeValue;
+        }
+        return result;
+    }
+
+private:
+    static constexpr std::size_t bucketCount = 1024;
+
+    struct alignas(int) entry
+    {
+        entry *next;
+        std::uint32_t hash;
+        std::uint32_t length;
+        int bestSumDupBonds;
+        std::uint32_t pooled;
+    };
+
+    static_assert(sizeof(entry) % alignof(int) == 0);
+
+    struct entryDeleter
+    {
+        std::pmr::memory_resource *resource = nullptr;
+        std::size_t bytes = 0;
+
+        void operator()(entry *value) const noexcept
+        {
+            if (value == nullptr) return;
+            std::destroy_at(value);
+            resource->deallocate(value, bytes, alignof(entry));
+        }
+    };
+
+    using ownedEntry = std::unique_ptr<entry, entryDeleter>;
+
+    struct alignas(64) shard
+    {
+        mutable std::mutex mutex;
+        std::array<entry *, bucketCount> buckets{};
+        std::size_t sizeValue = 0;
+    };
+
+    // Pools are declared before shards so their storage remains alive until
+    // after every published entry header has been destroyed.
+    std::vector<
+        std::unique_ptr<std::pmr::monotonic_buffer_resource>
+    > workerPools;
+    std::array<shard, shardCount> shards;
+
+    consideration considerWithResource(
+        std::span<const int> key,
+        int sumDupBonds,
+        std::pmr::memory_resource &resource,
+        bool pooled
+    )
+    {
+        if (key.size() > std::numeric_limits<std::uint32_t>::max())
+            throw std::length_error("assembly-state key is too long");
+
+        const std::uint32_t hash = assemblyTranspositionTable::keyHash(key);
+        // The worker arena makes preparation a bump allocation. Preparing
+        // before the lock avoids a second mutex round trip on every L2 miss;
+        // a cross-worker hit simply drops the unused prepared node afterward.
+        ownedEntry prepared = prepareEntry(
+            key,
+            sumDupBonds,
+            hash,
+            resource,
+            pooled
+        );
+        shard &selected = shards[shardIndex(hash)];
+        {
+            std::lock_guard lock(selected.mutex);
+            if (entry *existing = find(selected, key, hash))
+                return updateExisting(*existing, sumDupBonds);
+            const std::size_t bucket = bucketIndex(hash);
+            prepared->next = selected.buckets[bucket];
+            selected.buckets[bucket] = prepared.release();
+            ++selected.sizeValue;
+        }
+        return {
+            assemblyTranspositionTable::result::inserted,
+            sumDupBonds
+        };
+    }
+
+    static const int *keyValues(const entry &value) noexcept
+    {
+        return reinterpret_cast<const int *>(std::addressof(value) + 1);
+    }
+
+    static bool keysEqual(
+        const entry &stored,
+        std::span<const int> candidate
+    ) noexcept
+    {
+        return stored.length == candidate.size() && std::equal(
+            candidate.begin(),
+            candidate.end(),
+            keyValues(stored)
+        );
+    }
+
+    static entry *find(
+        shard &selected,
+        std::span<const int> key,
+        std::uint32_t hash
+    ) noexcept
+    {
+        entry *candidate = selected.buckets[bucketIndex(hash)];
+        while (candidate != nullptr)
+        {
+            if (
+                candidate->hash == hash && keysEqual(*candidate, key)
+            ) return candidate;
+            candidate = candidate->next;
+        }
+        return nullptr;
+    }
+
+    static consideration updateExisting(entry &existing, int score) noexcept
+    {
+        if (score <= existing.bestSumDupBonds)
+        {
+            return {
+                assemblyTranspositionTable::result::dominated,
+                existing.bestSumDupBonds
+            };
+        }
+        existing.bestSumDupBonds = score;
+        return {assemblyTranspositionTable::result::improved, score};
+    }
+
+    static ownedEntry prepareEntry(
+        std::span<const int> key,
+        int score,
+        std::uint32_t hash,
+        std::pmr::memory_resource &resource,
+        bool pooled
+    )
+    {
+        if (
+            key.size_bytes() >
+            std::numeric_limits<std::size_t>::max() - sizeof(entry)
+        ) throw std::length_error("assembly-state key allocation overflow");
+        const std::size_t bytes = sizeof(entry) + key.size_bytes();
+        void *memory = resource.allocate(bytes, alignof(entry));
+        ownedEntry prepared(
+            std::construct_at(
+                static_cast<entry *>(memory),
+                entry{
+                    nullptr,
+                    hash,
+                    static_cast<std::uint32_t>(key.size()),
+                    score,
+                    static_cast<std::uint32_t>(pooled)
+                }
+            ),
+            entryDeleter{std::addressof(resource), bytes}
+        );
+        std::uninitialized_copy(
+            key.begin(),
+            key.end(),
+            reinterpret_cast<int *>(prepared.get() + 1)
+        );
+        return prepared;
+    }
+
+    static std::size_t shardIndex(std::uint32_t hash) noexcept
+    {
+        static_assert((shardCount & (shardCount - 1)) == 0);
+        return static_cast<std::size_t>(hash) & (shardCount - 1);
+    }
+
+    static std::size_t bucketIndex(std::uint32_t hash) noexcept
+    {
+        static_assert((bucketCount & (bucketCount - 1)) == 0);
+        return (
+            static_cast<std::size_t>(hash) /
+            shardCount
+        ) & (bucketCount - 1);
     }
 };
 

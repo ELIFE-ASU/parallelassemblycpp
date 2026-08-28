@@ -474,7 +474,11 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     int preparationSucceeded = 1;
     try
     {
-        prepareParallelSearchContext(graph, searchContext);
+        prepareParallelSearchContext(
+            graph,
+            searchContext,
+            static_cast<size_t>(localThreads)
+        );
     }
     catch (const std::exception &exception)
     {
@@ -585,7 +589,10 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
 #endif
         try
         {
-            configureParallelWorker(searchContext);
+            configureParallelWorker(
+                searchContext,
+                static_cast<size_t>(threadIndex)
+            );
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
             if (searchTelemetryEnabled && threadIndex != 0)
                 setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
@@ -605,11 +612,22 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                     warmStartReady.notify_all();
                 }
                 else warmStartReady.wait(false, std::memory_order_acquire);
-                runParallelRootJobs(
-                    searchContext,
-                    worker,
-                    taskScheduler
-                );
+                if (searchContext.sharedStates != nullptr)
+                {
+                    runParallelRootJobs<true>(
+                        searchContext,
+                        worker,
+                        taskScheduler
+                    );
+                }
+                else
+                {
+                    runParallelRootJobs<false>(
+                        searchContext,
+                        worker,
+                        taskScheduler
+                    );
+                }
                 result.assemblyIndex = compensateDisjointAssemblyIndex(
                     worker.assemblyIndex
                 );

@@ -734,7 +734,8 @@ enum class matchingEquivalenceMode
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation = false
+    bool allowDepthTwoDonation = false,
+    bool useSharedStates = false
 >
 void dagRecursiveAssemblyWithWorkspaceImpl(
     const vector<dagLevel> &dag,
@@ -788,7 +789,8 @@ void recordImprovedAssemblyIndex(
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation = false
+    bool allowDepthTwoDonation = false,
+    bool useSharedStates = false
 >
 bool continueCanonicalAssemblySearchWithWorkspace(
     const vector<dagLevel> &dag,
@@ -807,8 +809,13 @@ bool continueCanonicalAssemblySearchWithWorkspace(
         ++searchTelemetry.counters.assemblyCacheLookups;
 #endif
 
-    const assemblyTranspositionTable::result result =
-        searchStorage.states.consider(candidateKey, sumDupBonds);
+    const assemblyTranspositionTable::result result = [&]
+    {
+        if constexpr (useSharedStates)
+            return searchStorage.considerShared(candidateKey, sumDupBonds);
+        else
+            return searchStorage.states.consider(candidateKey, sumDupBonds);
+    }();
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]
@@ -847,7 +854,8 @@ bool continueCanonicalAssemblySearchWithWorkspace(
     dagRecursiveAssemblyWithWorkspaceImpl<
         equivalenceMode,
         trackPath,
-        allowDepthTwoDonation
+        allowDepthTwoDonation,
+        useSharedStates
     >(
         dag,
         candidate,
@@ -862,7 +870,8 @@ bool continueCanonicalAssemblySearchWithWorkspace(
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation = false
+    bool allowDepthTwoDonation = false,
+    bool useSharedStates = false
 >
 bool continueAssemblySearchWithWorkspace(
     const vector<dagLevel> &dag,
@@ -878,7 +887,8 @@ bool continueAssemblySearchWithWorkspace(
     return continueCanonicalAssemblySearchWithWorkspace<
         equivalenceMode,
         trackPath,
-        allowDepthTwoDonation
+        allowDepthTwoDonation,
+        useSharedStates
     >(
         dag,
         candidate,
@@ -902,7 +912,8 @@ bool continueAssemblySearchWithWorkspace(
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation
+    bool allowDepthTwoDonation,
+    bool useSharedStates
 >
 void dagRecursiveAssemblyWithWorkspaceImpl(
     const vector<dagLevel> &dag,
@@ -1160,7 +1171,9 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                         // donated, never descendants of an inline child.
                         if (!continueAssemblySearchWithWorkspace<
                             equivalenceMode,
-                            trackPath
+                            trackPath,
+                            false,
+                            useSharedStates
                         >(
                             dag,
                             candidate,
@@ -1638,7 +1651,11 @@ bool buildRootJobDescriptors(
  * Root-owned masks are explicitly released before the producer thread can
  * enter the worker pool and reconfigure its thread-local mask arena.
  */
-void prepareParallelSearchContext(molGraph &mg, SearchContext &context)
+void prepareParallelSearchContext(
+    molGraph &mg,
+    SearchContext &context,
+    std::size_t localWorkerCount
+)
 {
     context.startedAt = clock();
     startTime = context.startedAt;
@@ -1646,6 +1663,11 @@ void prepareParallelSearchContext(molGraph &mg, SearchContext &context)
     searchStopInnerPollCountdown = 0;
     runtimeLimitReached = false;
     enumerationLimitReached = false;
+    sharedCanonicalRegistry = nullptr;
+    sharedAssemblyStates = nullptr;
+    sharedAssemblyWorkerIndex = 0;
+    context.canonicalRegistry.reset();
+    context.sharedStates.reset();
     bitsetHashTable.clear();
     graphHashMap.clear();
     clearTreeCanonInterner();
@@ -1704,6 +1726,24 @@ void prepareParallelSearchContext(molGraph &mg, SearchContext &context)
     {
         static_cast<void>(buildRootJobDescriptors(root, levels, context));
     }
+    // Locking cannot repay its fixed setup cost on short or low-reuse graphs.
+    // Small homogeneous paths also finish almost entirely in their dedicated
+    // root-equivalence pass; larger frontiers leave enough work for L2 reuse.
+    const bool useSharedReuse =
+        localWorkerCount > 1 &&
+        univEdgeList.size() > 30 &&
+        graphHashMap.size() <= bitsetHashTable.size() / 2 &&
+        (
+            context.homogeneousPathEdgePositions.empty() ||
+            context.rootJobs.size() >= 10000
+        );
+    if (useSharedReuse)
+    {
+        context.canonicalRegistry =
+            make_unique<sharedCanonicalIdRegistry>(graphHashMap.size());
+        context.sharedStates =
+            make_unique<sharedAssemblyTranspositionTable>(localWorkerCount);
+    }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
 #endif
@@ -1733,8 +1773,17 @@ void prepareParallelSearchContext(molGraph &mg, SearchContext &context)
 }
 
 /** Configure only thread-local state from an immutable, mask-free context. */
-void configureParallelWorker(const SearchContext &context)
+void configureParallelWorker(
+    const SearchContext &context,
+    std::size_t workerIndex
+)
 {
+    if (context.sharedStates != nullptr)
+    {
+        sharedCanonicalRegistry = context.canonicalRegistry.get();
+        sharedAssemblyStates = context.sharedStates.get();
+        sharedAssemblyWorkerIndex = workerIndex;
+    }
     bitsetHashTable.clear();
     graphHashMap.clear();
     clearTreeCanonInterner();
@@ -1773,6 +1822,12 @@ void clearParallelWorkerMasks()
 {
     bitsetHashTable.clear();
     allEdges.reset();
+    if (sharedAssemblyStates != nullptr)
+    {
+        sharedCanonicalRegistry = nullptr;
+        sharedAssemblyStates = nullptr;
+        sharedAssemblyWorkerIndex = 0;
+    }
 }
 
 EdgeMask reconstructRootOccurrence(
@@ -1797,7 +1852,7 @@ EdgeMask reconstructRootOccurrence(
     );
 }
 
-template<matchingEquivalenceMode equivalenceMode>
+template<matchingEquivalenceMode equivalenceMode, bool useSharedStates>
 bool runParallelRootJobImpl(
     const SearchContext &context,
     size_t jobIndex,
@@ -1848,10 +1903,14 @@ bool runParallelRootJobImpl(
         candidateKey,
         worker.fragmentation
     )) return false;
+    // The worker L1 removes repeated local root children. The exact shared L2
+    // linearizes equivalent canonical children reached by different workers,
+    // so only their first/best encounter proceeds into recursive search.
     return continueAssemblySearchWithWorkspace<
         equivalenceMode,
         false,
-        true
+        true,
+        useSharedStates
     >(
         context.dag,
         worker.candidate,
@@ -1864,6 +1923,7 @@ bool runParallelRootJobImpl(
     );
 }
 
+template<bool useSharedStates>
 bool runParallelRootJob(
     const SearchContext &context,
     size_t jobIndex,
@@ -1873,14 +1933,14 @@ bool runParallelRootJob(
     if (!worker.fragmentation.homogeneousPathEdgePositions.empty())
     {
         return runParallelRootJobImpl<
-            matchingEquivalenceMode::homogeneousPath
+            matchingEquivalenceMode::homogeneousPath,
+            useSharedStates
         >(context, jobIndex, worker);
     }
-    return runParallelRootJobImpl<matchingEquivalenceMode::none>(
-        context,
-        jobIndex,
-        worker
-    );
+    return runParallelRootJobImpl<
+        matchingEquivalenceMode::none,
+        useSharedStates
+    >(context, jobIndex, worker);
 }
 
 /** Evaluate the strongest one-step branch before workers enter the queue. */
@@ -1951,7 +2011,7 @@ void reconstructDepthTwoTask(
     state.sumDupBonds = task.sumDupBonds;
 }
 
-template<matchingEquivalenceMode equivalenceMode>
+template<matchingEquivalenceMode equivalenceMode, bool useSharedStates>
 bool runParallelDepthTwoJobImpl(
     const SearchContext &context,
     const parallelDepthTwoTaskDescriptor &task,
@@ -1980,7 +2040,9 @@ bool runParallelDepthTwoJobImpl(
     )) return false;
     return continueCanonicalAssemblySearchWithWorkspace<
         equivalenceMode,
-        false
+        false,
+        false,
+        useSharedStates
     >(
         context.dag,
         worker.candidate,
@@ -1992,6 +2054,7 @@ bool runParallelDepthTwoJobImpl(
     );
 }
 
+template<bool useSharedStates>
 bool runParallelDepthTwoJob(
     const SearchContext &context,
     const parallelDepthTwoTaskDescriptor &task,
@@ -2001,17 +2064,18 @@ bool runParallelDepthTwoJob(
     if (!worker.fragmentation.homogeneousPathEdgePositions.empty())
     {
         return runParallelDepthTwoJobImpl<
-            matchingEquivalenceMode::homogeneousPath
+            matchingEquivalenceMode::homogeneousPath,
+            useSharedStates
         >(context, task, worker);
     }
-    return runParallelDepthTwoJobImpl<matchingEquivalenceMode::none>(
-        context,
-        task,
-        worker
-    );
+    return runParallelDepthTwoJobImpl<
+        matchingEquivalenceMode::none,
+        useSharedStates
+    >(context, task, worker);
 }
 
 /** Dynamically lease roots and consume adaptively exposed depth-two work. */
+template<bool useSharedStates>
 void runParallelRootJobs(
     const SearchContext &context,
     WorkerContext &worker,
@@ -2036,7 +2100,11 @@ void runParallelRootJobs(
                 bool completed = false;
                 try
                 {
-                    completed = runParallelRootJob(context, jobIndex, worker);
+                    completed = runParallelRootJob<useSharedStates>(
+                        context,
+                        jobIndex,
+                        worker
+                    );
                 }
                 catch (...)
                 {
@@ -2073,7 +2141,11 @@ void runParallelRootJobs(
             bool completed = false;
             try
             {
-                completed = runParallelDepthTwoJob(context, task, worker);
+                completed = runParallelDepthTwoJob<useSharedStates>(
+                    context,
+                    task,
+                    worker
+                );
             }
             catch (...)
             {
@@ -2106,6 +2178,9 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     searchStopInnerPollCountdown = 0;
     runtimeLimitReached = false;
     enumerationLimitReached = false;
+    sharedCanonicalRegistry = nullptr;
+    sharedAssemblyStates = nullptr;
+    sharedAssemblyWorkerIndex = 0;
     bitsetHashTable.clear();
     graphHashMap.clear();
     clearTreeCanonInterner();

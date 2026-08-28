@@ -34,11 +34,13 @@ struct canonicalisationSeed
 };
 
 /**
- * Immutable input shared by every worker after construction.
+ * Problem input shared immutably by every worker after construction.
  *
  * In particular, this type deliberately contains no EdgeMask, assemblyState,
  * or assemblyFragment. Wide masks belong to a thread-local arena and must be
  * reconstructed from occurrenceWords by the worker that will destroy them.
+ * The two process-local caches are the only mutable members workers touch;
+ * both provide their own fine-grained synchronization.
  */
 struct SearchContext
 {
@@ -50,6 +52,8 @@ struct SearchContext
     vector<rootJobDescriptor> rootJobs;
     vector<int> homogeneousPathEdgePositions;
     canonicalisationSeed canonicalSeed;
+    std::unique_ptr<sharedCanonicalIdRegistry> canonicalRegistry;
+    std::unique_ptr<sharedAssemblyTranspositionTable> sharedStates;
     clock_t startedAt = 0;
     unsigned int bondCount = 0;
     int componentCount = 1;
@@ -75,6 +79,10 @@ struct assemblyPathWitness
     vector<assemblyPathStep> best;
 };
 
+inline ASSEMBLYCPP_SEARCH_LOCAL sharedAssemblyTranspositionTable
+    *sharedAssemblyStates = nullptr;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t sharedAssemblyWorkerIndex = 0;
+
 /** Mutable caches and fragmentation scratch owned by exactly one worker. */
 struct assemblySearchStorage
 {
@@ -95,6 +103,40 @@ struct assemblySearchStorage
             pathway->current.reserve(univEdgeList.size());
             pathway->best.reserve(univEdgeList.size());
         }
+    }
+
+    /** L1-first lookup for searches configured with a process-shared L2. */
+    [[gnu::noinline]] assemblyTranspositionTable::result considerShared(
+        std::span<const int> key,
+        int sumDupBonds
+    )
+    {
+        const assemblyTranspositionTable::result localResult =
+            states.consider(key, sumDupBonds);
+        if (localResult == assemblyTranspositionTable::result::dominated)
+            return localResult;
+
+        const sharedAssemblyTranspositionTable::consideration sharedResult =
+            sharedAssemblyStates->considerWithBestForWorker(
+                key,
+                sumDupBonds,
+                sharedAssemblyWorkerIndex
+            );
+        if (
+            sharedResult.outcome ==
+                assemblyTranspositionTable::result::dominated &&
+            sharedResult.bestSumDupBonds > sumDupBonds
+        )
+        {
+            // Promote the observed L2 score so subsequent local visits can
+            // prune without acquiring the shard again. A later genuinely
+            // better score can still improve L1 and be checked in L2.
+            static_cast<void>(states.consider(
+                key,
+                sharedResult.bestSumDupBonds
+            ));
+        }
+        return sharedResult.outcome;
     }
 };
 
@@ -150,9 +192,10 @@ struct parallelTaskFragmentDescriptor
 /**
  * A depth-two assembly state that may safely move between worker threads.
  *
- * Canonical IDs are deliberately omitted: IDs allocated after the shared root
- * seed are local to a worker. The receiving worker reconstructs the masks and
- * canonicalises them into its own cache before continuing the search.
+ * Canonical IDs are deliberately omitted: after the shared root seed they are
+ * process-global only when L2 reuse is enabled, and worker-local otherwise.
+ * The receiving worker reconstructs the masks and canonicalises them through
+ * the active mode before continuing the search.
  */
 struct parallelDepthTwoTaskDescriptor
 {
