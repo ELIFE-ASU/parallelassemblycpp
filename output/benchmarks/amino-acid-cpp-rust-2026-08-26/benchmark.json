@@ -1,0 +1,1779 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "generated_at": "2026-08-26T16:29:55.165267+00:00",
+  "metric": "external CLI wall time in seconds via time.perf_counter_ns",
+  "corpus": "maintained amino-acid V2000 MOL scaling inputs",
+  "case_range": {
+    "first_components": 2,
+    "last_components": 10
+  },
+  "runs": 5,
+  "warmup": 1,
+  "schedule": "cyclically rotated variant order per case and measured round",
+  "validation": "zero exit status and exact expected assembly index on every run",
+  "platform": {
+    "description": "Linux-7.1.5-070105-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "cpu_model": "Intel(R) Core(TM) i7-14700KF"
+  },
+  "source": {
+    "current_cpp_commit": "79696f6263e54aad0f1f10532de58f5885fafd19",
+    "rust_repository": "https://github.com/DaymudeLab/assembly-theory",
+    "rust_commit": "19370f85eed6784d4aa9a4e5be017d0c5126c2c7",
+    "rust_describe": "19370f8",
+    "rust_build": "cargo build --locked --release",
+    "rust_target_tuning": "Cargo release default (no RUSTFLAGS target-cpu override)",
+    "current_cpp_build": "CMake parallel Release preset, x86-64-v3, no LTO"
+  },
+  "variants": {
+    "reference": {
+      "label": "Shipped reference (serial)",
+      "implementation": "shipped-reference",
+      "mode": "reference",
+      "workers": 1,
+      "cpus": "0",
+      "executable": "/home/louie/skunkworks/assemblytheorytools/assemblytheorytools/precompiled/asscpp_combined_static_linux",
+      "sha256": "571e70707783e637d65b4b4b35e96a6f0138e71c37ae09fec782752af54caedb",
+      "environment": {
+        "LC_ALL": "C"
+      }
+    },
+    "current_serial": {
+      "label": "Current C++ serial",
+      "implementation": "current-cpp",
+      "mode": "current-serial",
+      "workers": 1,
+      "cpus": "0",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/parallel/AssemblyCpp",
+      "sha256": "ded5a7534a7c7693967d518837e1bcd2da1a607234c9523b49cfabde10f22be0",
+      "environment": {
+        "LC_ALL": "C"
+      }
+    },
+    "rust_serial": {
+      "label": "Rust serial",
+      "implementation": "daymudelab-rust",
+      "mode": "rust-serial",
+      "workers": 1,
+      "cpus": "0",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/daymudelab-assembly-theory/target/release/assembly-theory",
+      "sha256": "69194e7e6572699711445faca4c82f139e31c0fcec9f5ad205ef715fe95f2183",
+      "environment": {
+        "LC_ALL": "C",
+        "RAYON_NUM_THREADS": "1"
+      }
+    },
+    "current_omp1": {
+      "label": "Current C++ OpenMP, 1 worker",
+      "implementation": "current-cpp",
+      "mode": "current-openmp",
+      "workers": 1,
+      "cpus": "0",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/parallel/AssemblyCppOMP",
+      "sha256": "7350a51060170ec7fb8e6829274730a37ccb613bfa2941355a47d365be51ee9e",
+      "environment": {
+        "LC_ALL": "C",
+        "OMP_NUM_THREADS": "1",
+        "OMP_THREAD_LIMIT": "1",
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_PLACES": "cores",
+        "OMP_PROC_BIND": "close",
+        "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0"
+      }
+    },
+    "rust_parallel1": {
+      "label": "Rust depth-one, 1 worker",
+      "implementation": "daymudelab-rust",
+      "mode": "rust-depth-one",
+      "workers": 1,
+      "cpus": "0",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/daymudelab-assembly-theory/target/release/assembly-theory",
+      "sha256": "69194e7e6572699711445faca4c82f139e31c0fcec9f5ad205ef715fe95f2183",
+      "environment": {
+        "LC_ALL": "C",
+        "RAYON_NUM_THREADS": "1"
+      }
+    },
+    "current_omp2": {
+      "label": "Current C++ OpenMP, 2 workers",
+      "implementation": "current-cpp",
+      "mode": "current-openmp",
+      "workers": 2,
+      "cpus": "0,2",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/parallel/AssemblyCppOMP",
+      "sha256": "7350a51060170ec7fb8e6829274730a37ccb613bfa2941355a47d365be51ee9e",
+      "environment": {
+        "LC_ALL": "C",
+        "OMP_NUM_THREADS": "2",
+        "OMP_THREAD_LIMIT": "2",
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_PLACES": "cores",
+        "OMP_PROC_BIND": "close",
+        "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0"
+      }
+    },
+    "rust_parallel2": {
+      "label": "Rust depth-one, 2 workers",
+      "implementation": "daymudelab-rust",
+      "mode": "rust-depth-one",
+      "workers": 2,
+      "cpus": "0,2",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/daymudelab-assembly-theory/target/release/assembly-theory",
+      "sha256": "69194e7e6572699711445faca4c82f139e31c0fcec9f5ad205ef715fe95f2183",
+      "environment": {
+        "LC_ALL": "C",
+        "RAYON_NUM_THREADS": "2"
+      }
+    },
+    "current_omp4": {
+      "label": "Current C++ OpenMP, 4 workers",
+      "implementation": "current-cpp",
+      "mode": "current-openmp",
+      "workers": 4,
+      "cpus": "0,2,4,6",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/parallel/AssemblyCppOMP",
+      "sha256": "7350a51060170ec7fb8e6829274730a37ccb613bfa2941355a47d365be51ee9e",
+      "environment": {
+        "LC_ALL": "C",
+        "OMP_NUM_THREADS": "4",
+        "OMP_THREAD_LIMIT": "4",
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_PLACES": "cores",
+        "OMP_PROC_BIND": "close",
+        "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0"
+      }
+    },
+    "rust_parallel4": {
+      "label": "Rust depth-one, 4 workers",
+      "implementation": "daymudelab-rust",
+      "mode": "rust-depth-one",
+      "workers": 4,
+      "cpus": "0,2,4,6",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/daymudelab-assembly-theory/target/release/assembly-theory",
+      "sha256": "69194e7e6572699711445faca4c82f139e31c0fcec9f5ad205ef715fe95f2183",
+      "environment": {
+        "LC_ALL": "C",
+        "RAYON_NUM_THREADS": "4"
+      }
+    },
+    "current_omp8": {
+      "label": "Current C++ OpenMP, 8 workers",
+      "implementation": "current-cpp",
+      "mode": "current-openmp",
+      "workers": 8,
+      "cpus": "0,2,4,6,8,10,12,14",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/parallel/AssemblyCppOMP",
+      "sha256": "7350a51060170ec7fb8e6829274730a37ccb613bfa2941355a47d365be51ee9e",
+      "environment": {
+        "LC_ALL": "C",
+        "OMP_NUM_THREADS": "8",
+        "OMP_THREAD_LIMIT": "8",
+        "OMP_DYNAMIC": "FALSE",
+        "OMP_PLACES": "cores",
+        "OMP_PROC_BIND": "close",
+        "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0"
+      }
+    },
+    "rust_parallel8": {
+      "label": "Rust depth-one, 8 workers",
+      "implementation": "daymudelab-rust",
+      "mode": "rust-depth-one",
+      "workers": 8,
+      "cpus": "0,2,4,6,8,10,12,14",
+      "executable": "/home/louie/skunkworks/assemblycpp-v5/build/daymudelab-assembly-theory/target/release/assembly-theory",
+      "sha256": "69194e7e6572699711445faca4c82f139e31c0fcec9f5ad205ef715fe95f2183",
+      "environment": {
+        "LC_ALL": "C",
+        "RAYON_NUM_THREADS": "8"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "02c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_02c_018a.mol",
+      "input_sha256": "7ae3e13c632c746786f96de2a4a9dc3dd8901eb01b896b7936c9f602067bfa7a",
+      "components": 2,
+      "atoms": 18,
+      "bonds": 16,
+      "expected_assembly_index": 10,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.001154971,
+            0.001173877,
+            0.001073386,
+            0.001104398,
+            0.001124533
+          ],
+          "minimum": 0.001073386,
+          "median": 0.001124533,
+          "mean": 0.001126233,
+          "mad": 3.0438000000000036e-05,
+          "p95": 0.001173877,
+          "maximum": 0.001173877
+        },
+        "current_serial": {
+          "samples": [
+            0.002486078,
+            0.001415953,
+            0.001258371,
+            0.0024073,
+            0.001417485
+          ],
+          "minimum": 0.001258371,
+          "median": 0.001417485,
+          "mean": 0.0017970374,
+          "mad": 0.0001591139999999999,
+          "p95": 0.002486078,
+          "maximum": 0.002486078
+        },
+        "rust_serial": {
+          "samples": [
+            0.001375093,
+            0.001293889,
+            0.001224679,
+            0.001457887,
+            0.001279633
+          ],
+          "minimum": 0.001224679,
+          "median": 0.001293889,
+          "mean": 0.0013262362,
+          "mad": 6.92100000000001e-05,
+          "p95": 0.001457887,
+          "maximum": 0.001457887
+        },
+        "current_omp1": {
+          "samples": [
+            0.001427227,
+            0.001415195,
+            0.001460103,
+            0.001407246,
+            0.001308595
+          ],
+          "minimum": 0.001308595,
+          "median": 0.001415195,
+          "mean": 0.0014036732,
+          "mad": 1.2032000000000145e-05,
+          "p95": 0.001460103,
+          "maximum": 0.001460103
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.001339517,
+            0.001282065,
+            0.001548353,
+            0.001431145,
+            0.001386077
+          ],
+          "minimum": 0.001282065,
+          "median": 0.001386077,
+          "mean": 0.0013974314,
+          "mad": 4.656000000000018e-05,
+          "p95": 0.001548353,
+          "maximum": 0.001548353
+        },
+        "current_omp2": {
+          "samples": [
+            0.001902881,
+            0.001678814,
+            0.001521566,
+            0.001545394,
+            0.001539622
+          ],
+          "minimum": 0.001521566,
+          "median": 0.001545394,
+          "mean": 0.0016376554,
+          "mad": 2.3828000000000044e-05,
+          "p95": 0.001902881,
+          "maximum": 0.001902881
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.001494785,
+            0.001536754,
+            0.001350212,
+            0.001582019,
+            0.001301186
+          ],
+          "minimum": 0.001301186,
+          "median": 0.001494785,
+          "mean": 0.0014529912,
+          "mad": 8.723400000000005e-05,
+          "p95": 0.001582019,
+          "maximum": 0.001582019
+        },
+        "current_omp4": {
+          "samples": [
+            0.001560485,
+            0.001935016,
+            0.001459913,
+            0.001667975,
+            0.00179621
+          ],
+          "minimum": 0.001459913,
+          "median": 0.001667975,
+          "mean": 0.0016839198,
+          "mad": 0.00012823499999999998,
+          "p95": 0.001935016,
+          "maximum": 0.001935016
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.001494053,
+            0.001434012,
+            0.001357376,
+            0.001613919,
+            0.001309209
+          ],
+          "minimum": 0.001309209,
+          "median": 0.001434012,
+          "mean": 0.0014417138,
+          "mad": 7.663599999999994e-05,
+          "p95": 0.001613919,
+          "maximum": 0.001613919
+        },
+        "current_omp8": {
+          "samples": [
+            0.002192881,
+            0.002155272,
+            0.003120314,
+            0.003678443,
+            0.001832502
+          ],
+          "minimum": 0.001832502,
+          "median": 0.002192881,
+          "mean": 0.0025958824,
+          "mad": 0.00036037899999999986,
+          "p95": 0.003678443,
+          "maximum": 0.003678443
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.001558224,
+            0.001752998,
+            0.001475348,
+            0.001508273,
+            0.001474876
+          ],
+          "minimum": 0.001474876,
+          "median": 0.001508273,
+          "mean": 0.0015539438,
+          "mad": 3.3397000000000114e-05,
+          "p95": 0.001752998,
+          "maximum": 0.001752998
+        }
+      }
+    },
+    {
+      "id": "03c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_03c_027a.mol",
+      "input_sha256": "3417c4212e20e78662eec52b4c7aa388f634f06296bc660caf07e8ec63b5f018",
+      "components": 3,
+      "atoms": 27,
+      "bonds": 24,
+      "expected_assembly_index": 13,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.001651531,
+            0.001619052,
+            0.00156551,
+            0.001744294,
+            0.001541284
+          ],
+          "minimum": 0.001541284,
+          "median": 0.001619052,
+          "mean": 0.0016243342,
+          "mad": 5.3541999999999956e-05,
+          "p95": 0.001744294,
+          "maximum": 0.001744294
+        },
+        "current_serial": {
+          "samples": [
+            0.0015153,
+            0.001673015,
+            0.001374624,
+            0.001474934,
+            0.001395318
+          ],
+          "minimum": 0.001374624,
+          "median": 0.001474934,
+          "mean": 0.0014866382,
+          "mad": 7.961600000000002e-05,
+          "p95": 0.001673015,
+          "maximum": 0.001673015
+        },
+        "rust_serial": {
+          "samples": [
+            0.00170394,
+            0.001701263,
+            0.001683118,
+            0.001637664,
+            0.001751715
+          ],
+          "minimum": 0.001637664,
+          "median": 0.001701263,
+          "mean": 0.00169554,
+          "mad": 1.814500000000001e-05,
+          "p95": 0.001751715,
+          "maximum": 0.001751715
+        },
+        "current_omp1": {
+          "samples": [
+            0.001533604,
+            0.001566406,
+            0.001500823,
+            0.001511168,
+            0.00151518
+          ],
+          "minimum": 0.001500823,
+          "median": 0.00151518,
+          "mean": 0.0015254362,
+          "mad": 1.4356999999999998e-05,
+          "p95": 0.001566406,
+          "maximum": 0.001566406
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.001949886,
+            0.001812907,
+            0.001835031,
+            0.001714558,
+            0.001780525
+          ],
+          "minimum": 0.001714558,
+          "median": 0.001812907,
+          "mean": 0.0018185814,
+          "mad": 3.238200000000007e-05,
+          "p95": 0.001949886,
+          "maximum": 0.001949886
+        },
+        "current_omp2": {
+          "samples": [
+            0.001652621,
+            0.001819791,
+            0.001543108,
+            0.001536611,
+            0.001544329
+          ],
+          "minimum": 0.001536611,
+          "median": 0.001544329,
+          "mean": 0.001619292,
+          "mad": 7.718000000000091e-06,
+          "p95": 0.001819791,
+          "maximum": 0.001819791
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.001705594,
+            0.001599266,
+            0.001801024,
+            0.001768715,
+            0.001872425
+          ],
+          "minimum": 0.001599266,
+          "median": 0.001768715,
+          "mean": 0.0017494048,
+          "mad": 6.312099999999997e-05,
+          "p95": 0.001872425,
+          "maximum": 0.001872425
+        },
+        "current_omp4": {
+          "samples": [
+            0.001908306,
+            0.001604637,
+            0.001508406,
+            0.001817005,
+            0.001670387
+          ],
+          "minimum": 0.001508406,
+          "median": 0.001670387,
+          "mean": 0.0017017482,
+          "mad": 0.00014661800000000005,
+          "p95": 0.001908306,
+          "maximum": 0.001908306
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.001843753,
+            0.001648768,
+            0.001637043,
+            0.001791351,
+            0.001656134
+          ],
+          "minimum": 0.001637043,
+          "median": 0.001656134,
+          "mean": 0.0017154098,
+          "mad": 1.909100000000016e-05,
+          "p95": 0.001843753,
+          "maximum": 0.001843753
+        },
+        "current_omp8": {
+          "samples": [
+            0.002147855,
+            0.005391009,
+            0.002016491,
+            0.004230208,
+            0.002794516
+          ],
+          "minimum": 0.002016491,
+          "median": 0.002794516,
+          "mean": 0.0033160158,
+          "mad": 0.0007780249999999999,
+          "p95": 0.005391009,
+          "maximum": 0.005391009
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.001945326,
+            0.001862431,
+            0.001829881,
+            0.001845105,
+            0.00174222
+          ],
+          "minimum": 0.00174222,
+          "median": 0.001845105,
+          "mean": 0.0018449926,
+          "mad": 1.73259999999998e-05,
+          "p95": 0.001945326,
+          "maximum": 0.001945326
+        }
+      }
+    },
+    {
+      "id": "04c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_04c_036a.mol",
+      "input_sha256": "787f15a372f65a42129b5b844f8b9c7990c55c53662e606e7114ad9e9ae85292",
+      "components": 4,
+      "atoms": 36,
+      "bonds": 32,
+      "expected_assembly_index": 15,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.003321946,
+            0.003179116,
+            0.003087267,
+            0.003170425,
+            0.003110889
+          ],
+          "minimum": 0.003087267,
+          "median": 0.003170425,
+          "mean": 0.0031739286,
+          "mad": 5.9536000000000224e-05,
+          "p95": 0.003321946,
+          "maximum": 0.003321946
+        },
+        "current_serial": {
+          "samples": [
+            0.002186473,
+            0.00220301,
+            0.002540418,
+            0.002263698,
+            0.002083687
+          ],
+          "minimum": 0.002083687,
+          "median": 0.00220301,
+          "mean": 0.0022554572,
+          "mad": 6.068800000000015e-05,
+          "p95": 0.002540418,
+          "maximum": 0.002540418
+        },
+        "rust_serial": {
+          "samples": [
+            0.003515493,
+            0.00346355,
+            0.003466689,
+            0.003499031,
+            0.003413948
+          ],
+          "minimum": 0.003413948,
+          "median": 0.003466689,
+          "mean": 0.0034717422,
+          "mad": 3.234200000000031e-05,
+          "p95": 0.003515493,
+          "maximum": 0.003515493
+        },
+        "current_omp1": {
+          "samples": [
+            0.002300834,
+            0.002242305,
+            0.00233356,
+            0.002224124,
+            0.002072322
+          ],
+          "minimum": 0.002072322,
+          "median": 0.002242305,
+          "mean": 0.002234629,
+          "mad": 5.852899999999987e-05,
+          "p95": 0.00233356,
+          "maximum": 0.00233356
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.003606278,
+            0.003488309,
+            0.003771756,
+            0.003471064,
+            0.003551116
+          ],
+          "minimum": 0.003471064,
+          "median": 0.003551116,
+          "mean": 0.0035777046,
+          "mad": 6.28069999999998e-05,
+          "p95": 0.003771756,
+          "maximum": 0.003771756
+        },
+        "current_omp2": {
+          "samples": [
+            0.002161099,
+            0.002100593,
+            0.002112286,
+            0.002094419,
+            0.001978533
+          ],
+          "minimum": 0.001978533,
+          "median": 0.002100593,
+          "mean": 0.002089386,
+          "mad": 1.169300000000012e-05,
+          "p95": 0.002161099,
+          "maximum": 0.002161099
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.003533687,
+            0.002732599,
+            0.00278925,
+            0.002775642,
+            0.002957113
+          ],
+          "minimum": 0.002732599,
+          "median": 0.00278925,
+          "mean": 0.0029576582000000002,
+          "mad": 5.665100000000001e-05,
+          "p95": 0.003533687,
+          "maximum": 0.003533687
+        },
+        "current_omp4": {
+          "samples": [
+            0.002364307,
+            0.002170667,
+            0.00201502,
+            0.002071244,
+            0.002626308
+          ],
+          "minimum": 0.00201502,
+          "median": 0.002170667,
+          "mean": 0.0022495092,
+          "mad": 0.00015564699999999964,
+          "p95": 0.002626308,
+          "maximum": 0.002626308
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.003488614,
+            0.002753577,
+            0.002307687,
+            0.002537695,
+            0.00253261
+          ],
+          "minimum": 0.002307687,
+          "median": 0.002537695,
+          "mean": 0.0027240366,
+          "mad": 0.00021588200000000014,
+          "p95": 0.003488614,
+          "maximum": 0.003488614
+        },
+        "current_omp8": {
+          "samples": [
+            0.002535666,
+            0.004367818,
+            0.002216807,
+            0.002125781,
+            0.001989087
+          ],
+          "minimum": 0.001989087,
+          "median": 0.002216807,
+          "mean": 0.0026470318,
+          "mad": 0.00022771999999999983,
+          "p95": 0.004367818,
+          "maximum": 0.004367818
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.002334125,
+            0.002831801,
+            0.002228876,
+            0.002458524,
+            0.002240575
+          ],
+          "minimum": 0.002228876,
+          "median": 0.002334125,
+          "mean": 0.0024187802,
+          "mad": 0.00010524899999999997,
+          "p95": 0.002831801,
+          "maximum": 0.002831801
+        }
+      }
+    },
+    {
+      "id": "05c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_05c_043a.mol",
+      "input_sha256": "8f2c9597c8fb214ba1b20e637b982069303ae2133b77369bbead1a0d96a8e4a6",
+      "components": 5,
+      "atoms": 43,
+      "bonds": 38,
+      "expected_assembly_index": 17,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.004092367,
+            0.00389106,
+            0.004001264,
+            0.004203178,
+            0.003835566
+          ],
+          "minimum": 0.003835566,
+          "median": 0.004001264,
+          "mean": 0.004004687,
+          "mad": 0.00011020400000000003,
+          "p95": 0.004203178,
+          "maximum": 0.004203178
+        },
+        "current_serial": {
+          "samples": [
+            0.002611021,
+            0.002461871,
+            0.002501563,
+            0.002613248,
+            0.002387494
+          ],
+          "minimum": 0.002387494,
+          "median": 0.002501563,
+          "mean": 0.0025150394,
+          "mad": 0.00010945799999999978,
+          "p95": 0.002613248,
+          "maximum": 0.002613248
+        },
+        "rust_serial": {
+          "samples": [
+            0.005434295,
+            0.005349941,
+            0.005276125,
+            0.005681319,
+            0.005189015
+          ],
+          "minimum": 0.005189015,
+          "median": 0.005349941,
+          "mean": 0.005386139,
+          "mad": 8.435399999999916e-05,
+          "p95": 0.005681319,
+          "maximum": 0.005681319
+        },
+        "current_omp1": {
+          "samples": [
+            0.002544508,
+            0.002494929,
+            0.002599211,
+            0.002641564,
+            0.002438525
+          ],
+          "minimum": 0.002438525,
+          "median": 0.002544508,
+          "mean": 0.0025437474,
+          "mad": 5.470300000000013e-05,
+          "p95": 0.002641564,
+          "maximum": 0.002641564
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.005471642,
+            0.006373157,
+            0.005801716,
+            0.005475657,
+            0.005371748
+          ],
+          "minimum": 0.005371748,
+          "median": 0.005475657,
+          "mean": 0.005698784,
+          "mad": 0.00010390900000000012,
+          "p95": 0.006373157,
+          "maximum": 0.006373157
+        },
+        "current_omp2": {
+          "samples": [
+            0.002577729,
+            0.002705355,
+            0.002547332,
+            0.002314983,
+            0.002421314
+          ],
+          "minimum": 0.002314983,
+          "median": 0.002547332,
+          "mean": 0.0025133425999999998,
+          "mad": 0.00012601799999999988,
+          "p95": 0.002705355,
+          "maximum": 0.002705355
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.003875067,
+            0.003977043,
+            0.005817339,
+            0.004078226,
+            0.003927515
+          ],
+          "minimum": 0.003875067,
+          "median": 0.003977043,
+          "mean": 0.004335038,
+          "mad": 0.00010118299999999948,
+          "p95": 0.005817339,
+          "maximum": 0.005817339
+        },
+        "current_omp4": {
+          "samples": [
+            0.002241919,
+            0.002336462,
+            0.002608589,
+            0.002268471,
+            0.002163919
+          ],
+          "minimum": 0.002163919,
+          "median": 0.002268471,
+          "mean": 0.0023238720000000003,
+          "mad": 6.799099999999988e-05,
+          "p95": 0.002608589,
+          "maximum": 0.002608589
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.003052356,
+            0.003073783,
+            0.003294206,
+            0.003452432,
+            0.00323914
+          ],
+          "minimum": 0.003052356,
+          "median": 0.00323914,
+          "mean": 0.0032223834000000002,
+          "mad": 0.0001653570000000001,
+          "p95": 0.003452432,
+          "maximum": 0.003452432
+        },
+        "current_omp8": {
+          "samples": [
+            0.002924818,
+            0.00229322,
+            0.005890919,
+            0.002713245,
+            0.002544431
+          ],
+          "minimum": 0.00229322,
+          "median": 0.002713245,
+          "mean": 0.0032733266,
+          "mad": 0.00021157300000000006,
+          "p95": 0.005890919,
+          "maximum": 0.005890919
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.003347027,
+            0.003114899,
+            0.003248043,
+            0.004581005,
+            0.003043909
+          ],
+          "minimum": 0.003043909,
+          "median": 0.003248043,
+          "mean": 0.0034669766,
+          "mad": 0.00013314399999999997,
+          "p95": 0.004581005,
+          "maximum": 0.004581005
+        }
+      }
+    },
+    {
+      "id": "06c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_06c_053a.mol",
+      "input_sha256": "217f24b66dfab42ee6433aa852f0f1f247f3667bf6cc68779f24a225fc37c50a",
+      "components": 6,
+      "atoms": 53,
+      "bonds": 47,
+      "expected_assembly_index": 19,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.013917997,
+            0.01465256,
+            0.014581986,
+            0.014649929,
+            0.014867654
+          ],
+          "minimum": 0.013917997,
+          "median": 0.014649929,
+          "mean": 0.0145340252,
+          "mad": 6.794300000000086e-05,
+          "p95": 0.014867654,
+          "maximum": 0.014867654
+        },
+        "current_serial": {
+          "samples": [
+            0.006399875,
+            0.006583424,
+            0.006114343,
+            0.006117942,
+            0.006164599
+          ],
+          "minimum": 0.006114343,
+          "median": 0.006164599,
+          "mean": 0.0062760366,
+          "mad": 5.025599999999939e-05,
+          "p95": 0.006583424,
+          "maximum": 0.006583424
+        },
+        "rust_serial": {
+          "samples": [
+            0.027386429,
+            0.027565218,
+            0.027805379,
+            0.027760005,
+            0.027688734
+          ],
+          "minimum": 0.027386429,
+          "median": 0.027688734,
+          "mean": 0.027641153,
+          "mad": 0.00011664500000000202,
+          "p95": 0.027805379,
+          "maximum": 0.027805379
+        },
+        "current_omp1": {
+          "samples": [
+            0.006377616,
+            0.006486328,
+            0.006342992,
+            0.006787028,
+            0.006880304
+          ],
+          "minimum": 0.006342992,
+          "median": 0.006486328,
+          "mean": 0.0065748536000000005,
+          "mad": 0.00014333599999999998,
+          "p95": 0.006880304,
+          "maximum": 0.006880304
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.02813272,
+            0.029357535,
+            0.028381836,
+            0.028916817,
+            0.028569524
+          ],
+          "minimum": 0.02813272,
+          "median": 0.028569524,
+          "mean": 0.0286716864,
+          "mad": 0.000347293000000002,
+          "p95": 0.029357535,
+          "maximum": 0.029357535
+        },
+        "current_omp2": {
+          "samples": [
+            0.005338765,
+            0.004896115,
+            0.005053373,
+            0.005210762,
+            0.005130571
+          ],
+          "minimum": 0.004896115,
+          "median": 0.005130571,
+          "mean": 0.0051259172,
+          "mad": 8.019100000000029e-05,
+          "p95": 0.005338765,
+          "maximum": 0.005338765
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.016975982,
+            0.017041317,
+            0.01796441,
+            0.017609547,
+            0.017155803
+          ],
+          "minimum": 0.016975982,
+          "median": 0.017155803,
+          "mean": 0.0173494118,
+          "mad": 0.00017982100000000015,
+          "p95": 0.01796441,
+          "maximum": 0.01796441
+        },
+        "current_omp4": {
+          "samples": [
+            0.0043556,
+            0.00412944,
+            0.004515741,
+            0.004110151,
+            0.004780558
+          ],
+          "minimum": 0.004110151,
+          "median": 0.0043556,
+          "mean": 0.004378298,
+          "mad": 0.00022616000000000042,
+          "p95": 0.004780558,
+          "maximum": 0.004780558
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.010824004,
+            0.011224234,
+            0.010882255,
+            0.012018301,
+            0.011752111
+          ],
+          "minimum": 0.010824004,
+          "median": 0.011224234,
+          "mean": 0.011340181,
+          "mad": 0.0004002299999999997,
+          "p95": 0.012018301,
+          "maximum": 0.012018301
+        },
+        "current_omp8": {
+          "samples": [
+            0.003927505,
+            0.009482677,
+            0.004976945,
+            0.004017935,
+            0.006871123
+          ],
+          "minimum": 0.003927505,
+          "median": 0.004976945,
+          "mean": 0.005855237,
+          "mad": 0.0010494399999999996,
+          "p95": 0.009482677,
+          "maximum": 0.009482677
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.008441185,
+            0.009442507,
+            0.008661608,
+            0.009998472,
+            0.008871033
+          ],
+          "minimum": 0.008441185,
+          "median": 0.008871033,
+          "mean": 0.009082961,
+          "mad": 0.00042984800000000004,
+          "p95": 0.009998472,
+          "maximum": 0.009998472
+        }
+      }
+    },
+    {
+      "id": "07c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_07c_063a.mol",
+      "input_sha256": "7d50c950a34f7eed7f36ed0acdc90d84fced63811683c63f0b51107cd65598c5",
+      "components": 7,
+      "atoms": 63,
+      "bonds": 56,
+      "expected_assembly_index": 21,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.067345674,
+            0.066761637,
+            0.067723959,
+            0.066859584,
+            0.066655356
+          ],
+          "minimum": 0.066655356,
+          "median": 0.066859584,
+          "mean": 0.067069242,
+          "mad": 0.00020422800000000074,
+          "p95": 0.067723959,
+          "maximum": 0.067723959
+        },
+        "current_serial": {
+          "samples": [
+            0.023487829,
+            0.023444476,
+            0.023454253,
+            0.022970989,
+            0.022998919
+          ],
+          "minimum": 0.022970989,
+          "median": 0.023444476,
+          "mean": 0.0232712932,
+          "mad": 4.335300000000292e-05,
+          "p95": 0.023487829,
+          "maximum": 0.023487829
+        },
+        "rust_serial": {
+          "samples": [
+            0.14867897,
+            0.14682243,
+            0.146366072,
+            0.146476527,
+            0.151897935
+          ],
+          "minimum": 0.146366072,
+          "median": 0.14682243,
+          "mean": 0.14804838680000001,
+          "mad": 0.00045635799999999005,
+          "p95": 0.151897935,
+          "maximum": 0.151897935
+        },
+        "current_omp1": {
+          "samples": [
+            0.024443882,
+            0.024108723,
+            0.02369099,
+            0.029479312,
+            0.024707514
+          ],
+          "minimum": 0.02369099,
+          "median": 0.024443882,
+          "mean": 0.0252860842,
+          "mad": 0.00033515900000000154,
+          "p95": 0.029479312,
+          "maximum": 0.029479312
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.154085827,
+            0.152065104,
+            0.15144225,
+            0.153625269,
+            0.155675247
+          ],
+          "minimum": 0.15144225,
+          "median": 0.153625269,
+          "mean": 0.1533787394,
+          "mad": 0.0015601650000000022,
+          "p95": 0.155675247,
+          "maximum": 0.155675247
+        },
+        "current_omp2": {
+          "samples": [
+            0.017330895,
+            0.01724505,
+            0.016940202,
+            0.017299452,
+            0.017337574
+          ],
+          "minimum": 0.016940202,
+          "median": 0.017299452,
+          "mean": 0.0172306346,
+          "mad": 3.8122000000001544e-05,
+          "p95": 0.017337574,
+          "maximum": 0.017337574
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.075499348,
+            0.07667885,
+            0.075789158,
+            0.07628725,
+            0.077115429
+          ],
+          "minimum": 0.075499348,
+          "median": 0.07628725,
+          "mean": 0.076274007,
+          "mad": 0.0004980920000000055,
+          "p95": 0.077115429,
+          "maximum": 0.077115429
+        },
+        "current_omp4": {
+          "samples": [
+            0.012534534,
+            0.013522744,
+            0.012813708,
+            0.013554207,
+            0.01328831
+          ],
+          "minimum": 0.012534534,
+          "median": 0.01328831,
+          "mean": 0.0131427006,
+          "mad": 0.00026589700000000105,
+          "p95": 0.013554207,
+          "maximum": 0.013554207
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.05013433,
+            0.04648664,
+            0.044502707,
+            0.044815601,
+            0.044292671
+          ],
+          "minimum": 0.044292671,
+          "median": 0.044815601,
+          "mean": 0.0460463898,
+          "mad": 0.0005229299999999978,
+          "p95": 0.05013433,
+          "maximum": 0.05013433
+        },
+        "current_omp8": {
+          "samples": [
+            0.009916389,
+            0.010605878,
+            0.011851704,
+            0.012439087,
+            0.009547758
+          ],
+          "minimum": 0.009547758,
+          "median": 0.010605878,
+          "mean": 0.0108721632,
+          "mad": 0.0010581199999999992,
+          "p95": 0.012439087,
+          "maximum": 0.012439087
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.032783446,
+            0.03468078,
+            0.032007449,
+            0.032632578,
+            0.036336307
+          ],
+          "minimum": 0.032007449,
+          "median": 0.032783446,
+          "mean": 0.033688112,
+          "mad": 0.0007759970000000005,
+          "p95": 0.036336307,
+          "maximum": 0.036336307
+        }
+      }
+    },
+    {
+      "id": "08c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_08c_068a.mol",
+      "input_sha256": "bf0c01ebf3e0b03719cafe98f288ec7ebbb66a536b74cc031dee5e0b7850f871",
+      "components": 8,
+      "atoms": 68,
+      "bonds": 60,
+      "expected_assembly_index": 23,
+      "timings": {
+        "reference": {
+          "samples": [
+            0.238665797,
+            0.238189569,
+            0.23010224,
+            0.229713198,
+            0.233097044
+          ],
+          "minimum": 0.229713198,
+          "median": 0.233097044,
+          "mean": 0.2339535696,
+          "mad": 0.003383845999999996,
+          "p95": 0.238665797,
+          "maximum": 0.238665797
+        },
+        "current_serial": {
+          "samples": [
+            0.077139096,
+            0.077585539,
+            0.075709492,
+            0.077838622,
+            0.07640094
+          ],
+          "minimum": 0.075709492,
+          "median": 0.077139096,
+          "mean": 0.0769347378,
+          "mad": 0.000699525999999992,
+          "p95": 0.077838622,
+          "maximum": 0.077838622
+        },
+        "rust_serial": {
+          "samples": [
+            0.582014188,
+            0.590236066,
+            0.591816312,
+            0.592797453,
+            0.588281252
+          ],
+          "minimum": 0.582014188,
+          "median": 0.590236066,
+          "mean": 0.5890290542,
+          "mad": 0.0019548139999999714,
+          "p95": 0.592797453,
+          "maximum": 0.592797453
+        },
+        "current_omp1": {
+          "samples": [
+            0.07913021,
+            0.080193208,
+            0.078767907,
+            0.07788967,
+            0.077291162
+          ],
+          "minimum": 0.077291162,
+          "median": 0.078767907,
+          "mean": 0.0786544314,
+          "mad": 0.0008782370000000039,
+          "p95": 0.080193208,
+          "maximum": 0.080193208
+        },
+        "rust_parallel1": {
+          "samples": [
+            0.619828958,
+            0.618171934,
+            0.617757743,
+            0.606913684,
+            0.618506089
+          ],
+          "minimum": 0.606913684,
+          "median": 0.618171934,
+          "mean": 0.6162356816,
+          "mad": 0.0004141910000000637,
+          "p95": 0.619828958,
+          "maximum": 0.619828958
+        },
+        "current_omp2": {
+          "samples": [
+            0.05975892,
+            0.054426545,
+            0.056110428,
+            0.057027529,
+            0.056808419
+          ],
+          "minimum": 0.054426545,
+          "median": 0.056808419,
+          "mean": 0.0568263682,
+          "mad": 0.000697991000000002,
+          "p95": 0.05975892,
+          "maximum": 0.05975892
+        },
+        "rust_parallel2": {
+          "samples": [
+            0.314576429,
+            0.333181524,
+            0.320898277,
+            0.324114617,
+            0.309413205
+          ],
+          "minimum": 0.309413205,
+          "median": 0.320898277,
+          "mean": 0.3204368104,
+          "mad": 0.006321848000000019,
+          "p95": 0.333181524,
+          "maximum": 0.333181524
+        },
+        "current_omp4": {
+          "samples": [
+            0.039210534,
+            0.047380068,
+            0.039790279,
+            0.039792076,
+            0.046850188
+          ],
+          "minimum": 0.039210534,
+          "median": 0.039792076,
+          "mean": 0.042604629,
+          "mad": 0.0005815420000000043,
+          "p95": 0.047380068,
+          "maximum": 0.047380068
+        },
+        "rust_parallel4": {
+          "samples": [
+            0.21449789,
+            0.189463832,
+            0.190561982,
+            0.183838508,
+            0.194252251
+          ],
+          "minimum": 0.183838508,
+          "median": 0.190561982,
+          "mean": 0.1945228926,
+          "mad": 0.003690268999999996,
+          "p95": 0.21449789,
+          "maximum": 0.21449789
+        },
+        "current_omp8": {
+          "samples": [
+            0.025022709,
+            0.026166709,
+            0.027252615,
+            0.025114129,
+            0.031311966
+          ],
+          "minimum": 0.025022709,
+          "median": 0.026166709,
+          "mean": 0.0269736256,
+          "mad": 0.001085906000000001,
+          "p95": 0.031311966,
+          "maximum": 0.031311966
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.112635678,
+            0.115022872,
+            0.111317104,
+            0.116410147,
+            0.117848741
+          ],
+          "minimum": 0.111317104,
+          "median": 0.115022872,
+          "mean": 0.1146469084,
+          "mad": 0.0023871939999999953,
+          "p95": 0.117848741,
+          "maximum": 0.117848741
+        }
+      }
+    },
+    {
+      "id": "09c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_09c_077a.mol",
+      "input_sha256": "1ebbddd0e4d986734570171fb8a3cc3367227b54ef2d995fcc0c254571ae386d",
+      "components": 9,
+      "atoms": 77,
+      "bonds": 68,
+      "expected_assembly_index": 25,
+      "timings": {
+        "reference": {
+          "samples": [
+            1.202839068,
+            1.245335341,
+            1.243194565,
+            1.210719603,
+            1.204108053
+          ],
+          "minimum": 1.202839068,
+          "median": 1.210719603,
+          "mean": 1.221239326,
+          "mad": 0.007880534999999966,
+          "p95": 1.245335341,
+          "maximum": 1.245335341
+        },
+        "current_serial": {
+          "samples": [
+            0.547411166,
+            0.555347477,
+            0.580797372,
+            0.555496417,
+            0.546860214
+          ],
+          "minimum": 0.546860214,
+          "median": 0.555347477,
+          "mean": 0.5571825292,
+          "mad": 0.00793631100000003,
+          "p95": 0.580797372,
+          "maximum": 0.580797372
+        },
+        "rust_serial": {
+          "samples": [
+            4.716821307,
+            4.865911289,
+            4.999965224,
+            4.504405163,
+            4.481278006
+          ],
+          "minimum": 4.481278006,
+          "median": 4.716821307,
+          "mean": 4.7136761978,
+          "mad": 0.21241614399999964,
+          "p95": 4.999965224,
+          "maximum": 4.999965224
+        },
+        "current_omp1": {
+          "samples": [
+            0.574904361,
+            0.577075278,
+            0.580572709,
+            0.558821407,
+            0.559618357
+          ],
+          "minimum": 0.558821407,
+          "median": 0.574904361,
+          "mean": 0.5701984224,
+          "mad": 0.005668348000000045,
+          "p95": 0.580572709,
+          "maximum": 0.580572709
+        },
+        "rust_parallel1": {
+          "samples": [
+            4.952116216,
+            4.909165577,
+            4.72663024,
+            4.754463635,
+            5.116626617
+          ],
+          "minimum": 4.72663024,
+          "median": 4.909165577,
+          "mean": 4.8918004569999995,
+          "mad": 0.15470194199999998,
+          "p95": 5.116626617,
+          "maximum": 5.116626617
+        },
+        "current_omp2": {
+          "samples": [
+            0.419202384,
+            0.423592349,
+            0.408656569,
+            0.414429968,
+            0.416033433
+          ],
+          "minimum": 0.408656569,
+          "median": 0.416033433,
+          "mean": 0.4163829406,
+          "mad": 0.0031689509999999754,
+          "p95": 0.423592349,
+          "maximum": 0.423592349
+        },
+        "rust_parallel2": {
+          "samples": [
+            2.292093782,
+            2.350708992,
+            2.25018959,
+            2.253315953,
+            2.243029479
+          ],
+          "minimum": 2.243029479,
+          "median": 2.253315953,
+          "mean": 2.2778675592,
+          "mad": 0.010286473999999934,
+          "p95": 2.350708992,
+          "maximum": 2.350708992
+        },
+        "current_omp4": {
+          "samples": [
+            0.308985585,
+            0.323459841,
+            0.309460232,
+            0.309575391,
+            0.310823369
+          ],
+          "minimum": 0.308985585,
+          "median": 0.309575391,
+          "mean": 0.3124608836,
+          "mad": 0.0005898059999999705,
+          "p95": 0.323459841,
+          "maximum": 0.323459841
+        },
+        "rust_parallel4": {
+          "samples": [
+            1.244413708,
+            1.28229016,
+            1.237643467,
+            1.231209177,
+            1.260225052
+          ],
+          "minimum": 1.231209177,
+          "median": 1.244413708,
+          "mean": 1.2511563128,
+          "mad": 0.013204530999999964,
+          "p95": 1.28229016,
+          "maximum": 1.28229016
+        },
+        "current_omp8": {
+          "samples": [
+            0.229155515,
+            0.24090566,
+            0.237069991,
+            0.228456449,
+            0.232053361
+          ],
+          "minimum": 0.228456449,
+          "median": 0.232053361,
+          "mean": 0.2335281952,
+          "mad": 0.0035969120000000077,
+          "p95": 0.24090566,
+          "maximum": 0.24090566
+        },
+        "rust_parallel8": {
+          "samples": [
+            0.710942965,
+            0.802174731,
+            0.965192545,
+            0.76039067,
+            0.770909667
+          ],
+          "minimum": 0.710942965,
+          "median": 0.770909667,
+          "mean": 0.8019221156,
+          "mad": 0.031265064000000065,
+          "p95": 0.965192545,
+          "maximum": 0.965192545
+        }
+      }
+    },
+    {
+      "id": "10c",
+      "input": "/home/louie/skunkworks/assemblycpp-v5/benchmarks/inputs/scaling/amino_acid_scaling_10c_086a.mol",
+      "input_sha256": "31a81ad30db87da1d533b3be51bdcb61fc63070a6e0dd34b007432f8b46f268b",
+      "components": 10,
+      "atoms": 86,
+      "bonds": 76,
+      "expected_assembly_index": 27,
+      "timings": {
+        "reference": {
+          "samples": [
+            5.745118137,
+            5.741232095,
+            5.722219899,
+            5.729231494,
+            5.719789047
+          ],
+          "minimum": 5.719789047,
+          "median": 5.729231494,
+          "mean": 5.7315181344,
+          "mad": 0.00944244700000052,
+          "p95": 5.745118137,
+          "maximum": 5.745118137
+        },
+        "current_serial": {
+          "samples": [
+            2.394714152,
+            2.389117064,
+            2.386444375,
+            2.392164861,
+            2.465848395
+          ],
+          "minimum": 2.386444375,
+          "median": 2.392164861,
+          "mean": 2.4056577694,
+          "mad": 0.0030477969999997967,
+          "p95": 2.465848395,
+          "maximum": 2.465848395
+        },
+        "rust_serial": {
+          "samples": [
+            40.064353542,
+            39.561650957,
+            39.772375801,
+            39.950270927,
+            40.290058337
+          ],
+          "minimum": 39.561650957,
+          "median": 39.950270927,
+          "mean": 39.9277419128,
+          "mad": 0.17789512599999568,
+          "p95": 40.290058337,
+          "maximum": 40.290058337
+        },
+        "current_omp1": {
+          "samples": [
+            2.448341933,
+            2.428449225,
+            2.436131712,
+            2.427337189,
+            2.454544884
+          ],
+          "minimum": 2.427337189,
+          "median": 2.436131712,
+          "mean": 2.4389609886,
+          "mad": 0.008794522999999721,
+          "p95": 2.454544884,
+          "maximum": 2.454544884
+        },
+        "rust_parallel1": {
+          "samples": [
+            41.394090115,
+            41.49789537,
+            41.158651696,
+            41.235882777,
+            41.316878355
+          ],
+          "minimum": 41.158651696,
+          "median": 41.316878355,
+          "mean": 41.3206796626,
+          "mad": 0.08099557799999957,
+          "p95": 41.49789537,
+          "maximum": 41.49789537
+        },
+        "current_omp2": {
+          "samples": [
+            1.962851416,
+            1.964886894,
+            1.956921462,
+            1.954753286,
+            1.982993393
+          ],
+          "minimum": 1.954753286,
+          "median": 1.962851416,
+          "mean": 1.9644812902,
+          "mad": 0.0059299539999999595,
+          "p95": 1.982993393,
+          "maximum": 1.982993393
+        },
+        "rust_parallel2": {
+          "samples": [
+            17.98280351,
+            17.97856166,
+            17.951624451,
+            17.779929329,
+            17.778257995
+          ],
+          "minimum": 17.778257995,
+          "median": 17.951624451,
+          "mean": 17.894235389000002,
+          "mad": 0.0311790589999994,
+          "p95": 17.98280351,
+          "maximum": 17.98280351
+        },
+        "current_omp4": {
+          "samples": [
+            1.472699835,
+            1.473320868,
+            1.465426852,
+            1.468081547,
+            1.465912732
+          ],
+          "minimum": 1.465426852,
+          "median": 1.468081547,
+          "mean": 1.4690883668,
+          "mad": 0.002654694999999929,
+          "p95": 1.473320868,
+          "maximum": 1.473320868
+        },
+        "rust_parallel4": {
+          "samples": [
+            9.197920095,
+            9.289859981,
+            9.232436036,
+            9.042072523,
+            9.189359637
+          ],
+          "minimum": 9.042072523,
+          "median": 9.197920095,
+          "mean": 9.1903296544,
+          "mad": 0.03451594099999866,
+          "p95": 9.289859981,
+          "maximum": 9.289859981
+        },
+        "current_omp8": {
+          "samples": [
+            1.150247991,
+            1.153521603,
+            1.157756893,
+            1.14689335,
+            1.153865018
+          ],
+          "minimum": 1.14689335,
+          "median": 1.153521603,
+          "mean": 1.152456971,
+          "mad": 0.0032736119999998703,
+          "p95": 1.157756893,
+          "maximum": 1.157756893
+        },
+        "rust_parallel8": {
+          "samples": [
+            5.156980648,
+            5.226914474,
+            5.394660033,
+            5.142491773,
+            5.274633077
+          ],
+          "minimum": 5.142491773,
+          "median": 5.226914474,
+          "mean": 5.239136001,
+          "mad": 0.06993382599999975,
+          "p95": 5.394660033,
+          "maximum": 5.394660033
+        }
+      }
+    }
+  ],
+  "completed_at": "2026-08-26T16:44:52.448373+00:00"
+}

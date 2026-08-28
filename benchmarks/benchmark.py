@@ -12,6 +12,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -41,6 +42,51 @@ KNOWN_EXPECTATIONS = ("reviewed", "provisional")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
+ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SEARCH_TELEMETRY_PHASES = frozenset(
+    (
+        "input_setup",
+        "initial_enumeration",
+        "dag_conversion",
+        "assembly_search",
+        "output",
+    )
+)
+PARALLEL_TELEMETRY_COUNTERS = frozenset(
+    (
+        "retained_mask_attempts",
+        "retained_masks",
+        "duplicate_mask_attempts",
+        "rejected_masks",
+        "matching_visits",
+        "canonicalisation_calls",
+        "canonicalisation_mask_cache_hits",
+        "canonicalisation_mask_cache_misses",
+        "canonical_class_insertions",
+        "canonical_class_reuses",
+        "vf2_calls",
+        "vf2_matches",
+        "residual_decomposition_requests",
+        "residual_cache_eligible_requests",
+        "residual_cache_small_molecule_bypasses",
+        "residual_cache_wide_molecule_bypasses",
+        "residual_cache_small_residual_bypasses",
+        "residual_cache_first_occurrence_bypasses",
+        "residual_cache_runtime_disabled_bypasses",
+        "residual_cache_lookups",
+        "residual_cache_hits",
+        "residual_cache_misses",
+        "residual_cache_admissions",
+        "assembly_cache_lookups",
+        "assembly_cache_hits",
+        "assembly_cache_misses",
+        "assembly_cache_pruned_hits",
+        "assembly_cache_updated_hits",
+        "pair_bound_cache_lookups",
+        "pair_bound_cache_hits",
+        "pair_bound_cache_misses",
+    )
+)
 
 
 class BenchmarkError(RuntimeError):
@@ -90,6 +136,14 @@ class CaseResult:
     telemetry: dict[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class ExecutionConfig:
+    """Launcher prefix and explicit environment overrides for one executable."""
+
+    launcher: tuple[str, ...] = ()
+    environment: tuple[tuple[str, str], ...] = ()
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -109,6 +163,61 @@ def positive_float(value: str) -> float:
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed
+
+
+def environment_assignment(value: str) -> tuple[str, str]:
+    """Parse one conventional KEY=VALUE environment assignment."""
+    key, separator, setting = value.partition("=")
+    if not separator:
+        raise argparse.ArgumentTypeError("must use KEY=VALUE syntax")
+    if not ENVIRONMENT_KEY_PATTERN.fullmatch(key):
+        raise argparse.ArgumentTypeError(
+            "environment key must match [A-Za-z_][A-Za-z0-9_]*"
+        )
+    if "\x00" in setting:
+        raise argparse.ArgumentTypeError("environment value must not contain NUL")
+    return key, setting
+
+
+def launcher_prefix(value: str) -> tuple[str, ...]:
+    """Shell-split a launcher prefix without invoking a shell."""
+    try:
+        launcher = tuple(shlex.split(value))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid shell quoting: {error}") from error
+    if not launcher:
+        raise argparse.ArgumentTypeError("launcher prefix must not be empty")
+    return launcher
+
+
+def create_execution_config(
+    launcher: tuple[str, ...] | None,
+    environment: Sequence[tuple[str, str]],
+    role: str,
+) -> ExecutionConfig | None:
+    """Validate and normalize one optional command execution configuration."""
+    seen: set[str] = set()
+    for key, _ in environment:
+        if key in seen:
+            raise BenchmarkError(f"duplicate {role} environment setting: {key}")
+        seen.add(key)
+
+    environment_values = dict(environment)
+    launcher_path = environment_values.get("PATH", os.environ.get("PATH"))
+    if launcher and shutil.which(launcher[0], path=launcher_path) is None:
+        raise BenchmarkError(f"{role} launcher not found: {launcher[0]}")
+
+    config = ExecutionConfig(launcher or (), tuple(environment))
+    return None if not config.launcher and not config.environment else config
+
+
+def execution_config_metadata(config: ExecutionConfig | None) -> dict[str, object]:
+    """Return the exact explicit execution configuration used for a role."""
+    effective = config or ExecutionConfig()
+    return {
+        "launcher": list(effective.launcher),
+        "environment": dict(effective.environment),
+    }
 
 
 def resolve_file(path: Path, description: str) -> Path:
@@ -148,10 +257,48 @@ def resolve_executable(path: Path) -> Path:
     )
 
 
-def ensure_distinct_executables(candidate: Path, baseline: Path) -> None:
-    if paths_alias(candidate, baseline):
+def execution_configs_alias(
+    candidate: ExecutionConfig | None,
+    baseline: ExecutionConfig | None,
+) -> bool:
+    """Return whether two configurations launch with identical semantics."""
+    candidate = candidate or ExecutionConfig()
+    baseline = baseline or ExecutionConfig()
+    return (
+        candidate.launcher == baseline.launcher
+        and dict(candidate.environment) == dict(baseline.environment)
+    )
+
+
+def ensure_distinct_executables(
+    candidate: Path,
+    baseline: Path,
+    candidate_execution: ExecutionConfig | None = None,
+    baseline_execution: ExecutionConfig | None = None,
+) -> None:
+    if paths_alias(candidate, baseline) and execution_configs_alias(
+        candidate_execution, baseline_execution
+    ):
         raise BenchmarkError(
-            "candidate and baseline executables resolve to the same file"
+            "candidate and baseline executables resolve to the same file and use "
+            "the same execution configuration"
+        )
+
+
+def ensure_distinct_execution_identities(
+    candidate_metadata: dict[str, object],
+    baseline_metadata: dict[str, object],
+    candidate_execution: ExecutionConfig | None,
+    baseline_execution: ExecutionConfig | None,
+) -> None:
+    """Reject byte-identical binaries only when their configurations also alias."""
+    if (
+        candidate_metadata.get("sha256") == baseline_metadata.get("sha256")
+        and execution_configs_alias(candidate_execution, baseline_execution)
+    ):
+        raise BenchmarkError(
+            "candidate and baseline use the same binary fingerprint and execution "
+            "configuration"
         )
 
 
@@ -499,12 +646,70 @@ def prepare_cases(
     return prepared
 
 
+def terminate_command(process: subprocess.Popen[str]) -> None:
+    """Terminate a configured launch, including its POSIX process group."""
+    killed_group = False
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            killed_group = True
+        except ProcessLookupError:
+            killed_group = True
+        except OSError:
+            pass
+    if not killed_group:
+        process.kill()
+
+
+def run_command(
+    command: Sequence[str],
+    working_directory: Path,
+    timeout: float,
+    environment: dict[str, str] | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command and clean up its process group on timeout or interruption."""
+    popen_arguments: dict[str, object] = {
+        "cwd": working_directory,
+        "env": environment,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "posix":
+        popen_arguments["start_new_session"] = True
+
+    process = subprocess.Popen(command, **popen_arguments)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        terminate_command(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            error.timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from error
+    except BaseException:
+        # start_new_session deliberately keeps launcher workers out of the
+        # driver's foreground process group, so an interrupt must stop them
+        # explicitly before it propagates to the caller.
+        terminate_command(process)
+        process.communicate()
+        raise
+
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def run_once(
     executable: Path,
     prepared: PreparedCase,
     timeout: float,
+    *,
+    execution: ExecutionConfig | None = None,
 ) -> Measurement:
     command = [
+        *(execution.launcher if execution is not None else ()),
         str(executable),
         "--pathway=0",
         "--memory-report=0",
@@ -512,17 +717,29 @@ def run_once(
         "--",
         prepared.input_name,
     ]
+    environment = None
+    if execution is not None and execution.environment:
+        environment = os.environ.copy()
+        environment.update(execution.environment)
     prepared.output_path.unlink(missing_ok=True)
     started = time.perf_counter()
     try:
-        completed = subprocess.run(
-            command,
-            cwd=prepared.working_directory,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        if execution is None:
+            completed = subprocess.run(
+                command,
+                cwd=prepared.working_directory,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        else:
+            completed = run_command(
+                command,
+                prepared.working_directory,
+                timeout,
+                environment,
+            )
     except subprocess.TimeoutExpired as error:
         raise BenchmarkError(
             f"{prepared.case.name} timed out after {error.timeout:g} seconds"
@@ -547,6 +764,75 @@ def run_once(
 def parse_search_telemetry(path: Path) -> dict[str, object]:
     def is_nonnegative_integer(value: object) -> bool:
         return type(value) is int and value >= 0
+
+    def invalid_parallel(detail: str) -> None:
+        raise BenchmarkError(f"invalid parallel telemetry in {path.name}: {detail}")
+
+    def parallel_counters(
+        value: object,
+        context: str,
+    ) -> dict[str, object]:
+        if (
+            not isinstance(value, dict)
+            or not PARALLEL_TELEMETRY_COUNTERS <= value.keys()
+            or any(
+                not is_nonnegative_integer(value.get(name))
+                for name in PARALLEL_TELEMETRY_COUNTERS
+            )
+        ):
+            invalid_parallel(f"invalid {context} counters")
+        assert isinstance(value, dict)
+        if value["retained_mask_attempts"] != (
+            value["retained_masks"]
+            + value["duplicate_mask_attempts"]
+            + value["rejected_masks"]
+        ):
+            invalid_parallel(f"inconsistent {context} retained-mask counters")
+        if value["vf2_matches"] > value["vf2_calls"]:
+            invalid_parallel(f"inconsistent {context} VF2 counters")
+        if value["canonicalisation_calls"] != (
+            value["canonicalisation_mask_cache_hits"]
+            + value["canonicalisation_mask_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} canonical counters")
+        if value["canonicalisation_mask_cache_misses"] != (
+            value["canonical_class_insertions"]
+            + value["canonical_class_reuses"]
+        ):
+            invalid_parallel(f"inconsistent {context} canonical-class counters")
+        if value["residual_cache_lookups"] != (
+            value["residual_cache_hits"] + value["residual_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} residual-cache counters")
+        if value["residual_decomposition_requests"] != (
+            value["residual_cache_eligible_requests"]
+            + value["residual_cache_small_molecule_bypasses"]
+            + value["residual_cache_wide_molecule_bypasses"]
+        ):
+            invalid_parallel(f"inconsistent {context} residual request counters")
+        if value["residual_cache_eligible_requests"] != (
+            value["residual_cache_small_residual_bypasses"]
+            + value["residual_cache_first_occurrence_bypasses"]
+            + value["residual_cache_runtime_disabled_bypasses"]
+            + value["residual_cache_lookups"]
+        ):
+            invalid_parallel(f"inconsistent {context} residual path counters")
+        if value["residual_cache_admissions"] > value["residual_cache_misses"]:
+            invalid_parallel(f"inconsistent {context} residual admissions")
+        if value["assembly_cache_lookups"] != (
+            value["assembly_cache_hits"] + value["assembly_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} assembly-cache counters")
+        if value["assembly_cache_hits"] != (
+            value["assembly_cache_pruned_hits"]
+            + value["assembly_cache_updated_hits"]
+        ):
+            invalid_parallel(f"inconsistent {context} assembly-cache hits")
+        if value["pair_bound_cache_lookups"] != (
+            value["pair_bound_cache_hits"] + value["pair_bound_cache_misses"]
+        ):
+            invalid_parallel(f"inconsistent {context} pair-bound counters")
+        return value
 
     def validate_rate(
         container: dict[str, object],
@@ -820,6 +1106,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             is_nonnegative_integer(phase.get("activations"))
         ):
             raise BenchmarkError(f"invalid phase counter in {path.name}")
+        if "wall_nanoseconds" in phase and not is_nonnegative_integer(
+            phase["wall_nanoseconds"]
+        ):
+            raise BenchmarkError(f"invalid phase wall time in {path.name}")
         if any(
             value is not None and not is_nonnegative_integer(value)
             for value in (phase.get(name) for name in memory_value_names)
@@ -861,6 +1151,387 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             raise BenchmarkError(f"invalid overall RSS peak in {path.name}")
     elif overall_peak is not None:
         raise BenchmarkError(f"partial phase memory has an overall peak in {path.name}")
+
+    if "parallel" not in telemetry:
+        return telemetry
+    parallel = telemetry["parallel"]
+    if not isinstance(parallel, dict):
+        invalid_parallel("expected an object")
+    assert isinstance(parallel, dict)
+
+    if (
+        memory["method"] != "disabled_parallel"
+        or memory["phase_peaks_complete"]
+        or overall_peak is not None
+        or process_virtual_peak is not None
+        or any(
+            phase.get(name) is not None
+            for phase in phases.values()
+            for name in memory_value_names
+        )
+    ):
+        invalid_parallel("parallel phase memory must be disabled")
+
+    mode = parallel.get("mode")
+    scope = parallel.get("aggregation_scope")
+    if mode not in {"openmp", "mpi", "hybrid"}:
+        invalid_parallel("invalid mode")
+    if scope not in {"process", "all_mpi_ranks"}:
+        invalid_parallel("invalid aggregation scope")
+    if parallel.get("busy_timing_method") != "instrumented_phase_wall_time":
+        invalid_parallel("invalid busy timing method")
+    if parallel.get("elapsed_timing_method") != "parallel_region_steady_clock":
+        invalid_parallel("invalid elapsed timing method")
+    if parallel.get("enabled") is not True:
+        invalid_parallel("parallel telemetry is not enabled")
+
+    rank_count = parallel.get("rank_count")
+    worker_count = parallel.get("worker_count")
+    if not is_nonnegative_integer(rank_count) or rank_count == 0:
+        invalid_parallel("invalid rank count")
+    if not is_nonnegative_integer(worker_count) or worker_count == 0:
+        invalid_parallel("invalid worker count")
+    assert isinstance(rank_count, int)
+    assert isinstance(worker_count, int)
+    if mode == "openmp":
+        if scope != "process" or rank_count != 1:
+            invalid_parallel("OpenMP telemetry must describe one process")
+    elif scope != "all_mpi_ranks":
+        invalid_parallel("MPI telemetry must aggregate all ranks")
+
+    threads_per_rank = parallel.get("local_threads_per_rank")
+    if (
+        not isinstance(threads_per_rank, list)
+        or len(threads_per_rank) != rank_count
+        or any(
+            not is_nonnegative_integer(threads) or threads == 0
+            for threads in threads_per_rank
+        )
+        or sum(threads_per_rank) != worker_count
+    ):
+        invalid_parallel("inconsistent local thread counts")
+    if mode == "mpi" and any(threads != 1 for threads in threads_per_rank):
+        invalid_parallel("MPI telemetry must report one thread per rank")
+    uniform_threads = (
+        threads_per_rank[0] if len(set(threads_per_rank)) == 1 else None
+    )
+    local_threads = parallel.get("local_threads")
+    if (
+        local_threads is not None and not is_nonnegative_integer(local_threads)
+    ) or local_threads != uniform_threads:
+        invalid_parallel("inconsistent uniform local thread count")
+
+    has_static_shards = "shard_ownership" in parallel
+    has_dynamic_leases = "branch_scheduler" in parallel
+    if has_static_shards == has_dynamic_leases:
+        invalid_parallel("expected exactly one branch scheduling description")
+    lease_size: int | None = None
+    scheduler_complete = True
+    if has_static_shards:
+        shard_ownership = parallel["shard_ownership"]
+        if not isinstance(shard_ownership, dict):
+            invalid_parallel("missing shard ownership")
+        assert isinstance(shard_ownership, dict)
+        if (
+            shard_ownership.get("strategy")
+            != "root_branch_ordinal_modulo_worker_count"
+            or type(shard_ownership.get("complete")) is not bool
+            or not shard_ownership["complete"]
+            or shard_ownership.get("shard_count") != worker_count
+        ):
+            invalid_parallel("inconsistent shard ownership")
+    else:
+        branch_scheduler = parallel["branch_scheduler"]
+        if not isinstance(branch_scheduler, dict):
+            invalid_parallel("missing branch scheduler")
+        assert isinstance(branch_scheduler, dict)
+        lease_size = branch_scheduler.get("lease_size")
+        rank_partition_count = branch_scheduler.get("rank_partition_count")
+        scheduler_complete = branch_scheduler.get("complete")
+        if (
+            branch_scheduler.get("strategy")
+            != "dynamic_leases_with_static_mpi_rank_partition"
+            or not is_nonnegative_integer(lease_size)
+            or lease_size == 0
+            or not is_nonnegative_integer(rank_partition_count)
+            or rank_partition_count != rank_count
+            or type(scheduler_complete) is not bool
+        ):
+            invalid_parallel("inconsistent branch scheduler")
+    if type(parallel.get("branch_scan_complete")) is not bool:
+        invalid_parallel("invalid branch scan status")
+
+    aggregate = parallel.get("aggregate")
+    if not isinstance(aggregate, dict):
+        invalid_parallel("missing aggregate")
+    assert isinstance(aggregate, dict)
+    aggregate_counters = parallel_counters(
+        aggregate.get("counters"),
+        "aggregate",
+    )
+    aggregate_integer_names = (
+        "branch_assignments",
+        "elapsed_nanoseconds",
+        "worker_elapsed_nanoseconds",
+        "worker_busy_nanoseconds",
+    )
+    if any(
+        not is_nonnegative_integer(aggregate.get(name))
+        for name in aggregate_integer_names
+    ):
+        invalid_parallel("invalid aggregate measurement")
+    aggregate_branch_candidates = aggregate.get("branch_candidates")
+    if aggregate_branch_candidates is not None and not is_nonnegative_integer(
+        aggregate_branch_candidates
+    ):
+        invalid_parallel("invalid aggregate branch count")
+    if aggregate["worker_busy_nanoseconds"] > aggregate["worker_elapsed_nanoseconds"]:
+        invalid_parallel("aggregate busy time exceeds elapsed worker time")
+    aggregate_branch_leases = aggregate.get("branch_leases")
+    if has_dynamic_leases and not is_nonnegative_integer(aggregate_branch_leases):
+        invalid_parallel("invalid aggregate branch lease count")
+
+    workers = parallel.get("workers")
+    if not isinstance(workers, list) or len(workers) != worker_count:
+        invalid_parallel("worker count does not match worker records")
+    worker_counters = []
+    worker_branch_candidates = []
+    rank_local_ids: dict[int, set[int]] = {
+        rank: set() for rank in range(rank_count)
+    }
+    global_ids = set()
+    shard_ids = set()
+    rank_branch_assignments = [0] * rank_count
+    total_branch_leases = 0
+    total_branch_assignments = 0
+    total_elapsed = 0
+    total_busy = 0
+    maximum_elapsed = 0
+    rank_offsets = []
+    offset = 0
+    for threads in threads_per_rank:
+        rank_offsets.append(offset)
+        offset += threads
+
+    for worker_index, worker in enumerate(workers):
+        if not isinstance(worker, dict):
+            invalid_parallel(f"worker {worker_index} is not an object")
+        rank = worker.get("rank")
+        local_worker_index = worker.get("local_worker_index")
+        global_worker_index = worker.get("global_worker_index")
+        if (
+            not is_nonnegative_integer(rank)
+            or rank >= rank_count
+            or not is_nonnegative_integer(local_worker_index)
+            or local_worker_index >= threads_per_rank[rank]
+            or not is_nonnegative_integer(global_worker_index)
+            or global_worker_index >= worker_count
+            or global_worker_index != rank_offsets[rank] + local_worker_index
+        ):
+            invalid_parallel(f"invalid worker identity at record {worker_index}")
+        rank_local_ids[rank].add(local_worker_index)
+        global_ids.add(global_worker_index)
+
+        branch_leases = 0
+        if has_static_shards:
+            shard = worker.get("shard")
+            if (
+                not isinstance(shard, dict)
+                or shard.get("index") != global_worker_index
+                or shard.get("count") != worker_count
+            ):
+                invalid_parallel(f"invalid worker shard at record {worker_index}")
+            shard_ids.add(shard["index"])
+        else:
+            rank_partition = worker.get("rank_partition")
+            branch_leases = worker.get("branch_leases")
+            if (
+                not isinstance(rank_partition, dict)
+                or not is_nonnegative_integer(rank_partition.get("index"))
+                or rank_partition.get("index") != rank
+                or not is_nonnegative_integer(rank_partition.get("count"))
+                or rank_partition.get("count") != rank_count
+            ):
+                invalid_parallel(
+                    f"invalid worker rank partition at record {worker_index}"
+                )
+            if not is_nonnegative_integer(branch_leases):
+                invalid_parallel(f"invalid worker lease count at record {worker_index}")
+
+        branch_candidates = worker.get("branch_candidates")
+        branch_assignments = worker.get("branch_assignments")
+        elapsed = worker.get("elapsed_nanoseconds")
+        busy = worker.get("busy_nanoseconds")
+        if any(
+            not is_nonnegative_integer(value)
+            for value in (branch_candidates, branch_assignments, elapsed, busy)
+        ):
+            invalid_parallel(f"invalid worker measurement at record {worker_index}")
+        if branch_assignments > branch_candidates:
+            invalid_parallel(f"worker assignments exceed branches at record {worker_index}")
+        if has_dynamic_leases and (
+            (branch_assignments == 0 and branch_leases != 0)
+            or (
+                branch_assignments > 0
+                and (
+                    branch_leases == 0
+                    or branch_leases > branch_assignments
+                    or branch_assignments > branch_leases * lease_size
+                )
+            )
+        ):
+            invalid_parallel(
+                f"inconsistent worker leases at record {worker_index}"
+            )
+        if busy > elapsed:
+            invalid_parallel(f"worker busy time exceeds elapsed time at record {worker_index}")
+        worker_branch_candidates.append(branch_candidates)
+        rank_branch_assignments[rank] += branch_assignments
+        total_branch_leases += branch_leases
+        total_branch_assignments += branch_assignments
+        total_elapsed += elapsed
+        total_busy += busy
+        maximum_elapsed = max(maximum_elapsed, elapsed)
+
+        graph = worker.get("processed_graph")
+        if not isinstance(graph, dict):
+            invalid_parallel(f"missing worker graph at record {worker_index}")
+        if any(
+            not is_nonnegative_integer(graph.get(name))
+            for name in ("atoms", "edges", "active_mask_words")
+        ) or type(graph.get("residual_cache_eligible")) is not bool:
+            invalid_parallel(f"invalid worker graph at record {worker_index}")
+        if (
+            graph["atoms"] != processed_graph["atoms"]
+            or graph["edges"] != processed_graph["edges"]
+            or graph["active_mask_words"] != processed_graph["active_mask_words"]
+            or graph["residual_cache_eligible"]
+            != residual["eligible_for_processed_graph"]
+        ):
+            invalid_parallel(f"inconsistent worker graph at record {worker_index}")
+
+        worker_phases = worker.get("phases")
+        if (
+            not isinstance(worker_phases, dict)
+            or set(worker_phases) != SEARCH_TELEMETRY_PHASES
+        ):
+            invalid_parallel(f"invalid worker phases at record {worker_index}")
+        phase_wall_total = 0
+        for phase in worker_phases.values():
+            if not isinstance(phase, dict) or any(
+                not is_nonnegative_integer(phase.get(name))
+                for name in ("wall_nanoseconds", "activations")
+            ):
+                invalid_parallel(f"invalid worker phase at record {worker_index}")
+            if phase["activations"] == 0 and phase["wall_nanoseconds"] != 0:
+                invalid_parallel(f"inactive worker phase has time at record {worker_index}")
+            phase_wall_total += phase["wall_nanoseconds"]
+        if busy != min(phase_wall_total, elapsed):
+            invalid_parallel(f"inconsistent worker busy time at record {worker_index}")
+
+        worker_counters.append(
+            parallel_counters(worker.get("counters"), f"worker {worker_index}")
+        )
+
+    if global_ids != set(range(worker_count)) or (
+        has_static_shards and shard_ids != set(range(worker_count))
+    ):
+        invalid_parallel("worker or shard indexes are not contiguous")
+    if any(
+        rank_local_ids[rank] != set(range(threads_per_rank[rank]))
+        for rank in range(rank_count)
+    ):
+        invalid_parallel("local worker indexes are not contiguous")
+    if aggregate["branch_assignments"] != total_branch_assignments:
+        invalid_parallel("aggregate branch assignments do not match workers")
+    if has_dynamic_leases and aggregate_branch_leases != total_branch_leases:
+        invalid_parallel("aggregate branch leases do not match workers")
+    if aggregate["worker_elapsed_nanoseconds"] != total_elapsed:
+        invalid_parallel("aggregate worker elapsed time does not match workers")
+    if aggregate["worker_busy_nanoseconds"] != total_busy:
+        invalid_parallel("aggregate worker busy time does not match workers")
+    if aggregate["elapsed_nanoseconds"] < maximum_elapsed:
+        invalid_parallel("aggregate elapsed time is shorter than a worker")
+    for name in PARALLEL_TELEMETRY_COUNTERS:
+        if aggregate_counters[name] != sum(
+            counters[name] for counters in worker_counters
+        ):
+            invalid_parallel(f"aggregate counter {name} does not match workers")
+
+    candidates_agree = len(set(worker_branch_candidates)) == 1
+    expected_branch_candidates = (
+        worker_branch_candidates[0] if candidates_agree else None
+    )
+    if aggregate_branch_candidates != expected_branch_candidates:
+        invalid_parallel("aggregate branch count does not match workers")
+    if parallel["branch_scan_complete"] and (
+        not candidates_agree
+        or not scheduler_complete
+        or total_branch_assignments != expected_branch_candidates
+    ):
+        invalid_parallel("complete branch scan has incomplete assignments")
+    if has_dynamic_leases and parallel["branch_scan_complete"]:
+        assert expected_branch_candidates is not None
+        for rank, assignments in enumerate(rank_branch_assignments):
+            expected_assignments = (
+                0
+                if expected_branch_candidates <= rank
+                else 1
+                + (expected_branch_candidates - 1 - rank) // rank_count
+            )
+            if assignments != expected_assignments:
+                invalid_parallel(
+                    f"rank {rank} branch assignments do not match partition"
+                )
+
+    legacy_counters = {
+        "retained_mask_attempts": counters["retained_mask_attempts"],
+        "retained_masks": counters["retained_masks"],
+        "duplicate_mask_attempts": counters["duplicate_mask_attempts"],
+        "rejected_masks": counters["rejected_masks"],
+        "matching_visits": counters["matching_visits"],
+        "canonicalisation_calls": counters["canonicalisation_calls"],
+        "canonicalisation_mask_cache_hits": canonical["hits"],
+        "canonicalisation_mask_cache_misses": canonical["misses"],
+        "canonical_class_insertions": canonical_class["insertions"],
+        "canonical_class_reuses": canonical_class["reuses"],
+        "vf2_calls": counters["vf2_calls"],
+        "vf2_matches": counters["vf2_matches"],
+        "residual_decomposition_requests": residual["requests"],
+        "residual_cache_eligible_requests": residual["eligible_requests"],
+        "residual_cache_small_molecule_bypasses": residual[
+            "small_molecule_bypasses"
+        ],
+        "residual_cache_wide_molecule_bypasses": residual[
+            "wide_molecule_bypasses"
+        ],
+        "residual_cache_small_residual_bypasses": residual[
+            "small_residual_bypasses"
+        ],
+        "residual_cache_first_occurrence_bypasses": residual[
+            "first_occurrence_bypasses"
+        ],
+        "residual_cache_runtime_disabled_bypasses": residual[
+            "runtime_disabled_bypasses"
+        ],
+        "residual_cache_lookups": residual["lookups"],
+        "residual_cache_hits": residual["hits"],
+        "residual_cache_misses": residual["misses"],
+        "residual_cache_admissions": residual["admissions"],
+        "assembly_cache_lookups": assembly_cache["lookups"],
+        "assembly_cache_hits": assembly_cache["hits"],
+        "assembly_cache_misses": assembly_cache["misses"],
+        "assembly_cache_pruned_hits": assembly_cache["pruned_hits"],
+        "assembly_cache_updated_hits": assembly_cache["updated_hits"],
+        "pair_bound_cache_lookups": pair_bound_cache["lookups"],
+        "pair_bound_cache_hits": pair_bound_cache["hits"],
+        "pair_bound_cache_misses": pair_bound_cache["misses"],
+    }
+    if any(
+        aggregate_counters[name] != legacy_counters[name]
+        for name in PARALLEL_TELEMETRY_COUNTERS
+    ):
+        invalid_parallel("aggregate counters do not match legacy telemetry")
     return telemetry
 
 
@@ -925,6 +1596,8 @@ def run_benchmarks(
     warmup: int,
     timeout: float,
     telemetry_executable: Path | None = None,
+    candidate_execution: ExecutionConfig | None = None,
+    baseline_execution: ExecutionConfig | None = None,
 ) -> list[CaseResult]:
     with tempfile.TemporaryDirectory(prefix="assemblycpp-benchmark-") as directory:
         prepared_cases = prepare_cases(cases, Path(directory))
@@ -949,6 +1622,25 @@ def run_benchmarks(
                 ("candidate", executable),
                 ("baseline", baseline_executable),
             ]
+
+        def execute(
+            role: str,
+            current_executable: Path,
+            prepared: PreparedCase,
+        ) -> Measurement:
+            execution = (
+                candidate_execution if role == "candidate" else baseline_execution
+            )
+            # Preserve the historical three-argument call for default callers and
+            # monkeypatched PGO/benchmark test doubles.
+            if execution is None:
+                return run_once(current_executable, prepared, timeout)
+            return run_once(
+                current_executable,
+                prepared,
+                timeout,
+                execution=execution,
+            )
 
         def validate_unchecked_pair(
             prepared: PreparedCase, paired: dict[str, Measurement]
@@ -977,8 +1669,8 @@ def run_benchmarks(
                         flush=True,
                     )
                     try:
-                        paired_warmups[role] = run_once(
-                            current_executable, prepared, timeout
+                        paired_warmups[role] = execute(
+                            role, current_executable, prepared
                         )
                     except BenchmarkError as error:
                         raise BenchmarkError(
@@ -992,7 +1684,7 @@ def run_benchmarks(
                 paired_measurements: dict[str, Measurement] = {}
                 for role, current_executable in executable_order(run_index):
                     try:
-                        measurement = run_once(current_executable, prepared, timeout)
+                        measurement = execute(role, current_executable, prepared)
                     except BenchmarkError as error:
                         raise BenchmarkError(
                             f"round {run_index + 1}/{runs} {role}: {error}"
@@ -1015,7 +1707,7 @@ def run_benchmarks(
                     print(
                         f"{prefix}: {measurement.wall_seconds:.6f} s wall, "
                         f"{measurement.clock_ticks} clock ticks, "
-                        f"AI {measurement.assembly_index}",
+                        f"assembly index {measurement.assembly_index}",
                         flush=True,
                     )
 
@@ -1204,7 +1896,7 @@ def print_summary(results: Sequence[CaseResult]) -> None:
 
 
 def print_comparison_summary(results: Sequence[CaseResult]) -> None:
-    print("\nComparison summary (speedup > 1 means candidate is faster)")
+    print("\nComparison (speedup > 1.0 = candidate faster)")
     name_width = max(12, min(24, max(len(result.case.name) for result in results)))
     print(
         f"  {'Case':<{name_width}} {'Baseline':>12} {'Candidate':>12} "
@@ -1243,21 +1935,21 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
     assert equal_wall is not None
     print("\nCorpus comparison")
     print(
-        f"  primary paired round-total wall:  {round_wall.median:.4f}x "
+        f"  paired suite wall (primary):       {round_wall.median:.4f}x "
         f"(MAD {round_wall.mad:.4f}x)"
     )
     if round_clock is not None:
         print(
-            f"  primary paired round-total clock: {round_clock.median:.4f}x "
+            f"  paired suite clock (primary):     {round_clock.median:.4f}x "
             f"(MAD {round_clock.mad:.4f}x)"
         )
     print(
-        f"  descriptive equal-weight wall:    {equal_wall.median:.4f}x "
+        f"  equal-weight wall (descriptive):    {equal_wall.median:.4f}x "
         f"(MAD {equal_wall.mad:.4f}x)"
     )
     if equal_clock is not None:
         print(
-            f"  descriptive equal-weight clock:   {equal_clock.median:.4f}x "
+            f"  equal-weight clock (descriptive): {equal_clock.median:.4f}x "
             f"(MAD {equal_clock.mad:.4f}x)"
         )
 
@@ -1304,6 +1996,51 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
             f"{peak_text:>11}"
         )
 
+    parallel_results = [
+        result
+        for result in results
+        if result.telemetry is not None
+        and isinstance(result.telemetry.get("parallel"), dict)
+    ]
+    if not parallel_results:
+        return
+
+    print("\nParallel worker telemetry")
+    print(
+        f"  {'Case':<{name_width}} {'Topology':>12} {'Branches':>12} "
+        f"{'Critical':>12} {'Imbalance':>10} {'Coverage':>10}"
+    )
+    print("  " + "-" * (name_width + 71))
+    for result in parallel_results:
+        assert result.telemetry is not None
+        parallel = result.telemetry["parallel"]
+        assert isinstance(parallel, dict)
+        aggregate = parallel["aggregate"]
+        workers = parallel["workers"]
+        assert isinstance(aggregate, dict)
+        assert isinstance(workers, list)
+        elapsed_values = [
+            int(worker["elapsed_nanoseconds"])
+            for worker in workers
+            if isinstance(worker, dict)
+        ]
+        mean_elapsed = statistics.fmean(elapsed_values)
+        imbalance = max(elapsed_values) / mean_elapsed if mean_elapsed else 1.0
+        worker_elapsed = int(aggregate["worker_elapsed_nanoseconds"])
+        worker_busy = int(aggregate["worker_busy_nanoseconds"])
+        coverage = worker_busy / worker_elapsed if worker_elapsed else 0.0
+        topology = f"{parallel['mode']}:{parallel['worker_count']}w"
+        branch_candidates = aggregate["branch_candidates"]
+        branch_text = (
+            "n/a" if branch_candidates is None else f"{int(branch_candidates):,}"
+        )
+        critical_ms = int(aggregate["elapsed_nanoseconds"]) / 1_000_000
+        print(
+            f"  {result.case.name:<{name_width}.{name_width}} "
+            f"{topology:>12} {branch_text:>12} {critical_ms:>9.3f} ms "
+            f"{imbalance:>9.3f}x {coverage:>9.1%}"
+        )
+
 
 def write_json_report(
     path: Path,
@@ -1317,6 +2054,8 @@ def write_json_report(
     warmup: int,
     timeout: float,
     results: Sequence[CaseResult],
+    candidate_execution: ExecutionConfig | None = None,
+    baseline_execution: ExecutionConfig | None = None,
 ) -> None:
     def measurement_report(measurements: tuple[Measurement, ...]) -> dict[str, object]:
         wall = summarize([measurement.wall_seconds for measurement in measurements])
@@ -1418,6 +2157,14 @@ def write_json_report(
             "baseline": baseline_metadata,
             "telemetry": telemetry_metadata,
         },
+        "execution": {
+            "candidate": execution_config_metadata(candidate_execution),
+            "baseline": (
+                None
+                if baseline_metadata is None
+                else execution_config_metadata(baseline_execution)
+            ),
+        },
         "corpus": corpus_metadata,
         "manifest": None if manifest is None else str(manifest),
         "suite": suite,
@@ -1459,7 +2206,10 @@ def write_json_report(
 
 
 def print_case_list(cases: Sequence[BenchmarkCase]) -> None:
-    print(f"{'Case':<24} {'Suites':<20} {'Expected':>8} {'Status':<12}  Workload")
+    print(
+        f"{'Case':<24} {'Suites':<20} {'Index':>8} "
+        f"{'Expectation':<12}  Workload"
+    )
     print("-" * 95)
     for case in cases:
         print(
@@ -1472,97 +2222,135 @@ def print_case_list(cases: Sequence[BenchmarkCase]) -> None:
 
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run serial AssemblyCpp calculations and summarize their speed. "
-            "Without a corpus option, the default input remains "
-            "unitTests/ketoconazole.mol."
-        )
+        description="Benchmark one input or a manifest suite."
     )
     parser.add_argument(
         "--executable",
         type=Path,
         default=DEFAULT_EXECUTABLE,
-        help=f"AssemblyCpp executable (default: {DEFAULT_EXECUTABLE})",
+        help=(
+            "AssemblyCpp executable "
+            f"(default: {DEFAULT_EXECUTABLE.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--baseline-executable",
         type=Path,
         help=(
-            "baseline executable for paired A/B measurements; --executable is "
-            "the candidate"
+            "baseline executable for paired comparisons "
+            "(candidate: --executable)"
         ),
+    )
+    parser.add_argument(
+        "--candidate-launcher",
+        type=launcher_prefix,
+        metavar="COMMAND",
+        help=(
+            "command prefix for the candidate executable "
+            "(for example, 'mpirun -n 2')"
+        ),
+    )
+    parser.add_argument(
+        "--baseline-launcher",
+        type=launcher_prefix,
+        metavar="COMMAND",
+        help="command prefix for the baseline executable",
+    )
+    parser.add_argument(
+        "--candidate-env",
+        "--candidate-environment",
+        dest="candidate_environment",
+        type=environment_assignment,
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="candidate environment override (repeatable)",
+    )
+    parser.add_argument(
+        "--baseline-env",
+        "--baseline-environment",
+        dest="baseline_environment",
+        type=environment_assignment,
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="baseline environment override (repeatable)",
     )
     parser.add_argument(
         "--input",
         type=Path,
-        help=f"single molfile or native graph (default: {DEFAULT_INPUT})",
+        help=(
+            "single molfile or native graph file "
+            f"(default: {DEFAULT_INPUT.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--expected",
         type=int,
         help=(
-            "expected assembly index for single-input mode; defaults to 22 for "
-            "the default input and is unchecked for a custom input"
+            "expected assembly index; defaults to 22 for the default input, "
+            "otherwise unchecked"
         ),
     )
     parser.add_argument(
         "--manifest",
         type=Path,
-        help=f"benchmark corpus manifest (default with corpus options: {DEFAULT_MANIFEST})",
+        help=(
+            "benchmark corpus manifest "
+            "(default with corpus options: "
+            f"{DEFAULT_MANIFEST.relative_to(REPOSITORY_ROOT)})"
+        ),
     )
     parser.add_argument(
         "--suite",
         choices=KNOWN_SUITES,
-        help="run one named suite from the benchmark manifest",
+        help="select a suite from the benchmark manifest",
     )
     parser.add_argument(
         "--case",
         action="append",
         default=[],
         metavar="NAME",
-        help="run only this manifest case; may be repeated",
+        help="select a manifest case (repeatable)",
     )
     parser.add_argument(
         "--list-cases",
         action="store_true",
-        help="list selected manifest cases and exit without building or running",
+        help="list selected cases without building or running",
     )
     parser.add_argument(
         "--runs",
         type=positive_int,
-        help="number of measured rounds per case (default: 5; paired: 6)",
+        help="measured rounds (default: 5; paired: 6)",
     )
     parser.add_argument(
         "--warmup",
         type=non_negative_int,
         default=1,
-        help="number of unmeasured rounds per case (default: 1)",
+        help="warm-up rounds (default: 1)",
     )
     parser.add_argument(
         "--timeout",
         type=positive_float,
-        default=300.0,
-        help="per-calculation timeout in seconds (default: 300)",
+        default=600.0,
+        help="per-calculation timeout in seconds (default: 600)",
     )
     parser.add_argument(
         "--json-output",
         type=Path,
-        help="write measurements and summaries to this JSON file",
+        help="write a JSON report",
     )
     parser.add_argument(
         "--telemetry",
         action="store_true",
-        help=(
-            "collect one additional untimed telemetry run per case using a "
-            "separate instrumented executable"
-        ),
+        help="run each case once more with untimed telemetry",
     )
     parser.add_argument(
         "--telemetry-executable",
         type=Path,
         help=(
-            "separate ASSEMBLY_ENABLE_TELEMETRY executable used only for the "
-            "untimed diagnostic run; required with --telemetry unless --build"
+            "instrumented executable for telemetry; required unless --build "
+            "is used"
         ),
     )
     parser.add_argument(
@@ -1573,7 +2361,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compiler",
         default=os.environ.get("CXX") or "c++",
-        help="compiler command used with --build (default: CXX or c++)",
+        help="compiler used by --build (uses $CXX, then c++)",
     )
     return parser
 
@@ -1637,6 +2425,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.baseline_executable is not None:
             baseline_executable = resolve_executable(arguments.baseline_executable)
 
+        candidate_execution = create_execution_config(
+            arguments.candidate_launcher,
+            arguments.candidate_environment,
+            "candidate",
+        )
+        if baseline_executable is None and (
+            arguments.baseline_launcher or arguments.baseline_environment
+        ):
+            raise BenchmarkError(
+                "--baseline-launcher and --baseline-env require "
+                "--baseline-executable"
+            )
+        baseline_execution = create_execution_config(
+            arguments.baseline_launcher,
+            arguments.baseline_environment,
+            "baseline",
+        )
+
         if arguments.telemetry_executable is not None and not arguments.telemetry:
             raise BenchmarkError(
                 "--telemetry-executable requires --telemetry"
@@ -1679,7 +2485,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.build:
             if baseline_executable is not None:
                 ensure_distinct_executables(
-                    executable_path.resolve(), baseline_executable
+                    executable_path.resolve(),
+                    baseline_executable,
+                    candidate_execution,
+                    baseline_execution,
                 )
             executable_path = build_executable(
                 executable_path,
@@ -1697,7 +2506,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             telemetry_executable = resolve_executable(telemetry_path)
         if baseline_executable is not None:
-            ensure_distinct_executables(executable, baseline_executable)
+            ensure_distinct_executables(
+                executable,
+                baseline_executable,
+                candidate_execution,
+                baseline_execution,
+            )
             if runs % 2 != 0:
                 print(
                     "Warning: an odd number of paired rounds gives one "
@@ -1726,6 +2540,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if baseline_executable is None
             else executable_metadata(baseline_executable)
         )
+        if baseline_metadata is not None:
+            ensure_distinct_execution_identities(
+                candidate_metadata,
+                baseline_metadata,
+                candidate_execution,
+                baseline_execution,
+            )
         telemetry_metadata = (
             None
             if telemetry_executable is None
@@ -1747,18 +2568,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if manifest is None:
             print(f"Input: {cases[0].source}")
             if cases[0].expected_assembly_index is None:
-                print("Assembly index: checked for presence only")
+                print("Assembly index: present but not validated")
             else:
                 print(f"Expected assembly index: {cases[0].expected_assembly_index}")
         else:
             print(f"Manifest: {manifest}")
-            print(f"Suite: {arguments.suite or 'all selected cases'}")
+            print(f"Suite: {arguments.suite or 'all'}")
             print(f"Cases: {len(cases)}")
             provisional = [
                 case.name for case in cases if case.expectation == "provisional"
             ]
             if provisional:
-                print(f"Provisional expectations: {', '.join(provisional)}")
+                print(f"Provisional assembly indices: {', '.join(provisional)}")
         if len(cases) == 1:
             print(
                 f"Runs: {runs} measured, {arguments.warmup} warm-up",
@@ -1771,7 +2592,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if arguments.telemetry:
             print(
-                "Telemetry: one untimed separate-instrumented run per case",
+                "Telemetry: one separate, untimed run per case",
                 flush=True,
             )
 
@@ -1779,6 +2600,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             executable=executable,
             baseline_executable=baseline_executable,
             telemetry_executable=telemetry_executable,
+            candidate_execution=candidate_execution,
+            baseline_execution=baseline_execution,
             cases=cases,
             runs=runs,
             warmup=arguments.warmup,
@@ -1820,6 +2643,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 warmup=arguments.warmup,
                 timeout=arguments.timeout,
                 results=results,
+                candidate_execution=candidate_execution,
+                baseline_execution=baseline_execution,
             )
             print(f"JSON report: {arguments.json_output}")
     except (BenchmarkError, OSError) as error:

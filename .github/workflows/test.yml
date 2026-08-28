@@ -38,6 +38,16 @@ jobs:
         timeout-minutes: 30
         run: ctest --preset ci
 
+      - name: Configure parallel correctness tests
+        run: cmake --preset parallel-tests
+
+      - name: Build parallel correctness tests
+        run: cmake --build --preset parallel-tests
+
+      - name: Test OpenMP, MPI, hybrid, and telemetry modes
+        timeout-minutes: 10
+        run: ctest --preset parallel-tests
+
       - name: Build portable package candidate
         run: |
           CXX=/usr/bin/g++ CXXFLAGS= LDFLAGS= cmake --preset release

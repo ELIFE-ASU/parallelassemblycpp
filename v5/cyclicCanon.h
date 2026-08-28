@@ -59,10 +59,9 @@ struct cyclicCanonPeelingWorkspace
     std::vector<std::size_t> coreVertices;
 };
 
-// The surrounding search state is already process-global and single-threaded.
-// Reusing these flat buffers avoids repeated scratch allocation for every
-// cyclic canonicalisation miss.
-inline cyclicCanonPeelingWorkspace cyclicCanonPeelingScratch;
+// Each OpenMP worker owns this scratch through ASSEMBLYCPP_SEARCH_LOCAL.
+// Reusing the flat buffers avoids allocation for every cyclic miss.
+inline ASSEMBLYCPP_SEARCH_LOCAL cyclicCanonPeelingWorkspace cyclicCanonPeelingScratch;
 
 /**
  * @brief Cached coloured-core representation with lazy exact labelling.

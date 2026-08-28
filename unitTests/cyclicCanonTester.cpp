@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <barrier>
 #include <bit>
 #include <cassert>
 #include <cstdint>
@@ -13,6 +15,7 @@
 #include <numeric>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -25,6 +28,9 @@ using vi = vector<int>;
 using vb = vector<bool>;
 using pii = pair<int, int>;
 
+// Model the worker-local state used by the OpenMP executable. Each test thread
+// must have its own mask arena, canonical caches, interners, and scratch.
+#define ASSEMBLYCPP_SEARCH_LOCAL thread_local
 #include "../v5/activeWordMask.h"
 
 constexpr int ceilLog2(int value)
@@ -117,6 +123,93 @@ molGraph makeGraph(
         for (const edgeSpec &edge : edges) addOne(edge);
     }
     return result;
+}
+
+/**
+ * Two copies each of K3,3 and the triangular prism. Both graph families have
+ * six equally-labelled vertices, nine equal bonds, and degree three at every
+ * vertex, so the cheap shared invariant deliberately collides. They are not
+ * isomorphic, while copies within one family are exact equivalents.
+ */
+molGraph makeSharedRegistryCollisionGraph()
+{
+    vector<string> labels(24, "C");
+    vector<edgeSpec> edges;
+    edges.reserve(36);
+    const auto addCompleteBipartite = [&](int base)
+    {
+        for (int left = 0; left < 3; ++left)
+        {
+            for (int right = 3; right < 6; ++right)
+                edges.emplace_back(base + left, base + right, 1);
+        }
+    };
+    const auto addTriangularPrism = [&](int base)
+    {
+        edges.emplace_back(base, base + 1, 1);
+        edges.emplace_back(base + 1, base + 2, 1);
+        edges.emplace_back(base + 2, base, 1);
+        edges.emplace_back(base + 3, base + 4, 1);
+        edges.emplace_back(base + 4, base + 5, 1);
+        edges.emplace_back(base + 5, base + 3, 1);
+        edges.emplace_back(base, base + 3, 1);
+        edges.emplace_back(base + 1, base + 4, 1);
+        edges.emplace_back(base + 2, base + 5, 1);
+    };
+
+    addCompleteBipartite(0);
+    addCompleteBipartite(6);
+    addTriangularPrism(12);
+    addTriangularPrism(18);
+    return makeGraph(labels, edges);
+}
+
+/**
+ * Two copies each of non-isomorphic trees with the same degree sequence,
+ * followed by two triangles carrying the same three-edge pendant chain and
+ * one labelled edge used as a producer-only seed class.
+ */
+molGraph makeSharedRegistryTreeInternerGraph()
+{
+    vector<string> labels(38, "C");
+    labels[36] = "N";
+    labels[37] = "O";
+    vector<edgeSpec> edges;
+    edges.reserve(33);
+    const auto addForkedTree = [&](int base)
+    {
+        edges.emplace_back(base, base + 1, 1);
+        edges.emplace_back(base, base + 2, 1);
+        edges.emplace_back(base, base + 3, 1);
+        edges.emplace_back(base + 1, base + 4, 1);
+        edges.emplace_back(base + 2, base + 5, 1);
+    };
+    const auto addBentArmTree = [&](int base)
+    {
+        edges.emplace_back(base, base + 1, 1);
+        edges.emplace_back(base, base + 2, 1);
+        edges.emplace_back(base, base + 3, 1);
+        edges.emplace_back(base + 1, base + 4, 1);
+        edges.emplace_back(base + 4, base + 5, 1);
+    };
+    const auto addCycleWithPendantChain = [&](int base)
+    {
+        edges.emplace_back(base, base + 1, 1);
+        edges.emplace_back(base + 1, base + 2, 1);
+        edges.emplace_back(base + 2, base, 1);
+        edges.emplace_back(base, base + 3, 1);
+        edges.emplace_back(base + 3, base + 4, 1);
+        edges.emplace_back(base + 4, base + 5, 1);
+    };
+
+    addForkedTree(0);
+    addForkedTree(6);
+    addBentArmTree(12);
+    addBentArmTree(18);
+    addCycleWithPendantChain(24);
+    addCycleWithPendantChain(30);
+    edges.emplace_back(36, 37, 2);
+    return makeGraph(labels, edges);
 }
 
 using bondLabelBag = vector<short>;
@@ -746,6 +839,346 @@ EdgeMask componentMask(int firstVertex, int vertexCount)
     return result;
 }
 
+void testSharedCanonicalRegistryAdversarialOrdering()
+{
+    sharedCanonicalIdRegistry registry(37);
+    constexpr int workerCount = 8;
+    std::barrier start(workerCount);
+    std::array<int, workerCount> bipartiteIds{};
+    std::array<int, workerCount> prismIds{};
+    std::atomic<int> invariantFailures{0};
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+
+    for (int worker = 0; worker < workerCount; ++worker)
+    {
+        workers.emplace_back([&, worker]
+        {
+            bitsetHashTable.clear();
+            graphHashMap.clear();
+            clearTreeCanonInterner();
+            targetMolecule = makeSharedRegistryCollisionGraph();
+            univEdgeList = targetMolecule.writeEdgeList();
+            configureCanoniseMaskDomain(univEdgeList.size());
+            prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+            sharedCanonicalRegistry = &registry;
+
+            {
+                // Alternate exact occurrences so equivalent candidates also
+                // arrive with different serialized representative masks.
+                EdgeMask bipartite = componentMask(
+                    worker % 2 == 0 ? 0 : 6,
+                    6
+                );
+                EdgeMask prism = componentMask(
+                    worker % 2 == 0 ? 12 : 18,
+                    6
+                );
+                bool bipartiteIsCyclic = false;
+                const flatCanonGraph &bipartiteGraph =
+                    canonicalisationGraphScratch.build(
+                        targetMolecule,
+                        univEdgeList,
+                        bipartite,
+                        bipartiteIsCyclic
+                    );
+                const size_t bipartiteInvariant =
+                    sharedCanonicalInvariantHash(bipartiteGraph);
+                bool prismIsCyclic = false;
+                const flatCanonGraph &prismGraph =
+                    canonicalisationGraphScratch.build(
+                        targetMolecule,
+                        univEdgeList,
+                        prism,
+                        prismIsCyclic
+                    );
+                const size_t prismInvariant =
+                    sharedCanonicalInvariantHash(prismGraph);
+                if (
+                    !bipartiteIsCyclic || !prismIsCyclic ||
+                    bipartiteInvariant != prismInvariant
+                )
+                {
+                    invariantFailures.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
+
+                start.arrive_and_wait();
+                if (worker % 2 == 0)
+                {
+                    bipartiteIds[worker] = canonise(bipartite);
+                    prismIds[worker] = canonise(prism);
+                }
+                else
+                {
+                    prismIds[worker] = canonise(prism);
+                    bipartiteIds[worker] = canonise(bipartite);
+                }
+            }
+
+            sharedCanonicalRegistry = nullptr;
+            bitsetHashTable.clear();
+            graphHashMap.clear();
+            clearTreeCanonInterner();
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+
+    require(
+        invariantFailures.load(std::memory_order_relaxed) == 0,
+        "registry collision fixtures did not share one invariant bucket"
+    );
+    require(
+        std::all_of(
+            bipartiteIds.begin(),
+            bipartiteIds.end(),
+            [&](int id) {return id == bipartiteIds.front();}
+        ),
+        "equivalent K3,3 candidates received different shared IDs"
+    );
+    require(
+        std::all_of(
+            prismIds.begin(),
+            prismIds.end(),
+            [&](int id) {return id == prismIds.front();}
+        ),
+        "equivalent prism candidates received different shared IDs"
+    );
+    require(
+        bipartiteIds.front() != prismIds.front(),
+        "non-isomorphic graphs sharing an invariant bucket were merged"
+    );
+    require(
+        bipartiteIds.front() >= 37 && prismIds.front() >= 37,
+        "shared registry allocated below its first unused ID"
+    );
+}
+
+void testSharedCanonicalRegistryWithDivergentTreeInterners()
+{
+    sharedCanonicalRegistry = nullptr;
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+    targetMolecule = makeSharedRegistryTreeInternerGraph();
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+
+    EdgeMask producerSeed = componentMask(36, 2);
+    const int producerSeedId = canonise(producerSeed);
+    require(
+        producerSeedId == 0,
+        "producer labelled-edge seed did not receive the first ID"
+    );
+    require(
+        graphHashMap.size() == 1,
+        "producer did not create exactly one canonical seed class"
+    );
+
+    const auto seedGraphHashes = graphHashMap;
+    const auto seedAtomInterner = treeCanonAtomInterner;
+    const auto seedLeafInterner = treeCanonLeafInterner;
+    const auto seedTreeInterner = treeCanonInterner;
+    sharedCanonicalIdRegistry registry(graphHashMap.size());
+
+    constexpr int workerCount = 8;
+    std::barrier start(workerCount);
+    std::array<int, workerCount> forkedTreeIds{};
+    std::array<int, workerCount> bentArmTreeIds{};
+    std::array<int, workerCount> pendantCycleIds{};
+    std::array<int, workerCount> producerSeedIds{};
+    std::array<treeCanonNodeId, workerCount> singleBondSignatureIds{};
+    std::atomic<int> invariantFailures{0};
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+
+    for (int worker = 0; worker < workerCount; ++worker)
+    {
+        workers.emplace_back([&, worker]
+        {
+            bitsetHashTable.clear();
+            graphHashMap.clear();
+            clearTreeCanonInterner();
+            targetMolecule = makeSharedRegistryTreeInternerGraph();
+            univEdgeList = targetMolecule.writeEdgeList();
+            configureCanoniseMaskDomain(univEdgeList.size());
+            treeCanonAtomInterner = seedAtomInterner;
+            treeCanonLeafInterner = seedLeafInterner;
+            treeCanonInterner = seedTreeInterner;
+            graphHashMap = seedGraphHashes;
+            prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+
+            // Allocate two exact rooted-tree signatures in opposite orders.
+            // The single-bond form is used by both tree fixtures and by the
+            // pendant chain, so its numeric TLS ID must genuinely diverge.
+            const treeCanonAtomId carbon = internTreeCanonAtom("C");
+            const treeCanonNodeId leaf = internTreeCanonNode(
+                carbon,
+                vector<treeCanonChild>{}
+            );
+            const auto internBondSignature = [&](uint16_t bondType)
+            {
+                return internTreeCanonNode(
+                    carbon,
+                    vector<treeCanonChild>{{bondType, leaf}}
+                );
+            };
+            if (worker % 2 == 0)
+            {
+                singleBondSignatureIds[worker] = internBondSignature(1);
+                static_cast<void>(internBondSignature(2));
+            }
+            else
+            {
+                static_cast<void>(internBondSignature(2));
+                singleBondSignatureIds[worker] = internBondSignature(1);
+            }
+
+            sharedCanonicalRegistry = &registry;
+            {
+                EdgeMask forkedTree = componentMask(
+                    worker % 2 == 0 ? 0 : 6,
+                    6
+                );
+                EdgeMask bentArmTree = componentMask(
+                    worker % 2 == 0 ? 12 : 18,
+                    6
+                );
+                EdgeMask pendantCycle = componentMask(
+                    worker % 2 == 0 ? 24 : 30,
+                    6
+                );
+                EdgeMask seededClass = componentMask(36, 2);
+
+                bool forkedIsCyclic = false;
+                const flatCanonGraph &forkedGraph =
+                    canonicalisationGraphScratch.build(
+                        targetMolecule,
+                        univEdgeList,
+                        forkedTree,
+                        forkedIsCyclic
+                    );
+                const size_t forkedInvariant =
+                    sharedCanonicalInvariantHash(forkedGraph);
+                bool bentArmIsCyclic = false;
+                const flatCanonGraph &bentArmGraph =
+                    canonicalisationGraphScratch.build(
+                        targetMolecule,
+                        univEdgeList,
+                        bentArmTree,
+                        bentArmIsCyclic
+                    );
+                const size_t bentArmInvariant =
+                    sharedCanonicalInvariantHash(bentArmGraph);
+                if (
+                    forkedIsCyclic || bentArmIsCyclic ||
+                    forkedInvariant != bentArmInvariant
+                )
+                {
+                    invariantFailures.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
+
+                start.arrive_and_wait();
+                if (worker % 2 == 0)
+                {
+                    forkedTreeIds[worker] = canonise(forkedTree);
+                    bentArmTreeIds[worker] = canonise(bentArmTree);
+                }
+                else
+                {
+                    bentArmTreeIds[worker] = canonise(bentArmTree);
+                    forkedTreeIds[worker] = canonise(forkedTree);
+                }
+                pendantCycleIds[worker] = canonise(pendantCycle);
+                producerSeedIds[worker] = canonise(seededClass);
+            }
+
+            sharedCanonicalRegistry = nullptr;
+            bitsetHashTable.clear();
+            graphHashMap.clear();
+            clearTreeCanonInterner();
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+
+    require(
+        singleBondSignatureIds[0] != singleBondSignatureIds[1],
+        "test workers did not diverge their TLS tree-signature IDs"
+    );
+    for (int worker = 0; worker < workerCount; ++worker)
+    {
+        const treeCanonNodeId expected =
+            singleBondSignatureIds[worker % 2];
+        require(
+            singleBondSignatureIds[worker] == expected,
+            "same-order workers allocated inconsistent TLS signatures"
+        );
+    }
+    require(
+        invariantFailures.load(std::memory_order_relaxed) == 0,
+        "non-isomorphic tree fixtures did not share one invariant bucket"
+    );
+    require(
+        std::all_of(
+            forkedTreeIds.begin(),
+            forkedTreeIds.end(),
+            [&](int id) {return id == forkedTreeIds.front();}
+        ),
+        "equivalent dynamic forked trees received different shared IDs"
+    );
+    require(
+        std::all_of(
+            bentArmTreeIds.begin(),
+            bentArmTreeIds.end(),
+            [&](int id) {return id == bentArmTreeIds.front();}
+        ),
+        "equivalent dynamic tree candidates received different shared IDs"
+    );
+    require(
+        bentArmTreeIds.front() != forkedTreeIds.front() &&
+            bentArmTreeIds.front() != producerSeedId,
+        "non-isomorphic dynamic tree class aliased a producer seed"
+    );
+    require(
+        forkedTreeIds.front() >= 1 && bentArmTreeIds.front() >= 1 &&
+            pendantCycleIds.front() >= 1,
+        "dynamic class reused the producer's canonical ID range"
+    );
+    require(
+        std::all_of(
+            pendantCycleIds.begin(),
+            pendantCycleIds.end(),
+            [&](int id) {return id == pendantCycleIds.front();}
+        ),
+        "dynamic pendant-cycle class changed across divergent TLS interners"
+    );
+    require(
+        pendantCycleIds.front() != forkedTreeIds.front() &&
+            pendantCycleIds.front() != bentArmTreeIds.front() &&
+            pendantCycleIds.front() != producerSeedId,
+        "dynamic pendant-cycle class aliased another canonical class"
+    );
+    require(
+        std::all_of(
+            producerSeedIds.begin(),
+            producerSeedIds.end(),
+            [&](int id) {return id == producerSeedId;}
+        ),
+        "producer-seeded class changed after dynamic ID allocation"
+    );
+
+    sharedCanonicalRegistry = nullptr;
+    bitsetHashTable.clear();
+    graphHashMap.clear();
+    clearTreeCanonInterner();
+}
+
 void testFlatCanoniseMaskPath()
 {
     bitsetHashTable.clear();
@@ -931,6 +1364,8 @@ int main()
 {
     testAgainstExactMatcher();
     testLargeAttachedTrees();
+    testSharedCanonicalRegistryAdversarialOrdering();
+    testSharedCanonicalRegistryWithDivergentTreeInterners();
     testFlatCanoniseMaskPath();
     testCachedGraphHashIsSelfContained();
     graphHashMap.clear();

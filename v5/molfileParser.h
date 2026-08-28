@@ -54,7 +54,8 @@ namespace molfileParserDetail
         )
         {
             throw std::runtime_error(
-                std::string("invalid molfile: invalid ") + description
+                std::string("invalid molfile: ") + description +
+                " is not a valid integer"
             );
         }
         return value;
@@ -75,12 +76,7 @@ namespace molfileParserDetail
     }
 }
 
-/**
- * @brief Takes a molfile and turns it into a molGraph
- *
- * @param molfile the .mol input
- * @param mg the molGraph output of the function
- */
+/** Parse a V2000 molfile into a molecular graph. */
 void molfileParser(std::istream &molfile, molGraph &mg)
 {
     std::string currLine;
@@ -108,11 +104,13 @@ void molfileParser(std::istream &molfile, molGraph &mg)
         currLine, 3, 3, "bond count"
     );
     if (atomCount < 0 || bondCount < 0)
-        throw std::runtime_error("invalid molfile: counts must not be negative");
+        throw std::runtime_error(
+            "invalid molfile: atom and bond counts must be nonnegative"
+        );
 
     if (verbose)
     {
-        std::cout << "Detecting " << atomCount << " atoms and " << bondCount
+        std::cout << "Molfile: " << atomCount << " atoms, " << bondCount
                   << " bonds\n";
     }
     parsed.mg.reserve(static_cast<std::size_t>(atomCount));
@@ -149,11 +147,17 @@ void molfileParser(std::istream &molfile, molGraph &mg)
             );
         if (
             atomA < 1 || atomA > atomCount ||
-            atomB < 1 || atomB > atomCount || bondOrder < 0
+            atomB < 1 || atomB > atomCount
         )
         {
-            throw std::runtime_error("invalid molfile: bond line is out of range");
+            throw std::runtime_error(
+                "invalid molfile: bond endpoint is outside the atom range"
+            );
         }
+        if (bondOrder < 0)
+            throw std::runtime_error(
+                "invalid molfile: bond order must be nonnegative"
+            );
         parsed.addBond(atomA - 1, atomB - 1, bondOrder);
     }
     if (removeHydrogens)

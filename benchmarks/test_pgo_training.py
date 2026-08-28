@@ -46,6 +46,11 @@ class PgoTrainingTests(unittest.TestCase):
             "Cefquinome": 128,
             "Cefpirome": 1024,
             "amino-acid-scale-03c": 256,
+            "amino-acid-scale-09c": 4,
+            "amino-acid-scale-10c": 1,
+            "amino-acid-scale-11c": 1,
+            "amino-acid-scale-12c": 1,
+            "amino-acid-scale-13c": 1,
         }
         for case in cases:
             if case.name in tuned_weights:
@@ -60,7 +65,7 @@ class PgoTrainingTests(unittest.TestCase):
                 self.assertEqual(weights[case.name], 8)
             else:
                 self.fail(f"unclassified default training case: {case.name}")
-        self.assertEqual(sum(weights.values()), 2854)
+        self.assertEqual(sum(weights.values()), 2862)
 
     def test_weights_reject_invalid_header_and_column_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -202,9 +207,10 @@ class PgoTrainingTests(unittest.TestCase):
                 working_directories.append(prepared.working_directory)
                 return benchmark.Measurement(0.1, 10, 7)
 
+            output = io.StringIO()
             with (
                 mock.patch.object(benchmark, "run_once", side_effect=fake_run_once),
-                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stdout(output),
             ):
                 completed = pgo_training.train(
                     Path("AssemblyCpp"), weighted, timeout=12.0
@@ -213,6 +219,8 @@ class PgoTrainingTests(unittest.TestCase):
             self.assertEqual(completed, 3)
             self.assertEqual(calls, ["one", "one", "two"])
             self.assertEqual(len(set(working_directories)), 3)
+            self.assertIn("Training one: 2 repetitions", output.getvalue())
+            self.assertIn("Training two: 1 repetition", output.getvalue())
 
     def test_main_requires_new_profile_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -262,7 +270,7 @@ class PgoTrainingTests(unittest.TestCase):
             ) -> int:
                 self.assertEqual(executable_path, executable.resolve())
                 self.assertEqual(timeout, 9.0)
-                self.assertEqual(len(weighted_cases), 31)
+                self.assertEqual(len(weighted_cases), 36)
                 self.assertFalse(stale.exists())
                 (profiles / "fresh.gcda").write_text("fresh", encoding="utf-8")
                 return sum(entry.repetitions for entry in weighted_cases)
@@ -286,20 +294,20 @@ class PgoTrainingTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertTrue((profiles / "fresh.gcda").is_file())
             self.assertTrue(keep.is_file())
-            self.assertIn("Training complete", stdout.getvalue())
+            self.assertIn("Training complete: 2862 repetitions", stdout.getvalue())
             completion = profiles / pgo_training.COMPLETION_FILENAME
             record = json.loads(completion.read_text(encoding="utf-8"))
             self.assertEqual(
                 record["schema_version"],
                 pgo_training.COMPLETION_SCHEMA_VERSION,
             )
-            self.assertEqual(record["completed_repetitions"], 2854)
+            self.assertEqual(record["completed_repetitions"], 2862)
             self.assertEqual(record["profile_files"], ["fresh.gcda"])
             self.assertEqual(
                 record["corpus"]["manifest"]["sha256"],
                 pgo_training.file_sha256(benchmark.DEFAULT_MANIFEST),
             )
-            self.assertEqual(len(record["corpus"]["inputs"]), 31)
+            self.assertEqual(len(record["corpus"]["inputs"]), 36)
 
     def test_failed_training_leaves_no_completion_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

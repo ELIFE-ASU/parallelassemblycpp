@@ -1,4 +1,4 @@
-"""Validate paired benchmark JSON files as an optimization promotion gate."""
+"""Check paired benchmark reports before promoting an optimization."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class GateFailure:
 
 
 class GateError(RuntimeError):
-    """Raised when benchmark results cannot be evaluated safely."""
+    """Raised when benchmark reports cannot be evaluated safely."""
 
 
 MINIMUM_RUNS = {
@@ -37,6 +37,7 @@ PAIRED_COMPARISON_ORDER = (
     "baseline/candidate on odd rounds, candidate/baseline on even rounds"
 )
 MAX_CLOCK_TICKS = (1 << 64) - 1
+ExecutionIdentity = tuple[tuple[str, ...], tuple[tuple[str, str], ...]]
 
 
 def number_at(document: object, keys: Sequence[str], context: str) -> float:
@@ -67,17 +68,53 @@ def string_at(document: object, keys: Sequence[str], context: str) -> str:
     return value
 
 
+def execution_identity(
+    document: dict[str, object], role: str, path: Path
+) -> ExecutionIdentity:
+    """Return one canonical launcher/environment identity from a report."""
+    execution = document.get("execution")
+    if execution is None:
+        # Schema-v2 reports written before execution configurations existed used
+        # the ordinary direct-launch configuration for both roles.
+        return (), ()
+    if not isinstance(execution, dict):
+        raise GateError(f"invalid execution configurations in {path}")
+    config = execution.get(role)
+    if not isinstance(config, dict):
+        raise GateError(f"missing {role} execution configuration in {path}")
+
+    launcher = config.get("launcher")
+    if not isinstance(launcher, list) or any(
+        not isinstance(value, str) or not value for value in launcher
+    ):
+        raise GateError(f"invalid {role} launcher configuration in {path}")
+    environment = config.get("environment")
+    if not isinstance(environment, dict):
+        raise GateError(f"invalid {role} environment configuration in {path}")
+    normalized_environment = []
+    for key, value in environment.items():
+        if (
+            not isinstance(key, str)
+            or benchmark.ENVIRONMENT_KEY_PATTERN.fullmatch(key) is None
+            or not isinstance(value, str)
+            or "\x00" in value
+        ):
+            raise GateError(f"invalid {role} environment configuration in {path}")
+        normalized_environment.append((key, value))
+    return tuple(launcher), tuple(sorted(normalized_environment))
+
+
 def load_result(path: Path) -> dict[str, object]:
     try:
         with path.expanduser().open(encoding="utf-8") as stream:
             document = json.load(stream)
     except (OSError, json.JSONDecodeError) as error:
-        raise GateError(f"could not read benchmark result {path}: {error}") from error
+        raise GateError(f"could not read benchmark report {path}: {error}") from error
     if not isinstance(document, dict):
-        raise GateError(f"invalid benchmark result {path}: expected a JSON object")
+        raise GateError(f"invalid benchmark report {path}: expected a JSON object")
     if document.get("schema_version") != 2:
         raise GateError(
-            f"invalid benchmark result {path}: expected schema_version 2"
+            f"invalid benchmark report {path}: expected schema_version 2"
         )
     return document
 
@@ -236,6 +273,8 @@ def evaluate_results(
     documents: dict[str, tuple[Path, dict[str, object], int]] = {}
     candidate_hash: str | None = None
     baseline_hash: str | None = None
+    candidate_execution: ExecutionIdentity | None = None
+    baseline_execution: ExecutionIdentity | None = None
 
     for path in paths:
         document = load_result(path)
@@ -276,20 +315,32 @@ def evaluate_results(
             ("executables", "baseline", "sha256"),
             f"baseline SHA-256 in {path}",
         )
+        current_candidate_execution = execution_identity(document, "candidate", path)
+        current_baseline_execution = execution_identity(document, "baseline", path)
         if candidate_hash is None:
             candidate_hash = current_candidate
             baseline_hash = current_baseline
-        elif current_candidate != candidate_hash or current_baseline != baseline_hash:
+            candidate_execution = current_candidate_execution
+            baseline_execution = current_baseline_execution
+        elif (
+            current_candidate != candidate_hash
+            or current_baseline != baseline_hash
+            or current_candidate_execution != candidate_execution
+            or current_baseline_execution != baseline_execution
+        ):
             raise GateError(
-                "all suite results must use the same candidate and baseline binaries"
+                "all reports must use the same candidate and baseline binary "
+                "and execution configurations"
             )
         documents[suite] = (path, document, runs)
 
     missing_suites = [suite for suite in benchmark.KNOWN_SUITES if suite not in documents]
     if missing_suites:
-        raise GateError(f"missing benchmark suite result(s): {', '.join(missing_suites)}")
-    if candidate_hash == baseline_hash:
-        raise GateError("candidate and baseline binaries must be different")
+        raise GateError(f"missing benchmark suites: {', '.join(missing_suites)}")
+    if candidate_hash == baseline_hash and candidate_execution == baseline_execution:
+        raise GateError(
+            "candidate and baseline binary/execution identities must differ"
+        )
 
     failures: list[GateFailure] = []
     for suite in benchmark.KNOWN_SUITES:
@@ -416,21 +467,21 @@ def threshold_value(value: str) -> float:
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Require every maintained benchmark case and suite aggregate to be "
-            "faster in paired schema-v2 JSON results."
+            "Fail unless every benchmark case and suite aggregate is faster "
+            "in paired v2 reports."
         )
     )
     parser.add_argument(
         "results",
         type=Path,
         nargs="+",
-        help="one paired JSON result for each of quick, full, profile, and scaling",
+        help="paired JSON reports for quick, full, profile, and scaling",
     )
     parser.add_argument(
         "--threshold",
         type=threshold_value,
         default=1.0,
-        help="speedup medians must be strictly greater than this value (default: 1)",
+        help="require every median to exceed this value (default: 1)",
     )
     return parser
 
@@ -452,8 +503,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     print(
-        "PASS: every case clock median and every suite round-total wall/clock "
-        f"median exceeds {arguments.threshold:.6f}"
+        "PASS: all case clock medians and suite wall/clock medians exceed "
+        f"{arguments.threshold:.6f}"
     )
     return 0
 

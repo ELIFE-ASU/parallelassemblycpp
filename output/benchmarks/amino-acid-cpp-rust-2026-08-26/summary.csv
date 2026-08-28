@@ -1,0 +1,100 @@
+case,components,atoms,bonds,expected_assembly_index,variant,label,implementation,mode,workers,median_wall_seconds,mad_wall_seconds,minimum_wall_seconds,p95_wall_seconds,maximum_wall_seconds
+02c,2,18,16,10,reference,Shipped reference (serial),shipped-reference,reference,1,0.001124533,3.0438000000000036e-05,0.001073386,0.001173877,0.001173877
+02c,2,18,16,10,current_serial,Current C++ serial,current-cpp,current-serial,1,0.001417485,0.0001591139999999999,0.001258371,0.002486078,0.002486078
+02c,2,18,16,10,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.001293889,6.92100000000001e-05,0.001224679,0.001457887,0.001457887
+02c,2,18,16,10,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.001415195,1.2032000000000145e-05,0.001308595,0.001460103,0.001460103
+02c,2,18,16,10,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.001386077,4.656000000000018e-05,0.001282065,0.001548353,0.001548353
+02c,2,18,16,10,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.001545394,2.3828000000000044e-05,0.001521566,0.001902881,0.001902881
+02c,2,18,16,10,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.001494785,8.723400000000005e-05,0.001301186,0.001582019,0.001582019
+02c,2,18,16,10,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.001667975,0.00012823499999999998,0.001459913,0.001935016,0.001935016
+02c,2,18,16,10,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.001434012,7.663599999999994e-05,0.001309209,0.001613919,0.001613919
+02c,2,18,16,10,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.002192881,0.00036037899999999986,0.001832502,0.003678443,0.003678443
+02c,2,18,16,10,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.001508273,3.3397000000000114e-05,0.001474876,0.001752998,0.001752998
+03c,3,27,24,13,reference,Shipped reference (serial),shipped-reference,reference,1,0.001619052,5.3541999999999956e-05,0.001541284,0.001744294,0.001744294
+03c,3,27,24,13,current_serial,Current C++ serial,current-cpp,current-serial,1,0.001474934,7.961600000000002e-05,0.001374624,0.001673015,0.001673015
+03c,3,27,24,13,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.001701263,1.814500000000001e-05,0.001637664,0.001751715,0.001751715
+03c,3,27,24,13,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.00151518,1.4356999999999998e-05,0.001500823,0.001566406,0.001566406
+03c,3,27,24,13,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.001812907,3.238200000000007e-05,0.001714558,0.001949886,0.001949886
+03c,3,27,24,13,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.001544329,7.718000000000091e-06,0.001536611,0.001819791,0.001819791
+03c,3,27,24,13,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.001768715,6.312099999999997e-05,0.001599266,0.001872425,0.001872425
+03c,3,27,24,13,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.001670387,0.00014661800000000005,0.001508406,0.001908306,0.001908306
+03c,3,27,24,13,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.001656134,1.909100000000016e-05,0.001637043,0.001843753,0.001843753
+03c,3,27,24,13,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.002794516,0.0007780249999999999,0.002016491,0.005391009,0.005391009
+03c,3,27,24,13,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.001845105,1.73259999999998e-05,0.00174222,0.001945326,0.001945326
+04c,4,36,32,15,reference,Shipped reference (serial),shipped-reference,reference,1,0.003170425,5.9536000000000224e-05,0.003087267,0.003321946,0.003321946
+04c,4,36,32,15,current_serial,Current C++ serial,current-cpp,current-serial,1,0.00220301,6.068800000000015e-05,0.002083687,0.002540418,0.002540418
+04c,4,36,32,15,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.003466689,3.234200000000031e-05,0.003413948,0.003515493,0.003515493
+04c,4,36,32,15,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.002242305,5.852899999999987e-05,0.002072322,0.00233356,0.00233356
+04c,4,36,32,15,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.003551116,6.28069999999998e-05,0.003471064,0.003771756,0.003771756
+04c,4,36,32,15,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.002100593,1.169300000000012e-05,0.001978533,0.002161099,0.002161099
+04c,4,36,32,15,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.00278925,5.665100000000001e-05,0.002732599,0.003533687,0.003533687
+04c,4,36,32,15,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.002170667,0.00015564699999999964,0.00201502,0.002626308,0.002626308
+04c,4,36,32,15,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.002537695,0.00021588200000000014,0.002307687,0.003488614,0.003488614
+04c,4,36,32,15,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.002216807,0.00022771999999999983,0.001989087,0.004367818,0.004367818
+04c,4,36,32,15,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.002334125,0.00010524899999999997,0.002228876,0.002831801,0.002831801
+05c,5,43,38,17,reference,Shipped reference (serial),shipped-reference,reference,1,0.004001264,0.00011020400000000003,0.003835566,0.004203178,0.004203178
+05c,5,43,38,17,current_serial,Current C++ serial,current-cpp,current-serial,1,0.002501563,0.00010945799999999978,0.002387494,0.002613248,0.002613248
+05c,5,43,38,17,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.005349941,8.435399999999916e-05,0.005189015,0.005681319,0.005681319
+05c,5,43,38,17,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.002544508,5.470300000000013e-05,0.002438525,0.002641564,0.002641564
+05c,5,43,38,17,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.005475657,0.00010390900000000012,0.005371748,0.006373157,0.006373157
+05c,5,43,38,17,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.002547332,0.00012601799999999988,0.002314983,0.002705355,0.002705355
+05c,5,43,38,17,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.003977043,0.00010118299999999948,0.003875067,0.005817339,0.005817339
+05c,5,43,38,17,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.002268471,6.799099999999988e-05,0.002163919,0.002608589,0.002608589
+05c,5,43,38,17,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.00323914,0.0001653570000000001,0.003052356,0.003452432,0.003452432
+05c,5,43,38,17,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.002713245,0.00021157300000000006,0.00229322,0.005890919,0.005890919
+05c,5,43,38,17,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.003248043,0.00013314399999999997,0.003043909,0.004581005,0.004581005
+06c,6,53,47,19,reference,Shipped reference (serial),shipped-reference,reference,1,0.014649929,6.794300000000086e-05,0.013917997,0.014867654,0.014867654
+06c,6,53,47,19,current_serial,Current C++ serial,current-cpp,current-serial,1,0.006164599,5.025599999999939e-05,0.006114343,0.006583424,0.006583424
+06c,6,53,47,19,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.027688734,0.00011664500000000202,0.027386429,0.027805379,0.027805379
+06c,6,53,47,19,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.006486328,0.00014333599999999998,0.006342992,0.006880304,0.006880304
+06c,6,53,47,19,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.028569524,0.000347293000000002,0.02813272,0.029357535,0.029357535
+06c,6,53,47,19,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.005130571,8.019100000000029e-05,0.004896115,0.005338765,0.005338765
+06c,6,53,47,19,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.017155803,0.00017982100000000015,0.016975982,0.01796441,0.01796441
+06c,6,53,47,19,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.0043556,0.00022616000000000042,0.004110151,0.004780558,0.004780558
+06c,6,53,47,19,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.011224234,0.0004002299999999997,0.010824004,0.012018301,0.012018301
+06c,6,53,47,19,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.004976945,0.0010494399999999996,0.003927505,0.009482677,0.009482677
+06c,6,53,47,19,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.008871033,0.00042984800000000004,0.008441185,0.009998472,0.009998472
+07c,7,63,56,21,reference,Shipped reference (serial),shipped-reference,reference,1,0.066859584,0.00020422800000000074,0.066655356,0.067723959,0.067723959
+07c,7,63,56,21,current_serial,Current C++ serial,current-cpp,current-serial,1,0.023444476,4.335300000000292e-05,0.022970989,0.023487829,0.023487829
+07c,7,63,56,21,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.14682243,0.00045635799999999005,0.146366072,0.151897935,0.151897935
+07c,7,63,56,21,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.024443882,0.00033515900000000154,0.02369099,0.029479312,0.029479312
+07c,7,63,56,21,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.153625269,0.0015601650000000022,0.15144225,0.155675247,0.155675247
+07c,7,63,56,21,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.017299452,3.8122000000001544e-05,0.016940202,0.017337574,0.017337574
+07c,7,63,56,21,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.07628725,0.0004980920000000055,0.075499348,0.077115429,0.077115429
+07c,7,63,56,21,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.01328831,0.00026589700000000105,0.012534534,0.013554207,0.013554207
+07c,7,63,56,21,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.044815601,0.0005229299999999978,0.044292671,0.05013433,0.05013433
+07c,7,63,56,21,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.010605878,0.0010581199999999992,0.009547758,0.012439087,0.012439087
+07c,7,63,56,21,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.032783446,0.0007759970000000005,0.032007449,0.036336307,0.036336307
+08c,8,68,60,23,reference,Shipped reference (serial),shipped-reference,reference,1,0.233097044,0.003383845999999996,0.229713198,0.238665797,0.238665797
+08c,8,68,60,23,current_serial,Current C++ serial,current-cpp,current-serial,1,0.077139096,0.000699525999999992,0.075709492,0.077838622,0.077838622
+08c,8,68,60,23,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,0.590236066,0.0019548139999999714,0.582014188,0.592797453,0.592797453
+08c,8,68,60,23,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.078767907,0.0008782370000000039,0.077291162,0.080193208,0.080193208
+08c,8,68,60,23,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,0.618171934,0.0004141910000000637,0.606913684,0.619828958,0.619828958
+08c,8,68,60,23,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.056808419,0.000697991000000002,0.054426545,0.05975892,0.05975892
+08c,8,68,60,23,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,0.320898277,0.006321848000000019,0.309413205,0.333181524,0.333181524
+08c,8,68,60,23,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.039792076,0.0005815420000000043,0.039210534,0.047380068,0.047380068
+08c,8,68,60,23,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,0.190561982,0.003690268999999996,0.183838508,0.21449789,0.21449789
+08c,8,68,60,23,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.026166709,0.001085906000000001,0.025022709,0.031311966,0.031311966
+08c,8,68,60,23,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.115022872,0.0023871939999999953,0.111317104,0.117848741,0.117848741
+09c,9,77,68,25,reference,Shipped reference (serial),shipped-reference,reference,1,1.210719603,0.007880534999999966,1.202839068,1.245335341,1.245335341
+09c,9,77,68,25,current_serial,Current C++ serial,current-cpp,current-serial,1,0.555347477,0.00793631100000003,0.546860214,0.580797372,0.580797372
+09c,9,77,68,25,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,4.716821307,0.21241614399999964,4.481278006,4.999965224,4.999965224
+09c,9,77,68,25,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,0.574904361,0.005668348000000045,0.558821407,0.580572709,0.580572709
+09c,9,77,68,25,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,4.909165577,0.15470194199999998,4.72663024,5.116626617,5.116626617
+09c,9,77,68,25,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,0.416033433,0.0031689509999999754,0.408656569,0.423592349,0.423592349
+09c,9,77,68,25,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,2.253315953,0.010286473999999934,2.243029479,2.350708992,2.350708992
+09c,9,77,68,25,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,0.309575391,0.0005898059999999705,0.308985585,0.323459841,0.323459841
+09c,9,77,68,25,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,1.244413708,0.013204530999999964,1.231209177,1.28229016,1.28229016
+09c,9,77,68,25,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,0.232053361,0.0035969120000000077,0.228456449,0.24090566,0.24090566
+09c,9,77,68,25,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,0.770909667,0.031265064000000065,0.710942965,0.965192545,0.965192545
+10c,10,86,76,27,reference,Shipped reference (serial),shipped-reference,reference,1,5.729231494,0.00944244700000052,5.719789047,5.745118137,5.745118137
+10c,10,86,76,27,current_serial,Current C++ serial,current-cpp,current-serial,1,2.392164861,0.0030477969999997967,2.386444375,2.465848395,2.465848395
+10c,10,86,76,27,rust_serial,Rust serial,daymudelab-rust,rust-serial,1,39.950270927,0.17789512599999568,39.561650957,40.290058337,40.290058337
+10c,10,86,76,27,current_omp1,"Current C++ OpenMP, 1 worker",current-cpp,current-openmp,1,2.436131712,0.008794522999999721,2.427337189,2.454544884,2.454544884
+10c,10,86,76,27,rust_parallel1,"Rust depth-one, 1 worker",daymudelab-rust,rust-depth-one,1,41.316878355,0.08099557799999957,41.158651696,41.49789537,41.49789537
+10c,10,86,76,27,current_omp2,"Current C++ OpenMP, 2 workers",current-cpp,current-openmp,2,1.962851416,0.0059299539999999595,1.954753286,1.982993393,1.982993393
+10c,10,86,76,27,rust_parallel2,"Rust depth-one, 2 workers",daymudelab-rust,rust-depth-one,2,17.951624451,0.0311790589999994,17.778257995,17.98280351,17.98280351
+10c,10,86,76,27,current_omp4,"Current C++ OpenMP, 4 workers",current-cpp,current-openmp,4,1.468081547,0.002654694999999929,1.465426852,1.473320868,1.473320868
+10c,10,86,76,27,rust_parallel4,"Rust depth-one, 4 workers",daymudelab-rust,rust-depth-one,4,9.197920095,0.03451594099999866,9.042072523,9.289859981,9.289859981
+10c,10,86,76,27,current_omp8,"Current C++ OpenMP, 8 workers",current-cpp,current-openmp,8,1.153521603,0.0032736119999998703,1.14689335,1.157756893,1.157756893
+10c,10,86,76,27,rust_parallel8,"Rust depth-one, 8 workers",daymudelab-rust,rust-depth-one,8,5.226914474,0.06993382599999975,5.142491773,5.394660033,5.394660033

@@ -102,6 +102,19 @@ void testWidth(std::size_t width)
         assert(selected.activeWord(wordIndex) == expectedWord);
     }
 
+    // Parallel root jobs cross workers as plain words and are reconstructed
+    // only after the receiving worker configures its own mask domain.
+    std::vector<std::uint64_t> serialized(Mask::activeWordCount());
+    for (std::size_t word = 0; word < serialized.size(); ++word)
+        serialized[word] = selected.activeWord(word);
+    Mask reconstructed = Mask::fromActiveWords(serialized.data());
+    assert(reconstructed == selected);
+    if (width != 0)
+    {
+        reconstructed.flip(width - 1);
+        assert(reconstructed != selected);
+    }
+
     std::vector<std::size_t> actual;
     for (
         std::size_t bit = selected.findFirst();

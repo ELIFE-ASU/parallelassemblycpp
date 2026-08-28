@@ -7,7 +7,7 @@ endif()
 project(
   AssemblyCpp
   VERSION 5.0.0
-  DESCRIPTION "Calculate molecular assembly indices and pathways"
+  DESCRIPTION "Compute molecular assembly indices and pathways"
   HOMEPAGE_URL "https://github.com/ELIFE-ASU/assemblycpp-v5"
   LANGUAGES CXX
 )
@@ -23,24 +23,24 @@ set(
 
 option(
   ASSEMBLYCPP_BUILD_TELEMETRY
-  "Build the separately instrumented AssemblyCppTelemetry executable"
+  "Build the instrumented AssemblyCppTelemetry executable"
   OFF
 )
 option(
   ASSEMBLYCPP_X86_64_V3
-  "Target x86-64-v3 with POPCNT instead of the portable compiler baseline"
+  "Target x86-64-v3 with POPCNT"
   OFF
 )
 option(
   ASSEMBLYCPP_ENABLE_LTO
-  "Enable interprocedural optimization for AssemblyCpp targets"
+  "Enable link-time optimization"
   OFF
 )
 set(
   ASSEMBLYCPP_PGO_PHASE
   "OFF"
   CACHE STRING
-  "GCC profile-guided optimization phase: OFF, GENERATE, or USE"
+  "PGO phase: OFF, GENERATE, or USE"
 )
 set_property(
   CACHE ASSEMBLYCPP_PGO_PHASE
@@ -50,11 +50,26 @@ set(
   ASSEMBLYCPP_PGO_PROFILE_DIR
   "${CMAKE_BINARY_DIR}/pgo-profiles"
   CACHE PATH
-  "Directory shared by the GCC PGO generation and use builds"
+  "Shared PGO profile directory"
 )
 option(
   ASSEMBLYCPP_FULL_REGRESSION_TESTS
-  "Run the complete regression manifest instead of its first 20 cases"
+  "Run the full regression manifest"
+  OFF
+)
+option(
+  ASSEMBLYCPP_BUILD_OPENMP
+  "Build the experimental OpenMP executable"
+  OFF
+)
+option(
+  ASSEMBLYCPP_BUILD_MPI
+  "Build the experimental MPI executable"
+  OFF
+)
+option(
+  ASSEMBLYCPP_BUILD_HYBRID
+  "Build the experimental MPI/OpenMP executable"
   OFF
 )
 
@@ -62,7 +77,7 @@ set(_ASSEMBLYCPP_PGO_PHASES OFF GENERATE USE)
 if(NOT ASSEMBLYCPP_PGO_PHASE IN_LIST _ASSEMBLYCPP_PGO_PHASES)
   message(
     FATAL_ERROR
-    "ASSEMBLYCPP_PGO_PHASE must be one of OFF, GENERATE, or USE; got "
+    "ASSEMBLYCPP_PGO_PHASE must be OFF, GENERATE, or USE; got "
     "${ASSEMBLYCPP_PGO_PHASE}"
   )
 endif()
@@ -71,7 +86,7 @@ if(ASSEMBLYCPP_PGO_PHASE STREQUAL "OFF")
   set(ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE "")
 else()
   if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    message(FATAL_ERROR "AssemblyCpp PGO currently requires GCC")
+    message(FATAL_ERROR "PGO requires GCC")
   endif()
   if(ASSEMBLYCPP_PGO_PROFILE_DIR STREQUAL "")
     message(FATAL_ERROR "ASSEMBLYCPP_PGO_PROFILE_DIR must not be empty")
@@ -98,8 +113,8 @@ else()
       if(ASSEMBLYCPP_PGO_PROFILE_DIRECTORY_ENTRIES)
         message(
           FATAL_ERROR
-          "Refusing to adopt non-empty PGO profile directory without its "
-          "AssemblyCpp marker: ${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}"
+          "PGO profile directory is non-empty but unmarked: "
+          "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}"
         )
       endif()
       file(
@@ -110,7 +125,7 @@ else()
       IS_DIRECTORY "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
       OR IS_SYMLINK "${ASSEMBLYCPP_PGO_DIRECTORY_MARKER}"
     )
-      message(FATAL_ERROR "Invalid PGO profile directory marker")
+      message(FATAL_ERROR "PGO profile marker must be a regular file")
     endif()
   else()
     if(
@@ -120,8 +135,8 @@ else()
     )
       message(
         FATAL_ERROR
-        "ASSEMBLYCPP_PGO_PHASE=USE requires the dedicated profile-directory "
-        "marker created by the pgo-generate preset"
+        "PGO profile marker is missing or invalid; configure preset "
+        "pgo-generate first"
       )
     endif()
     set(
@@ -131,8 +146,7 @@ else()
     if(NOT EXISTS "${ASSEMBLYCPP_PGO_COMPLETION_FILE}")
       message(
         FATAL_ERROR
-        "ASSEMBLYCPP_PGO_PHASE=USE requires a completed weighted training run; "
-        "build the pgo-train preset first"
+        "PGO training is incomplete; build preset pgo-train first"
       )
     endif()
     file(READ "${ASSEMBLYCPP_PGO_COMPLETION_FILE}" ASSEMBLYCPP_PGO_COMPLETION)
@@ -167,8 +181,7 @@ else()
     )
       message(
         FATAL_ERROR
-        "PGO training weights changed after profile generation; rebuild the "
-        "pgo-train preset"
+        "PGO training weights changed; rebuild preset pgo-train"
       )
     endif()
     set(
@@ -191,8 +204,7 @@ else()
     )
       message(
         FATAL_ERROR
-        "The benchmark manifest changed after profile generation; rebuild the "
-        "pgo-train preset"
+        "Benchmark manifest changed; rebuild preset pgo-train"
       )
     endif()
     string(
@@ -239,8 +251,8 @@ else()
       )
         message(
           FATAL_ERROR
-          "PGO corpus input is missing: ${ASSEMBLYCPP_PGO_CURRENT_INPUT}; "
-          "rebuild the pgo-train preset"
+          "PGO input is missing: ${ASSEMBLYCPP_PGO_CURRENT_INPUT}; rebuild "
+          "preset pgo-train"
         )
       endif()
       file(
@@ -253,8 +265,8 @@ else()
       )
         message(
           FATAL_ERROR
-          "PGO corpus input changed after profile generation: "
-          "${ASSEMBLYCPP_PGO_CURRENT_INPUT}; rebuild the pgo-train preset"
+          "PGO input changed: ${ASSEMBLYCPP_PGO_CURRENT_INPUT}; rebuild "
+          "preset pgo-train"
         )
       endif()
       list(APPEND ASSEMBLYCPP_PGO_CORPUS_FILES "${ASSEMBLYCPP_PGO_CURRENT_INPUT}")
@@ -267,13 +279,11 @@ else()
     if(NOT ASSEMBLYCPP_PGO_PROFILE_DATA)
       message(
         FATAL_ERROR
-        "ASSEMBLYCPP_PGO_PHASE=USE requires trained *.gcda files in "
-        "${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}; build the pgo-train preset first"
+        "PGO data is missing from ${ASSEMBLYCPP_PGO_PROFILE_DIR_ABSOLUTE}; "
+        "build preset pgo-train first"
       )
     endif()
-    # Re-run configuration before any subsequent build if training is repeated,
-    # interrupted, or its weights change. This keeps an already-configured USE
-    # tree from consuming partial or stale profile data.
+    # Reconfigure when training inputs change to reject partial or stale data.
     set_property(
       DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
       "${ASSEMBLYCPP_PGO_COMPLETION_FILE}"
@@ -315,9 +325,7 @@ function(assemblycpp_configure_target target)
       CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
       AND ASSEMBLYCPP_PGO_PHASE STREQUAL "OFF"
     )
-      # GCC's one-partition link was consistently better for the unprofiled
-      # binary. Profile-use builds retain GCC's balanced partitioning because
-      # that configuration is trained and validated independently.
+      # One-partition LTO outperformed GCC's default without PGO.
       set(
         _ASSEMBLYCPP_GNU_LTO_OPTIONS
         -flto-partition=one
@@ -355,9 +363,7 @@ function(assemblycpp_configure_target target)
       endif()
       target_compile_options(${target} PRIVATE -march=x86-64-v3 -mpopcnt)
       if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        # The search is intentionally template-heavy. Its filtered and plain
-        # matching loops benefit from a slightly larger whole-unit inlining
-        # budget in the performance preset.
+        # Allow more inlining for template-heavy search loops.
         target_compile_options(
           ${target}
           PRIVATE --param=inline-unit-growth=104
@@ -394,9 +400,7 @@ function(assemblycpp_configure_pgo_target target)
     return()
   endif()
 
-  # The training corpus exercises the CLI. Profiling the library or telemetry
-  # sibling would create untrained objects and make missing-profile diagnostics
-  # either noisy or ineffective.
+  # Only the CLI is trained; instrumenting other targets creates profile gaps.
   target_compile_options(${target} PRIVATE ${_ASSEMBLYCPP_PGO_OPTIONS})
   target_link_options(${target} PRIVATE ${_ASSEMBLYCPP_PGO_OPTIONS})
 endfunction()
@@ -426,12 +430,39 @@ assemblycpp_configure_target(AssemblyCppLibrary)
 add_executable(AssemblyCpp v5/main.cpp)
 assemblycpp_configure_target(AssemblyCpp)
 assemblycpp_configure_pgo_target(AssemblyCpp)
-if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  # Both implementations are single translation units. Internalising their
-  # implementation details avoids frontend changes perturbing the search
-  # inliner; the library header preserves its three public entry points.
-  target_compile_options(AssemblyCpp PRIVATE -fwhole-program)
-  target_compile_options(AssemblyCppLibrary PRIVATE -fwhole-program)
+
+if(ASSEMBLYCPP_BUILD_OPENMP OR ASSEMBLYCPP_BUILD_HYBRID)
+  find_package(OpenMP REQUIRED COMPONENTS CXX)
+endif()
+if(ASSEMBLYCPP_BUILD_MPI OR ASSEMBLYCPP_BUILD_HYBRID)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+endif()
+
+if(ASSEMBLYCPP_BUILD_OPENMP)
+  add_executable(AssemblyCppOMP v5/main.cpp)
+  target_compile_definitions(AssemblyCppOMP PRIVATE ASSEMBLYCPP_USE_OPENMP)
+  target_link_libraries(AssemblyCppOMP PRIVATE OpenMP::OpenMP_CXX)
+  assemblycpp_configure_target(AssemblyCppOMP)
+endif()
+
+if(ASSEMBLYCPP_BUILD_MPI)
+  add_executable(AssemblyCppMPI v5/main.cpp)
+  target_compile_definitions(AssemblyCppMPI PRIVATE ASSEMBLYCPP_USE_MPI)
+  target_link_libraries(AssemblyCppMPI PRIVATE MPI::MPI_CXX)
+  assemblycpp_configure_target(AssemblyCppMPI)
+endif()
+
+if(ASSEMBLYCPP_BUILD_HYBRID)
+  add_executable(AssemblyCppHybrid v5/main.cpp)
+  target_compile_definitions(
+    AssemblyCppHybrid
+    PRIVATE ASSEMBLYCPP_USE_MPI ASSEMBLYCPP_USE_OPENMP
+  )
+  target_link_libraries(
+    AssemblyCppHybrid
+    PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX
+  )
+  assemblycpp_configure_target(AssemblyCppHybrid)
 endif()
 
 if(ASSEMBLYCPP_BUILD_TELEMETRY)
@@ -441,6 +472,71 @@ if(ASSEMBLYCPP_BUILD_TELEMETRY)
     PRIVATE ASSEMBLY_ENABLE_TELEMETRY
   )
   assemblycpp_configure_target(AssemblyCppTelemetry)
+
+  if(ASSEMBLYCPP_BUILD_OPENMP)
+    add_executable(AssemblyCppOMPTelemetry v5/main.cpp)
+    target_compile_definitions(
+      AssemblyCppOMPTelemetry
+      PRIVATE ASSEMBLYCPP_USE_OPENMP ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      AssemblyCppOMPTelemetry
+      PRIVATE OpenMP::OpenMP_CXX
+    )
+    assemblycpp_configure_target(AssemblyCppOMPTelemetry)
+  endif()
+
+  if(ASSEMBLYCPP_BUILD_MPI)
+    add_executable(AssemblyCppMPITelemetry v5/main.cpp)
+    target_compile_definitions(
+      AssemblyCppMPITelemetry
+      PRIVATE ASSEMBLYCPP_USE_MPI ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      AssemblyCppMPITelemetry
+      PRIVATE MPI::MPI_CXX
+    )
+    assemblycpp_configure_target(AssemblyCppMPITelemetry)
+  endif()
+
+  if(ASSEMBLYCPP_BUILD_HYBRID)
+    add_executable(AssemblyCppHybridTelemetry v5/main.cpp)
+    target_compile_definitions(
+      AssemblyCppHybridTelemetry
+      PRIVATE
+        ASSEMBLYCPP_USE_MPI
+        ASSEMBLYCPP_USE_OPENMP
+        ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      AssemblyCppHybridTelemetry
+      PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX
+    )
+    assemblycpp_configure_target(AssemblyCppHybridTelemetry)
+  endif()
+endif()
+
+if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # Internalize single-file targets while preserving public library symbols.
+  target_compile_options(AssemblyCpp PRIVATE -fwhole-program)
+  target_compile_options(AssemblyCppLibrary PRIVATE -fwhole-program)
+  foreach(
+    ASSEMBLYCPP_PARALLEL_TARGET
+    AssemblyCppOMP
+    AssemblyCppMPI
+    AssemblyCppHybrid
+    AssemblyCppTelemetry
+    AssemblyCppOMPTelemetry
+    AssemblyCppMPITelemetry
+    AssemblyCppHybridTelemetry
+  )
+    if(TARGET ${ASSEMBLYCPP_PARALLEL_TARGET})
+      target_compile_options(
+        ${ASSEMBLYCPP_PARALLEL_TARGET}
+        PRIVATE -fwhole-program
+      )
+    endif()
+  endforeach()
 endif()
 
 install(
@@ -500,9 +596,7 @@ install(
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/AssemblyCpp"
 )
 if(UNIX AND NOT APPLE)
-  # Conda compiler wrappers can inject an absolute environment RPATH outside
-  # CMake's normal install-RPATH handling. Never preserve it in an install or
-  # archive intended to leave that environment.
+  # Remove absolute RPATHs injected by Conda compiler wrappers.
   if(IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}")
     set(
       ASSEMBLYCPP_INSTALLED_EXECUTABLE
@@ -757,6 +851,130 @@ if(BUILD_TESTING)
       regression.telemetry
       PROPERTIES
         LABELS "regression;telemetry"
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  if(TARGET AssemblyCppOMP)
+    add_test(
+      NAME regression.parallel-solver
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        --openmp "$<TARGET_FILE:AssemblyCppOMP>"
+        --repetitions 3
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-solver
+      PROPERTIES
+        LABELS "regression;parallel"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  if(TARGET AssemblyCppOMPTelemetry)
+    add_test(
+      NAME regression.parallel-telemetry
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        --openmp-telemetry "$<TARGET_FILE:AssemblyCppOMPTelemetry>"
+        --telemetry-repetitions 2
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-telemetry
+      PROPERTIES
+        LABELS "regression;parallel;telemetry"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  set(ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS)
+  if(TARGET AssemblyCppMPI)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS
+      --mpi "$<TARGET_FILE:AssemblyCppMPI>"
+    )
+  endif()
+  if(TARGET AssemblyCppHybrid)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS
+      --hybrid "$<TARGET_FILE:AssemblyCppHybrid>"
+    )
+  endif()
+  list(
+    LENGTH ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS
+    ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTION_COUNT
+  )
+  if(ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTION_COUNT GREATER 0)
+    add_test(
+      NAME regression.parallel-distributed
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        ${ASSEMBLYCPP_DISTRIBUTED_PARITY_OPTIONS}
+        --mpiexec "${MPIEXEC_EXECUTABLE}"
+        "--mpiexec-numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-distributed
+      PROPERTIES
+        LABELS "regression;parallel;mpi"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  set(ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS)
+  if(TARGET AssemblyCppMPITelemetry)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS
+      --mpi-telemetry "$<TARGET_FILE:AssemblyCppMPITelemetry>"
+    )
+  endif()
+  if(TARGET AssemblyCppHybridTelemetry)
+    list(
+      APPEND ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS
+      --hybrid-telemetry "$<TARGET_FILE:AssemblyCppHybridTelemetry>"
+    )
+  endif()
+  list(
+    LENGTH ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS
+    ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTION_COUNT
+  )
+  if(ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTION_COUNT GREATER 0)
+    add_test(
+      NAME regression.parallel-distributed-telemetry
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelSolverTester.py"
+        --serial "$<TARGET_FILE:AssemblyCpp>"
+        ${ASSEMBLYCPP_DISTRIBUTED_TELEMETRY_OPTIONS}
+        --mpiexec "${MPIEXEC_EXECUTABLE}"
+        "--mpiexec-numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+        --timeout 30
+    )
+    set_tests_properties(
+      regression.parallel-distributed-telemetry
+      PROPERTIES
+        LABELS "regression;parallel;mpi;telemetry"
+        PROCESSORS 4
+        SKIP_RETURN_CODE 77
         TIMEOUT 300
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     )

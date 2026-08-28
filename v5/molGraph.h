@@ -84,18 +84,17 @@ struct molGraph
         totalBonds++;
     }
     
-    /**
-     * @brief Print the graph information to cout
-     */
+    /** Print the graph summary and adjacency list. */
     void printToCout()
     {
-        cout << "There are " << mg.size() << " atoms in the molecule-graph\n";
+        cout << "Graph: " << mg.size() << " atoms, " << totalBonds << " bonds\n";
         for (size_t i = 0; i < mg.size(); i++)
         {
-            cout << "Atom " << i + 1 << " is of type " << mg[i].type << " and adjacent to atoms ";
+            cout << "  Atom " << i + 1 << " (" << mg[i].type << "): ";
             for (size_t j = 0; j < degree(i); j++)
             {
-                cout << elem(i, j) + 1 << " with bond order " << btypeS(i, j) << ", ";
+                if (j > 0) cout << ", ";
+                cout << elem(i, j) + 1 << '[' << btypeS(i, j) << ']';
             }
             cout << '\n';
         }
@@ -351,7 +350,7 @@ molGraph preprocessWriteback(const molGraph &mg, vector<edgeL> &writeback)
 }
 
 /// Global variable for the molGraph before and after preprocessing
-molGraph originalMolecule, targetMolecule;
+ASSEMBLYCPP_SEARCH_LOCAL molGraph originalMolecule, targetMolecule;
 
 struct cachedResidualDecomposition
 {

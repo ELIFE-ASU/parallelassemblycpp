@@ -7,11 +7,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <barrier>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
 #include <random>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -215,10 +218,229 @@ void testRandomisedDifferential()
     assert(table.size() == reference.size());
 }
 
+void testSharedExactKeysAndHashCollisions()
+{
+    sharedAssemblyTranspositionTable table;
+
+    // These distinct keys deliberately have the same complete 32-bit hash,
+    // and therefore enter the same shard and probe sequence. Equality must
+    // still compare the borrowed key's full contents and length.
+    const std::array<int, 4> firstCollision{
+        -1744324134,
+        -1879786136,
+        873751343,
+        1729211343
+    };
+    const std::array<int, 3> secondCollision{
+        1933699411,
+        -1276699930,
+        -106575768
+    };
+    assert(
+        assemblyTranspositionTable::keyHash(firstCollision) ==
+        assemblyTranspositionTable::keyHash(secondCollision)
+    );
+    assert(table.consider(firstCollision, 4) == tableResult::inserted);
+    assert(table.consider(secondCollision, 9) == tableResult::inserted);
+    assert(table.consider(firstCollision, 4) == tableResult::dominated);
+    assert(table.consider(secondCollision, 9) == tableResult::dominated);
+    assert(table.consider(firstCollision, 5) == tableResult::improved);
+
+    const std::array<int, 3> key{4, 1, 2};
+    const std::array<int, 3> differentHead{5, 1, 2};
+    const std::array<int, 2> prefix{4, 1};
+    const std::array<int, 4> extension{4, 1, 2, 0};
+    assert(table.consider(key, 1) == tableResult::inserted);
+    assert(table.consider(differentHead, 1) == tableResult::inserted);
+    assert(table.consider(prefix, 1) == tableResult::inserted);
+    assert(table.consider(extension, 1) == tableResult::inserted);
+    assert(table.size() == 6);
+}
+
+void testSharedBorrowedScratchLifetime()
+{
+    sharedAssemblyTranspositionTable table;
+    std::vector<int> scratch(4096);
+    for (std::size_t index = 0; index < scratch.size(); ++index)
+        scratch[index] = static_cast<int>(index * 29 + 11);
+    const std::vector<int> original = scratch;
+
+    assert(table.consider(scratch, 12) == tableResult::inserted);
+    std::fill(scratch.begin(), scratch.end(), -77);
+
+    // A shared-table miss must copy the key before the shard lock is released;
+    // it cannot retain worker scratch that will be reused immediately.
+    assert(table.consider(original, 12) == tableResult::dominated);
+    assert(table.consider(original, 13) == tableResult::improved);
+    assert(table.consider(original, 13) == tableResult::dominated);
+    assert(table.size() == 1);
+}
+
+void testSharedBestScoreSupportsLocalPromotion()
+{
+    sharedAssemblyTranspositionTable shared;
+    assemblyTranspositionTable workerLocal(8);
+    const std::array<int, 4> key{19, 3, 5, 7};
+
+    auto sharedResult = shared.considerWithBest(key, 10);
+    assert(sharedResult.outcome == tableResult::inserted);
+    assert(sharedResult.bestSumDupBonds == 10);
+
+    // A second worker reaches the same state with a weaker score. Its L1 miss
+    // must be checked in L2, which returns the exact stronger score so the
+    // worker can promote its local entry before pruning.
+    assert(workerLocal.consider(key, 7) == tableResult::inserted);
+    sharedResult = shared.considerWithBest(key, 7);
+    assert(sharedResult.outcome == tableResult::dominated);
+    assert(sharedResult.bestSumDupBonds == 10);
+    assert(
+        workerLocal.consider(key, sharedResult.bestSumDupBonds) ==
+        tableResult::improved
+    );
+    assert(workerLocal.consider(key, 9) == tableResult::dominated);
+
+    sharedResult = shared.considerWithBest(key, 12);
+    assert(sharedResult.outcome == tableResult::improved);
+    assert(sharedResult.bestSumDupBonds == 12);
+    sharedResult = shared.considerWithBest(key, 11);
+    assert(sharedResult.outcome == tableResult::dominated);
+    assert(sharedResult.bestSumDupBonds == 12);
+    assert(shared.size() == 1);
+}
+
+void testSharedConcurrentSameKeyMonotonicUpdate()
+{
+    constexpr int threadCount = 8;
+    constexpr int rounds = 2048;
+    sharedAssemblyTranspositionTable table(threadCount);
+    const std::array<int, 6> key{7, 2, 3, 5, 11, 13};
+    std::barrier start(threadCount);
+    std::atomic<int> insertionCount{0};
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
+
+    for (int worker = 0; worker < threadCount; ++worker)
+    {
+        workers.emplace_back([&, worker]
+        {
+            start.arrive_and_wait();
+            for (int round = 0; round < rounds; ++round)
+            {
+                const int score = round * threadCount + worker;
+                if (
+                    table.considerWithBestForWorker(
+                        key,
+                        score,
+                        static_cast<std::size_t>(worker)
+                    ).outcome == tableResult::inserted
+                )
+                    insertionCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+
+    const int maximumScore = rounds * threadCount - 1;
+    assert(insertionCount.load(std::memory_order_relaxed) == 1);
+    assert(table.size() == 1);
+    assert(
+        table.considerWithBestForWorker(key, maximumScore, 0).outcome ==
+        tableResult::dominated
+    );
+    assert(
+        table.considerWithBestForWorker(key, maximumScore + 1, 0).outcome ==
+        tableResult::improved
+    );
+    assert(
+        table.considerWithBestForWorker(key, maximumScore + 1, 0).outcome ==
+        tableResult::dominated
+    );
+}
+
+void testSharedIndependentKeyShardStress()
+{
+    sharedAssemblyTranspositionTable table;
+    constexpr int threadCount = 8;
+    constexpr int keysPerThread = 1024;
+    std::array<bool, sharedAssemblyTranspositionTable::shardCount>
+        visitedShards{};
+
+    auto keyFor = [](int worker, int index)
+    {
+        const int ordinal = worker * keysPerThread + index;
+        return std::array<int, 5>{
+            0x13579bdf,
+            worker,
+            index,
+            ordinal,
+            -ordinal - 1
+        };
+    };
+    for (int worker = 0; worker < threadCount; ++worker)
+    {
+        for (int index = 0; index < keysPerThread; ++index)
+        {
+            const auto key = keyFor(worker, index);
+            const std::size_t shard =
+                assemblyTranspositionTable::keyHash(key) &
+                (sharedAssemblyTranspositionTable::shardCount - 1);
+            visitedShards[shard] = true;
+        }
+    }
+    assert(std::all_of(
+        visitedShards.begin(),
+        visitedShards.end(),
+        [](bool visited) {return visited;}
+    ));
+
+    std::barrier start(threadCount);
+    std::atomic<int> failureCount{0};
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
+    for (int worker = 0; worker < threadCount; ++worker)
+    {
+        workers.emplace_back([&, worker]
+        {
+            start.arrive_and_wait();
+            for (int index = 0; index < keysPerThread; ++index)
+            {
+                const auto key = keyFor(worker, index);
+                const int score = worker * keysPerThread + index;
+                if (table.consider(key, score) != tableResult::inserted)
+                    failureCount.fetch_add(1, std::memory_order_relaxed);
+                if (table.consider(key, score) != tableResult::dominated)
+                    failureCount.fetch_add(1, std::memory_order_relaxed);
+                if (table.consider(key, score + 1) != tableResult::improved)
+                    failureCount.fetch_add(1, std::memory_order_relaxed);
+                if (table.consider(key, score + 1) != tableResult::dominated)
+                    failureCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+
+    assert(failureCount.load(std::memory_order_relaxed) == 0);
+    assert(table.size() == threadCount * keysPerThread);
+    for (int worker = 0; worker < threadCount; ++worker)
+    {
+        for (int index = 0; index < keysPerThread; ++index)
+        {
+            const auto key = keyFor(worker, index);
+            const int score = worker * keysPerThread + index + 1;
+            assert(table.consider(key, score) == tableResult::dominated);
+        }
+    }
+}
+
 int main()
 {
     testBasicResultsAndExactKeys();
     testScratchCopyAndHitAllocations();
     testGrowthPreservesEntries();
     testRandomisedDifferential();
+    testSharedExactKeysAndHashCollisions();
+    testSharedBorrowedScratchLifetime();
+    testSharedBestScoreSupportsLocalPromotion();
+    testSharedConcurrentSameKeyMonotonicUpdate();
+    testSharedIndependentKeyShardStress();
 }

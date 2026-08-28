@@ -1,198 +1,263 @@
-# Benchmark corpus
+# Benchmarks
 
-`cases.tsv` defines the maintained AssemblyCpp performance corpus. Its columns
-are:
+The benchmark tools run isolated AssemblyCpp calculations, verify their
+assembly indices, and report wall time and program-reported `std::clock` ticks.
 
-| Column | Meaning |
-| --- | --- |
-| `name` | Unique CLI-safe case name. |
-| `input` | Molfile or native graph path, relative to this directory unless absolute. |
-| `expected_assembly_index` | Result required from every warm-up and measured calculation. |
-| `expectation` | `reviewed` for regression-manifest values or `provisional` for profiling-only guards. |
-| `suites` | Comma-separated membership in `quick`, `full`, `profile`, or `scaling`. |
-| `workload` | Short description printed in the summary. |
+## Quick start
 
-The loader rejects malformed rows, duplicate names, unknown suites or
-expectation statuses, missing inputs, and non-integer expected results.
-
-## Suites
-
-- `quick` covers an acyclic repeated chain, an automorphism-heavy graph, dense
-  and symmetric cyclic graphs, and the existing ketoconazole baseline. One
-  warm-up plus five rounds normally finishes in about a second.
-- `full` contains the quick cases plus ten reviewed inputs covering native graph
-  parsing and larger labelled or ring-rich molecules.
-- `profile` contains a second-scale tree search and multi-second macrocycle
-  searches. Except for ketoconazole, their expectations are provisional
-  benchmark guards rather than reviewed regression expectations.
-- `scaling` combines two complementary series. The cumulative amino-acid series
-  grows from 18 atoms and 16 bonds to 68 atoms and 60 bonds; every larger input
-  contains the preceding graph and one additional component. A homogeneous-path
-  boundary series covers 63, 64, 65, 127, 128, and 129 bonds. Those cases cross
-  the residual-decomposition cache's scalar-to-wide key boundary and the first
-  two 64-bit mask-word boundaries without introducing an exponential graph
-  family. Wide caching remains eligible at later word boundaries because masks
-  now grow to the processed graph's width rather than stopping at 512 bits. The
-  expectations are provisional benchmark guards.
-
-Build the optimized candidate and telemetry sibling from the repository root:
+From the repository root:
 
 ```bash
 cmake --preset performance
 cmake --build --preset performance
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp \
+  --suite quick
 ```
 
-Run the scaling series with:
+Use `--list-cases` to inspect the selected cases and
+`python benchmarks/benchmark.py --help` for all runner options.
+
+## Corpus
+
+`cases.tsv` is the maintained benchmark manifest.
+
+| Column | Meaning |
+| --- | --- |
+| `name` | Unique command-line-safe case name. |
+| `input` | Input path, relative to this directory unless absolute. |
+| `expected_assembly_index` | Required result for every run. |
+| `expectation` | `reviewed` regression value or `provisional` benchmark guard. |
+| `suites` | Comma-separated suite names. |
+| `workload` | Short label shown in reports. |
+
+Malformed rows, duplicate names, missing files, and unknown suite or expectation
+values are rejected.
+
+| Suite | Scope |
+| --- | --- |
+| `quick` | Short, varied regression workloads for routine checks. |
+| `full` | All quick cases plus larger reviewed inputs. |
+| `profile` | Longer search-heavy inputs; most expectations are provisional. |
+| `scaling` | Cumulative amino-acid and 64-bit mask-boundary series. |
+
+The largest scaling case has 100 bonds and can take several minutes and over
+1 GiB of memory. For a smoke run, use `--runs 1 --warmup 0`.
+
+## Common runs
+
+Run a suite and save the raw samples and summary:
 
 ```bash
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp --suite scaling
+  --executable build/performance/AssemblyCpp \
+  --suite full \
+  --json-output build/full.json
 ```
 
-Collect scaling telemetry with one additional untimed candidate run per case:
+Run one custom input:
 
 ```bash
-python benchmarks/benchmark.py --telemetry \
+python benchmarks/benchmark.py \
+  --executable build/performance/AssemblyCpp \
+  --input unitTests/sucrose.mol \
+  --expected 8
+```
+
+Collect one additional, untimed telemetry run per case:
+
+```bash
+python benchmarks/benchmark.py \
   --executable build/performance/AssemblyCpp \
   --telemetry-executable build/performance/AssemblyCppTelemetry \
   --suite scaling \
-  --json-output scaling.json
+  --telemetry \
+  --json-output build/scaling.json
 ```
 
-The `performance` preset creates the ordinary timed candidate and its
-instrumented sibling used above. The diagnostic run is performed after all
-timed rounds and is excluded from wall-clock, algorithm-clock, and paired
-speedup aggregates. In paired mode only the separate telemetry executable
-receives the diagnostic run, so an older baseline can still be used for
-timings. As an alternative, the runner's `--build` option creates both files
-directly at the requested executable path.
+Telemetry is excluded from timing aggregates. It records graph size, retained
+masks, matching and canonicalisation activity, cache rates, phase clock ticks,
+and phase memory. Parallel telemetry additionally records rank/thread topology,
+dynamic branch leases, MPI rank partitions, root-branch coverage, depth-two
+task transfers, incumbent warm starts, steady-clock worker timing, and all 31
+raw counters per worker plus their exact aggregate.
+Parallel phase memory is disabled because `/proc` peak resets are process-wide.
+A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
+critical parallel-region wall time; worker elapsed and busy values are sums,
+and busy is instrumented phase coverage rather than CPU utilization. Legacy VF2
+counters remain in the schema but are zero with the exact cyclic canonicaliser.
 
-## LTO and PGO candidates
+## Paired comparisons
 
-`performance-lto` adds link-time optimization to the x86-64-v3 performance
-configuration. `performance-pgo` adds a GCC profile trained by the maintained
-corpus as well as LTO. Build them from the repository root with:
+Keep the previous executable and pass it as the baseline:
+
+```bash
+python benchmarks/benchmark.py \
+  --baseline-executable build/AssemblyCpp-before \
+  --executable build/performance/AssemblyCpp \
+  --suite quick \
+  --json-output build/quick.json
+```
+
+Baseline and candidate runs are adjacent and alternate AB/BA order. Paired mode
+defaults to six rounds. A speedup above `1.0` means the candidate is faster.
+Use an even run count and compare on the same idle, pinned host.
+
+`check_speedups.py` validates a complete four-suite promotion set:
+
+```bash
+python benchmarks/check_speedups.py \
+  build/quick.json \
+  build/full.json \
+  build/profile.json \
+  build/scaling.json
+```
+
+The gate requires every case clock median and every suite round-total wall and
+clock median to exceed `1.0`. It recalculates medians from raw paired samples
+and rejects stale corpus or executable fingerprints. Shared CI does not enforce
+timing thresholds because host contention makes them unreliable.
+
+Promotion reports require 100 rounds for `quick` and `full`, 6 for `profile`,
+and 30 for `scaling`.
+
+## LTO and PGO
+
+Build the LTO candidate with:
 
 ```bash
 cmake --preset performance-lto
 cmake --build --preset performance-lto
+```
 
+PGO requires GCC. Generate, train, and consume the profile in order:
+
+```bash
 cmake --preset pgo-generate
 cmake --build --preset pgo-train
 cmake --preset performance-pgo
 cmake --build --preset performance-pgo
 ```
 
-The `pgo-train` target reads the strict, complete weight mapping in
-`pgo-training.tsv`. Each training calculation runs serially in isolation and
-must reproduce its expected assembly index. The weights deliberately emphasize
-the short cases that can otherwise be lost among the long profile workloads.
-Running the target again removes existing `.gcda` files first, so a profile
-cannot silently mix code generations. A completion record is written atomically
-only after the full schedule succeeds and fingerprints the weights, manifest,
-and every input; the profile-use preset rejects partial, interrupted, or stale
-training data.
+`pgo-training.tsv` assigns a repetition count to every corpus case. Training
+clears old GCC data, verifies each result, and records fingerprints for the
+weights, manifest, and inputs. The profile-use build rejects incomplete or
+stale training data. Re-run all four benchmark suites before promoting an LTO
+or PGO build.
 
-Keep an unchanged `performance` executable as the baseline and compare every
-suite before promoting either optimization preset. This Linux example pins all
-work to one known performance core; choose an appropriate core for the host:
+## Parallel scaling
+
+The `parallel` preset builds serial, OpenMP, MPI, and hybrid executables plus a
+telemetry-enabled sibling for each parallel topology:
 
 ```bash
-for candidate in performance-lto performance-pgo; do
-  taskset -c 2 python benchmarks/benchmark.py \
-    --baseline-executable build/performance/AssemblyCpp \
-    --executable "build/${candidate}/AssemblyCpp" \
-    --suite quick --runs 100 \
-    --json-output "build/${candidate}-quick.json"
-  taskset -c 2 python benchmarks/benchmark.py \
-    --baseline-executable build/performance/AssemblyCpp \
-    --executable "build/${candidate}/AssemblyCpp" \
-    --suite full --runs 100 \
-    --json-output "build/${candidate}-full.json"
-  taskset -c 2 python benchmarks/benchmark.py \
-    --baseline-executable build/performance/AssemblyCpp \
-    --executable "build/${candidate}/AssemblyCpp" \
-    --suite profile --runs 6 \
-    --json-output "build/${candidate}-profile.json"
-  taskset -c 2 python benchmarks/benchmark.py \
-    --baseline-executable build/performance/AssemblyCpp \
-    --executable "build/${candidate}/AssemblyCpp" \
-    --suite scaling --runs 30 \
-    --json-output "build/${candidate}-scaling.json"
-  python benchmarks/check_speedups.py \
-    "build/${candidate}-quick.json" \
-    "build/${candidate}-full.json" \
-    "build/${candidate}-profile.json" \
-    "build/${candidate}-scaling.json"
-done
+cmake --preset parallel
+cmake --build --preset parallel
 ```
 
-Use an even run count so AB and BA ordering remains balanced. The gate requires
-every case's paired algorithm-clock median and every suite's paired round-total
-wall and clock medians to exceed 1.0. It recomputes those medians from the raw
-paired samples and rejects reports whose manifest or input fingerprints no
-longer match the maintained corpus. If a small case fails, repeat it with at
-least 100 rounds. For a persistent PGO regression, increase the relevant
-training weight, regenerate the profile, and repeat all suites; an LTO-only
-failure instead requires flag tuning and the same full revalidation. Timing
-remains a host-pinned manual release gate rather than a shared-CI assertion
-because contention would make such a check unreliable. A failed gate blocks
-promotion or default use, but does not prevent keeping the corresponding preset
-available as an explicit experimental opt-in.
+Example launch commands:
 
-The workload column puts atoms, bonds, component counts, cache eligibility, and
-active mask-word counts next to the relevant timing statistics. Algorithm clock
-ticks are the clearest cost signal for the smaller inputs because wall time also
-includes fixed process-startup and parsing costs. The two series measure a
-cumulative changing-composition workload and isolated representation
-boundaries; neither should be interpreted as an asymptotic complexity
-measurement for arbitrary molecules.
+```bash
+OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
+  ./build/parallel/AssemblyCppOMP molecule.mol --pathway=0
 
-## Measurement method
+mpirun --map-by slot --bind-to core -n 4 \
+  ./build/parallel/AssemblyCppMPI molecule.mol --pathway=0
 
-All calculations are serial and run in isolated temporary directories. Within
-each round the first case is rotated to spread systematic order effects. In a
-paired comparison, each baseline/candidate pair is adjacent; odd rounds use AB
-order and even rounds use BA order. Paired mode defaults to six measured rounds
-so each executable occupies each position equally often; explicitly requesting
-an odd count emits a warning.
+OMP_NUM_THREADS=2 OMP_PLACES=cores OMP_PROC_BIND=close \
+  mpirun --map-by slot:PE=2 --bind-to core -n 2 \
+  ./build/parallel/AssemblyCppHybrid molecule.mol --pathway=0
 
-Wall time includes process startup and input parsing. The program-reported
-`std::clock` values begin after parsing and remain in platform-specific ticks;
-for the shortest cases, process overhead can dominate wall time.
+OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
+  ./build/parallel/AssemblyCppOMPTelemetry molecule.mol \
+    --pathway=0 --telemetry=1
 
-The unpaired human-readable report gives median, MAD, p95, and raw clock-domain
-medians. Paired reports calculate each baseline/candidate ratio before taking
-the median, rather than dividing independent medians. Their primary corpus
-result is the median paired round-total speedup, which naturally weights cases
-by duration and is less sensitive to noise in very short processes. A
-descriptive equal-weight geometric mean is also reported, with MAD; treat it
-cautiously when a suite contains millisecond-scale cases.
+mpirun --map-by slot --bind-to core -n 4 \
+  ./build/parallel/AssemblyCppMPITelemetry molecule.mol \
+    --pathway=0 --telemetry=1
+```
 
-JSON schema version 2 retains every timed sample, case metadata, aggregate
-summaries, the deterministic schedule, platform information, executable,
-manifest, and input fingerprints, and optional candidate telemetry. Telemetry
-includes the raw
-processed graph size, retained masks, matching visits, canonicalisation activity,
-legacy VF2 counters, canonical/residual/assembly/pair-bound cache rates, and
-absolute resident peak memory for setup, initial enumeration, DAG conversion,
-assembly search, and output. A cache rate is `null` when no lookup occurred.
+These placement flags use Open MPI syntax. Each process enumerates the root
+once, then shares an immutable processed graph, runtime DAG, and serialized
+root-job table. Workers own their fragmentation scratch and search caches and
+dynamically lease rank-local job indices; MPI ranks retain deterministic modulo
+partitions so no job is duplicated across processes. Wide masks are rebuilt
+inside the receiving worker from serialized words.
 
-`retained_masks` counts unique initial-DAG masks accepted within the enumeration
-limit, including one-edge roots. `matching_visits` counts valid materialised
-duplicate pairs delivered to the search visitor. `canonicalisation_calls`
-includes canonical-mask cache hits. `vf2_calls` and `vf2_matches` are retained for
-schema compatibility and remain zero now that exact cyclic canonical codes replace
-VF2. The residual lookup hit rate excludes first-occurrence,
-small-residual, and disabled-cache bypasses; the request hit rate includes them.
-Wide caches sample up to 6,144 residuals and return to direct decomposition when
-no hit demonstrates reuse, so unique workloads do not keep paying lookup cost.
-Fingerprints are captured before measurement and verified afterward so a binary
-replaced during a run cannot be misattributed. No outliers are removed
-automatically, and no timing result is used as a CI pass/fail threshold.
+The default root scheduler uses fixed leases of four for compact frontiers and
+guided leases for larger ones. It assigns the promising leading frontier in
+groups of at most four, keeps about sixteen claimable root tasks per worker
+through the bulk, and shrinks toward single jobs at the tail. Root jobs take
+priority over transferred work. When the initial root frontier is markedly
+below eight jobs per local worker, or half the local workers remain idle behind
+active root work, a root search may expose immediate children to a rank-local
+depth-two queue. Frontiers that begin with at least sixty-four roots per worker
+also arm donation when their unclaimed tail drops below eight per worker, so a
+final root can hand off its first child before idleness is observed. The queue
+targets sixteen and is capped at thirty-two tasks per local worker. The largest
+initial duplicate is evaluated first to publish a valid first-step incumbent
+before concurrent searching begins. Depth-two transfer is disabled in an
+MPI-only rank with one local worker, but remains available within hybrid ranks.
 
-Run the benchmark-runner tests with:
+Set the positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
+fixed root lease size instead of guided sizing. Only MPI rank zero writes
+output.
+
+The runner accepts separate launchers and environment variables for each role:
+
+```bash
+python benchmarks/benchmark.py \
+  --baseline-executable build/parallel/AssemblyCpp \
+  --baseline-launcher "taskset -c 0" \
+  --executable build/parallel/AssemblyCppOMP \
+  --candidate-launcher "taskset -c 0,2,4,6" \
+  --candidate-env OMP_NUM_THREADS=4 \
+  --suite profile --runs 6 \
+  --json-output build/parallel-omp-4.json
+```
+
+Set `OMP_NUM_THREADS` explicitly for every OpenMP or hybrid report. On POSIX, a
+timeout or interrupt terminates the launcher's process group.
+
+Compare topology reports with:
+
+```bash
+python benchmarks/check_parallel_scaling.py \
+  omp:1:build/parallel-omp-1.json \
+  omp:4:build/parallel-omp-4.json \
+  mpi:4:build/parallel-mpi-4.json \
+  hybrid:8:build/parallel-hybrid-8.json
+```
+
+Each value is `LABEL:WORKERS:PATH`. Reports must use the same suite, corpus, and
+single-worker baseline configuration. The command reports paired wall-time
+speedup and efficiency; add `--require-all-faster` to fail on a case at or below
+`1.0`. Algorithm clock ticks are not compared across OpenMP and MPI layouts.
+
+## Measurement notes
+
+- Cases run serially in isolated temporary directories; launchers may add
+  workers within a calculation.
+- Case order rotates between rounds. Paired runs alternate AB and BA order.
+- Wall time includes startup and parsing. `std::clock` starts after parsing and
+  is platform-specific.
+- Reports show median, median absolute deviation, p95, and raw samples. No
+  outliers are removed automatically.
+- JSON schema 2 stores schedules, platform data, executable and input
+  fingerprints, summaries, raw samples, and optional telemetry.
+- Scaling suites describe their selected workloads; they do not establish
+  asymptotic complexity for arbitrary molecules.
+
+Run the benchmark-tool tests with:
 
 ```bash
 python -m unittest discover -s benchmarks -p 'test_*.py'
+```
+
+Build and run the solver-level parallel parity and telemetry checks with:
+
+```bash
+cmake --preset parallel-tests
+cmake --build --preset parallel-tests
+ctest --preset parallel-tests
 ```

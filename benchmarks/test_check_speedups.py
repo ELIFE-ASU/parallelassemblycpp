@@ -26,6 +26,8 @@ class CheckSpeedupsTests(unittest.TestCase):
         clock_speedup: float = 1.03,
         candidate_hash: str = "candidate",
         baseline_hash: str = "baseline",
+        candidate_execution: dict[str, object] | None = None,
+        baseline_execution: dict[str, object] | None = None,
         runs: int | None = None,
         comparison_order: str = check_speedups.PAIRED_COMPARISON_ORDER,
     ) -> Path:
@@ -99,6 +101,12 @@ class CheckSpeedupsTests(unittest.TestCase):
                 "candidate": {"sha256": candidate_hash},
                 "baseline": {"sha256": baseline_hash},
             },
+            "execution": {
+                "candidate": candidate_execution
+                or {"launcher": [], "environment": {}},
+                "baseline": baseline_execution
+                or {"launcher": [], "environment": {}},
+            },
             "corpus": benchmark.benchmark_corpus_metadata(
                 self.manifest, selected_cases
             ),
@@ -127,7 +135,11 @@ class CheckSpeedupsTests(unittest.TestCase):
                 status = check_speedups.main([str(path) for path in paths])
 
             self.assertEqual(status, 0)
-            self.assertIn("PASS", stdout.getvalue())
+            self.assertEqual(
+                stdout.getvalue(),
+                "PASS: all case clock medians and suite wall/clock medians "
+                "exceed 1.000000\n",
+            )
 
     def test_rejects_case_clock_regression(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -207,7 +219,53 @@ class CheckSpeedupsTests(unittest.TestCase):
                 status = check_speedups.main([str(path) for path in paths])
 
             self.assertEqual(status, 2)
-            self.assertIn("must be different", stderr.getvalue())
+            self.assertIn("must differ", stderr.getvalue())
+
+    def test_accepts_same_binary_with_distinct_execution_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            paths = [
+                self.write_result(
+                    directory,
+                    suite,
+                    candidate_hash="same-binary",
+                    baseline_hash="same-binary",
+                    candidate_execution={
+                        "launcher": [],
+                        "environment": {"OMP_NUM_THREADS": "4"},
+                    },
+                    baseline_execution={
+                        "launcher": [],
+                        "environment": {"OMP_NUM_THREADS": "1"},
+                    },
+                )
+                for suite in benchmark.KNOWN_SUITES
+            ]
+
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                status = check_speedups.main([str(path) for path in paths])
+
+            self.assertEqual(status, 0)
+            self.assertIn("PASS", stdout.getvalue())
+
+    def test_rejects_mixed_execution_configs_across_suites(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            paths = self.write_all_results(directory)
+            paths[1] = self.write_result(
+                directory,
+                "full",
+                candidate_execution={
+                    "launcher": [],
+                    "environment": {"OMP_NUM_THREADS": "4"},
+                },
+            )
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = check_speedups.main([str(path) for path in paths])
+
+            self.assertEqual(status, 2)
+            self.assertIn("execution configurations", stderr.getvalue())
 
     def test_rejects_undersampled_or_unbalanced_results(self) -> None:
         scenarios = (

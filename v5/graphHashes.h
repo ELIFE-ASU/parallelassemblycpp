@@ -1,3 +1,16 @@
+#include <array>
+#include <atomic>
+#include <bit>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <span>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 /**
  * @brief Hashes a molecular graph
  */
@@ -342,9 +355,177 @@ struct canonicalisationGraphWorkspace
     }
 };
 
-// Enumeration, canonical maps, and interners are already process-global and
-// single-threaded; the flat miss-path storage follows the same lifecycle.
-inline canonicalisationGraphWorkspace canonicalisationGraphScratch;
+/** A cheap, deterministic isomorphism invariant used only to select a shard
+ * bucket. Exact graphHash comparison still decides equality. */
+[[nodiscard]] std::size_t sharedCanonicalInvariantHash(
+    const flatCanonGraph &graph
+) noexcept
+{
+    auto mix = [](std::uint64_t value) noexcept
+    {
+        value ^= value >> 30;
+        value *= UINT64_C(0xbf58476d1ce4e5b9);
+        value ^= value >> 27;
+        value *= UINT64_C(0x94d049bb133111eb);
+        value ^= value >> 31;
+        return value;
+    };
+
+    std::uint64_t vertexSum = 0;
+    std::uint64_t vertexXor = 0;
+    for (std::size_t vertex = 0; vertex < graph.labels.size(); ++vertex)
+    {
+        std::uint64_t bondSum = 0;
+        std::uint64_t bondXor = 0;
+        const auto neighbours = graph.neighbours(vertex);
+        for (const flatCanonAdjacentEdge &edge : neighbours)
+        {
+            const std::uint64_t token = mix(edge.bondType);
+            bondSum += token;
+            bondXor ^= std::rotl(
+                token,
+                static_cast<int>(token & UINT64_C(63))
+            );
+        }
+        std::uint64_t token = mix(graph.labels[vertex]);
+        token = mix(token ^ neighbours.size());
+        token = mix(token ^ bondSum);
+        token = mix(token ^ bondXor);
+        vertexSum += token;
+        vertexXor ^= std::rotl(
+            token,
+            static_cast<int>(token & UINT64_C(63))
+        );
+    }
+
+    std::uint64_t result = mix(graph.labels.size());
+    result = mix(result ^ graph.edgeCount);
+    result = mix(result ^ vertexSum);
+    result = mix(result ^ vertexXor);
+    return static_cast<std::size_t>(result);
+}
+
+/**
+ * Process-shared canonical-ID allocator with exact out-of-lock comparisons.
+ *
+ * The shared representatives are serialized source masks, not worker-owned
+ * graphHash objects: tree and peeled-core forms contain worker-local interner
+ * IDs. A worker snapshots one immutable representative under a shard lock,
+ * reconstructs and canonicalises it in its own interner generation after
+ * releasing the lock, and returns only after exact graphHash equality. If no
+ * representative matches, insertion is checked again under the lock. Every
+ * worker first checks the identical producer-seeded graphHashMap, so this
+ * registry needs representatives only for post-seed classes learned by
+ * workers, and its global ID sequence begins after that dense seed.
+ */
+class sharedCanonicalIdRegistry
+{
+public:
+    static constexpr std::size_t shardCount = 64;
+
+    explicit sharedCanonicalIdRegistry(std::size_t firstUnusedId):
+        nextId(firstUnusedId)
+    {
+        if (
+            firstUnusedId >
+            static_cast<std::size_t>(std::numeric_limits<int>::max())
+        ) throw std::length_error("canonical ID space is exhausted");
+    }
+
+    sharedCanonicalIdRegistry(const sharedCanonicalIdRegistry &) = delete;
+    sharedCanonicalIdRegistry &operator=(
+        const sharedCanonicalIdRegistry &
+    ) = delete;
+
+    template<typename EqualRepresentative>
+    int findOrInsert(
+        std::size_t invariantHash,
+        std::vector<std::uint64_t> words,
+        EqualRepresentative &&equalRepresentative
+    )
+    {
+        shard &selected = shards[shardIndex(invariantHash)];
+        std::size_t checked = 0;
+        while (true)
+        {
+            const representative *candidate = nullptr;
+            {
+                std::lock_guard lock(selected.mutex);
+                auto &bucket = selected.buckets[invariantHash];
+                if (checked == bucket.size())
+                {
+                    bucket.push_back({
+                        std::move(words),
+                        unknownCanonicalId
+                    });
+                    std::uint64_t allocated = nextId.load(
+                        std::memory_order_relaxed
+                    );
+                    while (true)
+                    {
+                        if (
+                            allocated > static_cast<std::uint64_t>(
+                                std::numeric_limits<int>::max()
+                            )
+                        )
+                        {
+                            bucket.pop_back();
+                            throw std::length_error(
+                                "canonical ID space is exhausted"
+                            );
+                        }
+                        if (nextId.compare_exchange_weak(
+                            allocated,
+                            allocated + 1,
+                            std::memory_order_relaxed
+                        )) break;
+                    }
+                    bucket.back().canonicalId = static_cast<int>(allocated);
+                    return static_cast<int>(allocated);
+                }
+                candidate = std::addressof(bucket[checked++]);
+            }
+
+            // deque element addresses remain stable as concurrent insertions
+            // append new immutable representatives to this bucket.
+            if (equalRepresentative(candidate->words))
+                return candidate->canonicalId;
+        }
+    }
+
+private:
+    struct representative
+    {
+        std::vector<std::uint64_t> words;
+        int canonicalId;
+    };
+
+    struct alignas(64) shard
+    {
+        std::mutex mutex;
+        std::unordered_map<
+            std::size_t,
+            std::deque<representative>
+        > buckets;
+    };
+
+    std::array<shard, shardCount> shards;
+    std::atomic<std::uint64_t> nextId;
+
+    static std::size_t shardIndex(std::size_t hash) noexcept
+    {
+        static_assert((shardCount & (shardCount - 1)) == 0);
+        return hash & (shardCount - 1);
+    }
+};
+
+// Canonical maps, interners, and miss-path scratch are worker-local in OpenMP
+// builds and calculation-local otherwise.
+inline ASSEMBLYCPP_SEARCH_LOCAL canonicalisationGraphWorkspace
+    canonicalisationGraphScratch;
+
+inline ASSEMBLYCPP_SEARCH_LOCAL sharedCanonicalIdRegistry
+    *sharedCanonicalRegistry = nullptr;
 
 void prepareCanonicalisationGraph(
     const molGraph &source,
@@ -355,10 +536,22 @@ void prepareCanonicalisationGraph(
 }
 
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
-std::unordered_map<graphHash, pii, graphHashHasher> graphHashMap;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+    graphHash,
+    pii,
+    graphHashHasher
+> graphHashMap;
 #else
-std::unordered_map<graphHash, pii> graphHashMap;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, pii> graphHashMap;
 #endif
+
+std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
+{
+    std::vector<std::uint64_t> words(EdgeMask::activeWordCount());
+    for (std::size_t word = 0; word < words.size(); ++word)
+        words[word] = mask.activeWord(word);
+    return words;
+}
 
 /** Keep the allocation-heavy miss path out of the cache-hit instruction body. */
 [[gnu::noinline]] int canoniseCacheMiss(EdgeMask &mask)
@@ -377,11 +570,55 @@ std::unordered_map<graphHash, pii> graphHashMap;
     );
     graphHash candidate(graph, isCyclic);
 
-    const int nextCanonicalIndex = static_cast<int>(graphHashMap.size());
-    auto [graphEntry, inserted] = graphHashMap.try_emplace(
-        std::move(candidate),
-        pii{nextCanonicalIndex, 1}
-    );
+    auto graphEntry = graphHashMap.find(candidate);
+    bool inserted = graphEntry == graphHashMap.end();
+    if (inserted)
+    {
+        int canonicalId;
+        if (sharedCanonicalRegistry == nullptr)
+        {
+            if (
+                graphHashMap.size() >
+                static_cast<std::size_t>(std::numeric_limits<int>::max())
+            ) throw std::length_error("canonical ID space is exhausted");
+            canonicalId = static_cast<int>(graphHashMap.size());
+        }
+        else
+        {
+            const std::size_t invariantHash =
+                sharedCanonicalInvariantHash(graph);
+            canonicalId = sharedCanonicalRegistry->findOrInsert(
+                invariantHash,
+                serializeCanonicalMask(mask),
+                [&](const std::vector<std::uint64_t> &representativeWords)
+                {
+                    EdgeMask representative = EdgeMask::fromActiveWords(
+                        representativeWords.data()
+                    );
+                    bool representativeIsCyclic = false;
+                    const flatCanonGraph &representativeGraph =
+                        canonicalisationGraphScratch.build(
+                            targetMolecule,
+                            univEdgeList,
+                            representative,
+                            representativeIsCyclic
+                        );
+                    graphHash representativeHash(
+                        representativeGraph,
+                        representativeIsCyclic
+                    );
+                    return candidate == representativeHash;
+                }
+            );
+        }
+        auto localInsertion = graphHashMap.try_emplace(
+            std::move(candidate),
+            pii{canonicalId, 1}
+        );
+        graphEntry = localInsertion.first;
+        if (!localInsertion.second)
+            throw std::logic_error("worker canonical insertion raced locally");
+    }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]
     {

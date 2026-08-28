@@ -44,8 +44,8 @@ namespace graphioDetail
         const char *description
     )
     {
-        // Formatted integer extraction accepted an explicit positive sign in
-        // the legacy parser, so retain that valid spelling around from_chars.
+        // The legacy parser accepted an explicit positive sign, so preserve it
+        // when using from_chars.
         if (!token.empty() && token.front() == '+') token.remove_prefix(1);
         long long value = 0;
         const char *begin = token.data();
@@ -71,8 +71,7 @@ namespace graphioDetail
         if (fields.size() != 1)
         {
             throw std::runtime_error(
-                "invalid native graph: graph size line must contain exactly "
-                "one integer"
+                "invalid native graph: graph size line must contain one integer"
             );
         }
 
@@ -83,8 +82,8 @@ namespace graphioDetail
         )
         {
             throw std::runtime_error(
-                "invalid native graph: graph size is outside the supported "
-                "short-index range"
+                "invalid native graph: graph size must be between 0 and " +
+                std::to_string(std::numeric_limits<short>::max())
             );
         }
         return static_cast<std::size_t>(value);
@@ -99,7 +98,7 @@ namespace graphioDetail
         if (fields.size() % 2 != 0)
         {
             throw std::runtime_error(
-                "invalid native graph: edge endpoint line must contain "
+                "invalid native graph: edge list must contain "
                 "complete endpoint pairs"
             );
         }
@@ -143,7 +142,7 @@ namespace graphioDetail
             {
                 throw std::runtime_error(
                     "invalid native graph: vertex degree exceeds the supported "
-                    "short bond-index range"
+                    "maximum of " + std::to_string(maximumDegree)
                 );
             }
             result.emplace_back(
@@ -157,13 +156,14 @@ namespace graphioDetail
     inline void requireCardinality(
         std::size_t actual,
         std::size_t expected,
-        const char *description
+        const char *singularDescription
     )
     {
         if (actual == expected) return;
         throw std::runtime_error(
             std::string("invalid native graph: expected ") +
-            std::to_string(expected) + ' ' + description + ", found " +
+            std::to_string(expected) + ' ' + singularDescription +
+            (expected == 1 ? "" : "s") + ", found " +
             std::to_string(actual)
         );
     }
@@ -194,10 +194,10 @@ inline void graphio(std::istream &ifs, molGraph &mg)
     std::vector<std::string> atomLabels = graphioDetail::tokens(atomLine);
     const std::vector<std::string> bondFields = graphioDetail::tokens(bondLine);
     graphioDetail::requireCardinality(
-        atomLabels.size(), vertexCount, "atom labels"
+        atomLabels.size(), vertexCount, "atom label"
     );
     graphioDetail::requireCardinality(
-        bondFields.size(), edgeList.size(), "bond labels"
+        bondFields.size(), edgeList.size(), "bond label"
     );
 
     std::vector<short> bondLabels;
@@ -211,8 +211,8 @@ inline void graphio(std::istream &ifs, molGraph &mg)
         )
         {
             throw std::runtime_error(
-                "invalid native graph: bond label is outside the supported "
-                "nonnegative short range"
+                "invalid native graph: bond label must be between 0 and " +
+                std::to_string(std::numeric_limits<short>::max())
             );
         }
         bondLabels.push_back(static_cast<short>(value));
@@ -234,7 +234,7 @@ inline void graphio(std::istream &ifs, molGraph &mg)
     {
         const std::vector<std::string> nameFields = graphioDetail::tokens(nameLine);
         const std::string graphName = nameFields.empty() ? "" : nameFields.front();
-        std::cout << "Name of graph is: " << graphName << '\n';
+        std::cout << "Native graph: " << graphName << '\n';
         parsed.printToCout();
     }
     mg = std::move(parsed);

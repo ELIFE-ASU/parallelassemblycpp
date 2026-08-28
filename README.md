@@ -1,170 +1,33 @@
 # AssemblyCpp v5
 
-https://arxiv.org/abs/2410.09100#
+AssemblyCpp calculates molecular assembly indices and can recover assembly
+pathways. It provides a command-line tool and a reusable C++20 library.
 
-This repository contains the C++ implementation of v5 of the assembly algorithm,
-with command-line and reusable C++ library interfaces.
+This repository implements the algorithm described by Ian Seet, Keith Y.
+Patarroyo, Gage Siebert, Sara I. Walker, and Leroy Cronin in [*Rapid Exploration
+of Assembly Chemical Space of Molecular Graphs*](https://arxiv.org/abs/2410.09100).
 
-School of Chemistry, The University of Glasgow, University Avenue, Glasgow G12 8QQ, United Kingdom
+## Quick start
 
-Authors Ian Seet, Leroy Cronin
-
-
-## Build
-
-AssemblyCpp uses CMake 3.25 or newer, Ninja, and a C++20 compiler. The release
-preset builds a portable CPU baseline by default:
+Requirements: CMake 3.25 or newer, Ninja, and a C++20 compiler.
 
 ```bash
 cmake --preset release
 cmake --build --preset release
-./build/release/AssemblyCpp --help
+./build/release/AssemblyCpp unitTests/alanine.mol
 ```
 
-For an isolated development environment, install
-[Miniconda](https://docs.conda.io/projects/miniconda/en/latest/) or another
-Conda distribution, then run:
+The command writes `unitTests/alanineOut` and, by default,
+`unitTests/alaninePathway`.
+
+To use the supplied Conda environment:
 
 ```bash
 conda env create --file environment.yml
 conda activate assemblycpp-v5
-cmake --preset release
-cmake --build --preset release
 ```
 
-The environment provides CMake, Ninja, a C++ compiler, and Python. Recreate it
-after changing `environment.yml` with:
-
-```bash
-conda env remove --name assemblycpp-v5
-conda env create --file environment.yml
-```
-
-The performance preset preserves the former x86-64-v3 and POPCNT optimization
-as an explicit opt-in. It also builds a separately instrumented executable:
-
-```bash
-cmake --preset performance
-cmake --build --preset performance
-./build/performance/AssemblyCpp --help
-./build/performance/AssemblyCppTelemetry --help
-```
-
-Do not run the performance binaries on processors that lack the x86-64-v3
-feature level. Portable and performance builds never mix in the same build
-directory.
-
-Link-time and profile-guided optimization are separate opt-in performance
-presets. The LTO build keeps the same x86-64-v3 baseline:
-
-```bash
-cmake --preset performance-lto
-cmake --build --preset performance-lto
-./build/performance-lto/AssemblyCpp --help
-```
-
-The PGO preset is currently GCC-only and uses a weighted version of every case
-in `benchmarks/cases.tsv`. Generate a fresh profile, train it, and then build the
-profile-use binary in that order:
-
-```bash
-cmake --preset pgo-generate
-cmake --build --preset pgo-train
-cmake --preset performance-pgo
-cmake --build --preset performance-pgo
-./build/performance-pgo/AssemblyCpp --help
-```
-
-The two PGO builds share `build/pgo-profiles`, but keep separate object trees.
-The training target clears stale GCC data, validates the assembly index of every
-run, applies the repetitions in `benchmarks/pgo-training.tsv`, and writes a
-completion record only after every run succeeds. The profile-use configure step
-rejects missing or partial training data and changes to the recorded weights,
-manifest, or corpus inputs. Re-run all four benchmark suites after changing the
-weights or corpus. PGO and LTO are not enabled by the portable release, CI, or
-ordinary performance presets, and none of the presets use `-march=native`.
-
-Search telemetry is compile-time opt-in so ordinary search loops contain no
-counter branches. `--telemetry=1` is available only in
-`AssemblyCppTelemetry`; the standard executable reports it as an unknown
-option.
-
-### Install and package
-
-Install the portable executable, static library, public header, and documentation
-to a chosen prefix:
-
-```bash
-cmake --install build/release --prefix build/install
-./build/install/bin/AssemblyCpp --help
-```
-
-Create a platform-specific binary archive and a source archive with SHA-256
-checksum sidecars:
-
-```bash
-cpack --preset release
-cmake --build build/release --target package_source
-```
-
-CMake 4.3 or newer is required when producing release archives so CPack can
-normalize archive ownership to root; configuring, building, and installing do
-not require that packaging-only feature.
-
-Create source archives from a clean checkout because CPack packages the working
-tree as well as tracked files.
-
-Binary archive names state the operating system, architecture, and CPU
-baseline. They are still specific to the platform and toolchain used to build
-them; `portable` describes the CPU instruction baseline, not a universal
-binary. CI builds its checked Linux archive on Ubuntu 22.04 with the system
-compiler. Packages include the README and the CC BY-NC 4.0 license.
-
-### C++ library and in-process batches
-
-The CMake build exports the `AssemblyCpp::Library` target. An installed package
-can be consumed with:
-
-```cmake
-find_package(AssemblyCpp 5 CONFIG REQUIRED)
-target_link_libraries(my_program PRIVATE AssemblyCpp::Library)
-```
-
-`calculate` and `calculateMolfile` return assembly indices and status directly
-without creating `INPUTOut` or pathway files. `calculateBatch` performs an
-ordered sequence in one process, avoiding process startup for short molecules:
-
-```cpp
-#include <assemblycpp.h>
-
-#include <iostream>
-#include <string>
-#include <vector>
-
-int main()
-{
-    const std::vector<std::string> inputs = {
-        "molecules/icosane.mol",
-        "molecules/sucrose.mol",
-    };
-    for (const assemblycpp::CalculationResult& result :
-         assemblycpp::calculateBatch(inputs))
-    {
-        if (!result)
-        {
-            std::cerr << result.input << ": " << result.error << '\n';
-            continue;
-        }
-        std::cout << result.input << '\t' << result.assemblyIndex << '\n';
-    }
-}
-```
-
-The batch interface is sequential. Search storage is currently process-global,
-so library calls are reusable but not thread-safe; use separate processes for
-concurrent calculations. A runtime limit applies independently to each item.
-
-## Running AssemblyCpp
+## Command line
 
 ```text
 AssemblyCpp INPUT [OPTIONS]
@@ -172,115 +35,141 @@ AssemblyCpp [OPTIONS] INPUT
 AssemblyCpp --help
 ```
 
-`INPUT` can be either:
-
-- A molfile path, with or without its `.mol` suffix. For example,
-  `unitTests/alanine` and `unitTests/alanine.mol` read the same file.
-- A file in AssemblyCpp's native graph format, such as
-  `unitTests/graphio_test`. Pass the complete graph filename.
-
-Options may appear before or after the input. Use `--` to stop option parsing
-when an input name begins with a dash. Option values must follow the option in
-the same argument using `=`. Boolean values must be exactly `0` (disabled) or
-`1` (enabled).
+`INPUT` may be a V2000 molfile or an AssemblyCpp native graph file. The `.mol`
+suffix is optional; native graph filenames must be supplied in full. Options
+may appear before or after the input and use `--name=value` syntax. Boolean
+values are `0` or `1`.
 
 ### Options
 
-| Option | Value | Default | Description |
-| --- | --- | --- | --- |
-| `-h`, `--help` | — | — | Print usage, input, option, output, and compatibility details, then exit. |
-| `--runtime=<TICKS>` | Non-negative integer | Unlimited | Cooperatively stop the search after this many elapsed `std::clock` ticks. `CLOCKS_PER_SEC` ticks represent one second according to the platform's C++ runtime; whether `clock()` measures processor or elapsed time is implementation-specific. Checks occur between search operations, so the budget can be exceeded by the duration of an in-progress operation. A value of `0` records the initial upper bound and then stops before enumeration. |
-| `--enum-max=<COUNT>` | `1`–`INT_MAX` | `50000000` | Cap the number of unique connected subgraph masks retained while building the initial enumeration DAG, including one-edge masks. The search stops before retaining a mask beyond the limit. Larger limits can substantially increase memory use. |
-| `--pathway=<0\|1>` | Boolean | `1` | Write the recovered assembly pathway to `INPUTPathway`. |
-| `--remove-hydrogens=<0\|1>` | Boolean | `1` | Remove explicit hydrogen atoms from molfile inputs before calculation. This has no effect on native graph inputs. |
-| `--verbose=<0\|1>` | Boolean | `0` | Print input summaries and parsed molecular graphs. |
-| `--compensate-disjoint=<0\|1>` | Boolean | `0` | Subtract one from final and intermediate assembly indices for every component after the first in the processed graph. For molfiles, components are counted after optional hydrogen removal. Empty graphs receive no adjustment. |
-| `--memory-report=<0\|1>` | Boolean | `0` | After the other calculation outputs are written successfully on Linux, write `/proc/self/status`'s peak virtual-memory value (`VmPeak`, in kB) to `memUsage` in the current working directory. The option has no output on other platforms. |
-| `--telemetry=<0\|1>` | Boolean | `0` | In a telemetry-enabled build, write retained-mask and matching counts, canonicalisation activity, legacy VF2 counters, cache rates, and phase-specific memory to `INPUTTelemetry.json`. The current exact cyclic canonicaliser does not invoke VF2, so those compatibility counters remain zero. |
-| `--write-intermediate-mas=<0\|1>` | Boolean | `0` | Write each newly found best assembly index and its elapsed `std::clock` tick to `INPUTIntermediateMAs`. |
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `-h`, `--help` | — | Show command help. |
+| `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
+| `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial DAG. |
+| `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
+| `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from molfiles. |
+| `--verbose=<0\|1>` | `0` | Print the parsed input graph. |
+| `--compensate-disjoint=<0\|1>` | `0` | Subtract one per processed component after the first. |
+| `--memory-report=<0\|1>` | `0` | Write Linux peak virtual memory to `memUsage`. |
+| `--telemetry=<0\|1>` | `0` | Write search telemetry; available only in telemetry builds. |
+| `--write-intermediate-mas=<0\|1>` | `0` | Write each improved index and its clock tick. |
 
-The runtime and enumeration limits can stop an exhaustive search. `INPUTOut`
-still begins with a numeric best assembly index, followed by a status line
-naming the limit that was reached. The best value from a limited search is not
-necessarily a proven minimum.
+`--enum-max` includes one-edge masks. Runtime and enumeration limits return the
+best index found so far, which may not be the proven minimum. Run
+`AssemblyCpp --help` for limit details and accepted legacy option names.
 
-Canonical options use two leading dashes and kebab-case names. Both one and two
-leading dashes are accepted for canonical and compatibility names, so existing
-scripts can continue to use the former spellings:
+Use `--` before an input that starts with a dash:
 
-| Canonical option | Compatibility names |
-| --- | --- |
-| `--runtime` | `-runTime` |
-| `--enum-max` | `-enumMax` |
-| `--pathway` | `-pathway` |
-| `--remove-hydrogens` | `-removeHydrogens` |
-| `--compensate-disjoint` | `-compensateDisjoint`, `-disjointCompensation` |
-| `--memory-report` | `-memTest`, `-testMemory` |
-| `--write-intermediate-mas` | `-writeIntermediateMAs` |
-
-Unknown options, missing values, invalid values, duplicate value-taking options,
-and missing inputs produce an error and a non-zero exit status.
+```bash
+./build/release/AssemblyCpp --pathway=0 -- -molecule.mol
+```
 
 ### Outputs
 
-For molfiles, `INPUT` below means the input path with `.mol` removed. For native
-graph files it is the complete input path.
+For a molfile, `INPUT` below excludes the `.mol` suffix.
 
-| File | When written | Contents |
-| --- | --- | --- |
-| `INPUTOut` | When the input is read and this file can be opened | Numeric assembly index, any limit or interruption status, and total elapsed `std::clock` ticks. |
-| `INPUTPathway` | `--pathway=1` | Recovered pathway as JSON. |
-| `INPUTIntermediateMAs` | `--write-intermediate-mas=1` | `std::clock` tick and improved assembly index pairs, using the selected disjoint-compensation setting. |
-| `INPUTTelemetry.json` | `--telemetry=1` | Versioned search counters, cache statistics, processed mask width, phase clock ticks, and phase memory. |
-| `./memUsage` | `--memory-report=1` on Linux, after other outputs succeed | Peak process virtual memory (`VmPeak`) reported by the kernel. |
+| File | Contents |
+| --- | --- |
+| `INPUTOut` | Assembly index, search status, and `std::clock` ticks. |
+| `INPUTPathway` | Recovered pathway JSON when `--pathway=1`. |
+| `INPUTIntermediateMAs` | Improved indices when `--write-intermediate-mas=1`. |
+| `INPUTTelemetry.json` | Search counters and, for parallel runs, per-worker topology, work, and timing. |
+| `memUsage` | Linux `VmPeak` value when `--memory-report=1`. |
 
-Telemetry is opt-in so its accounting does not affect ordinary benchmark
-timings. On Linux, each flat search phase resets and reads the process's
-resident high-water mark through `/proc/self/clear_refs` and
-`/proc/self/status`. Phase `peak_rss_kib` values are absolute resident sets and
-must not be added together. If the kernel does not provide a resettable
-high-water mark, phase peaks are `null`; start/end snapshots and all counters
-remain available. Resetting `VmHWM` also resets `ru_maxrss`, so external
-`time -v` peak-RSS measurements from a telemetry-enabled process are not valid.
+An output error produces a non-zero exit status. After a handled Ctrl-C,
+AssemblyCpp finalizes requested outputs when possible and exits with status 130
+unless an output fails.
 
-If an enabled output cannot be opened or fully written, AssemblyCpp reports the
-affected path and exits with a non-zero status.
+## C++ library
 
-On a Ctrl-C handled before final output finalization, the search unwinds
-cooperatively and records an interrupted status. If all requested outputs can
-be written, they are flushed (including the Linux memory report) and the process
-exits with status `130`; an output failure still exits with status `1`.
+Installed packages export `AssemblyCpp::Library`:
 
-### Examples
-
-Calculate a molfile using the defaults:
-
-```bash
-./build/release/AssemblyCpp unitTests/alanine.mol
+```cmake
+find_package(AssemblyCpp 5 CONFIG REQUIRED)
+target_link_libraries(my_program PRIVATE AssemblyCpp::Library)
 ```
 
-Skip pathway output and lower the enumeration budget:
+```cpp
+#include <assemblycpp.h>
 
-```bash
-./build/release/AssemblyCpp unitTests/alanine --pathway=0 --enum-max=1000000
+#include <iostream>
+
+int main()
+{
+    const auto result = assemblycpp::calculate("molecule.mol");
+    if (!result)
+    {
+        std::cerr << result.error << '\n';
+        return 1;
+    }
+    std::cout << result.assemblyIndex << '\n';
+}
 ```
 
-Keep explicit hydrogen atoms and write intermediate best values:
+`calculateMolfile` accepts a V2000 molfile stream. `calculateBatch` processes
+several inputs sequentially without process startup between items. Library
+calls do not create output files. Search state is process-global, so the API is
+reusable but not thread-safe; use separate processes for concurrent work.
+
+## Build presets
+
+| Preset | Purpose |
+| --- | --- |
+| `release` | Portable release executable and library. |
+| `dev` | Portable developer build with focused tests and telemetry. |
+| `ci` | Portable release build with the full regression suite. |
+| `performance` | x86-64-v3 build with a telemetry executable. |
+| `performance-lto` | x86-64-v3 build with link-time optimization. |
+| `parallel` | Experimental OpenMP, MPI, and hybrid executables. |
+| `parallel-tests` | Portable parallel targets with correctness and telemetry tests. |
+| `pgo-generate` / `performance-pgo` | GCC profile generation and profile-use builds. |
+
+Performance presets require an x86-64-v3 processor. The parallel preset also
+requires OpenMP and MPI. See [benchmarks/README.md](benchmarks/README.md) for
+PGO, parallel-launch, telemetry, and comparison commands.
+
+Train and build the PGO candidate in this order:
 
 ```bash
-./build/release/AssemblyCpp \
-  --remove-hydrogens=0 \
-  --write-intermediate-mas=1 \
-  unitTests/alanine.mol
+cmake --preset pgo-generate
+cmake --build --preset pgo-train
+cmake --preset performance-pgo
+cmake --build --preset performance-pgo
 ```
+
+Parallel search requires multiple workers, at least 32 bonds, pathway and
+intermediate output disabled, and an unlimited runtime. Telemetry is available
+from the `AssemblyCppOMPTelemetry`, `AssemblyCppMPITelemetry`, and
+`AssemblyCppHybridTelemetry` targets. Other workloads run serially. Set
+`ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` only when testing smaller scaling inputs.
+OpenMP workers dynamically lease root branches as they become available; hybrid
+workers do the same within each MPI rank while ranks retain disjoint modulo
+partitions. Root enumeration and DAG construction run once per process;
+workers receive stable job indices and reconstruct masks in their own
+thread-local arenas. By default, compact frontiers use leases of four and
+larger frontiers use guided leases to keep roughly 8--32 claimable tasks per
+worker: the promising leading frontier uses groups of at most four, the cheap
+bulk uses larger leases, and the tail shrinks back toward single jobs.
+The largest initial duplicate is evaluated first to publish a valid one-step
+incumbent before the workers start searching.
+
+Root work remains the normal frontier. If the initial frontier is markedly
+below eight root jobs per local worker, or at least half of the local workers
+wait behind active heavy roots, immediate children can be transferred as
+depth-two tasks. On substantial frontiers of at least sixty-four roots per
+worker, donation is also armed as the unclaimed tail falls below eight roots
+per worker, allowing a final root's first child to be handed off before the
+pool stalls. The rank-local queue refills toward sixteen tasks per worker and
+never exceeds thirty-two per worker. MPI-only ranks have no local peer to
+receive such work;
+hybrid ranks can transfer it between their OpenMP workers. A positive
+`ASSEMBLYCPP_BRANCH_LEASE_SIZE` disables guided lease sizing and selects a
+fixed root lease size for experiments.
 
 ## Tests
 
-The default developer preset builds the application, a telemetry sibling, and
-the focused C++ tests. CTest checks both mask domains at every 64-bit boundary,
-preserves the tree canonicaliser's constrained-stack regression, audits test
-and benchmark tooling, checks the command-line interface, and runs a 20-case
-regression sample:
+Run the focused developer suite:
 
 ```bash
 cmake --preset dev
@@ -288,142 +177,51 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-Use the CI preset to run all reviewed regression cases:
+Use the `ci` preset instead to run every reviewed regression case. Run the
+parallel parity and telemetry checks separately with:
 
 ```bash
-cmake --preset ci
-cmake --build --preset ci
-ctest --preset ci
+cmake --preset parallel-tests
+cmake --build --preset parallel-tests
+ctest --preset parallel-tests
 ```
 
-The CLI checks cover help content, validation errors,
-compatibility names, input ordering, resource-limit
-boundaries, hydrogen removal, disjoint compensation, output toggles and
-failures, and Linux memory reporting. Each calculation runs in an isolated
-temporary directory, so test artifacts do not modify `unitTests/`. Selected
-cases also compare generated pathways with reviewed JSON golden files:
+Test data and targeted commands are documented in
+[unitTests/README.md](unitTests/README.md).
+
+## Benchmarks
+
+Build the optimized candidate, then run a maintained suite:
 
 ```bash
-python unitTests/unitTester.py build/release/AssemblyCpp --jobs 4
-```
-
-For a quicker development check, limit the number of cases:
-
-```bash
-python unitTests/unitTester.py build/release/AssemblyCpp --limit 20
-```
-
-Audit the manifest for duplicate cases, missing fixtures, conflicting
-expectations, and fixture coverage with:
-
-```bash
-python unitTests/unitTester.py --audit
-```
-
-Use `python unitTests/unitTester.py --help` to see all options, including custom
-manifests, per-case timeouts, and verbose output.
-
-GitHub Actions builds through CMake, runs the complete regression manifest,
-smoke-tests a staged installation, and generates both package forms for every
-push and pull request.
-
-## Benchmark
-
-The benchmark runner supports both the original single-input benchmark and
-manifest-driven workload suites. It disables pathway generation, validates
-configured assembly-index expectations on every calculation, and reports
-wall-clock and algorithm clock-tick statistics. The no-argument workload is
-five measured `ketoconazole` runs after one warm-up. Reuse the optimized CMake
-build with:
-
-```bash
-python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp
-```
-
-The runner's `--build` option remains available as a direct-compiler shortcut.
-
-Run the reviewed quick corpus for routine development, or the larger reviewed
-corpus before merging an optimization:
-
-```bash
-python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp --suite quick
-python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp --suite full
-```
-
-Suite cases are run serially in rounds, with the starting case rotated each
-round to reduce order and temperature bias. Summaries include the median,
-median absolute deviation (MAD), and 95th percentile. List the available cases
-and their expectation status with:
-
-```bash
-python benchmarks/benchmark.py --list-cases
-python benchmarks/benchmark.py --suite profile --list-cases
-```
-
-The `profile` suite contains deliberately long inputs for profiling search hot
-paths. Its non-ketoconazole expectations are marked provisional because those
-fixtures are not part of the reviewed regression manifest. A one-pass profile
-smoke run is:
-
-```bash
+cmake --preset performance
+cmake --build --preset performance
 python benchmarks/benchmark.py \
   --executable build/performance/AssemblyCpp \
-  --suite profile --runs 1 --warmup 0
+  --suite quick
 ```
 
-The `scaling` suite measures a cumulative sequence of two through eight
-disconnected amino-acid components (18 to 68 atoms, 16 to 60 bonds). Its table
-places system size beside wall-time and algorithm clock-tick costs:
+For a paired comparison:
 
 ```bash
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp --suite scaling
-```
-
-Use clock ticks to compare the smallest cases, where fixed process-startup and
-input-parsing costs can dominate wall time. The sequence adds a different amino
-acid at each step, so it characterizes this workload rather than an asymptotic
-complexity law for arbitrary molecules.
-
-For a paired before/after comparison, keep the old executable and pass it as
-the baseline. Baseline and candidate calculations run adjacently, alternating
-AB/BA order between rounds. Paired mode defaults to six measured rounds so both
-executables occupy each position equally often. Reported speedups are paired
-ratios; values greater than one mean the candidate is faster.
-
-```bash
-python benchmarks/benchmark.py \
-  --suite quick \
   --baseline-executable build/AssemblyCpp-before \
-  --executable build/performance/AssemblyCpp
-```
-
-Raw samples, executable SHA-256 fingerprints, platform details, and summaries
-can be retained for later comparison:
-
-```bash
-python benchmarks/benchmark.py \
   --executable build/performance/AssemblyCpp \
   --suite quick \
-  --json-output benchmark-results.json
+  --json-output build/quick.json
 ```
 
-To reuse an existing build, increase the number of measured runs, or select a
-single different input:
+See [benchmarks/README.md](benchmarks/README.md) for corpus, measurement, PGO,
+and parallel-scaling details.
+
+## Install and package
 
 ```bash
-python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp --runs 10
-python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp \
-  --input unitTests/sucrose.mol \
-  --expected 8
+cmake --install build/release --prefix build/install
+cpack --preset release
+cmake --build build/release --target package_source
 ```
 
-The corpus format and measurement methodology are documented in
-`benchmarks/README.md`. Use `python benchmarks/benchmark.py --help` for the
-remaining options. Run comparisons on the same machine and under similar load;
-the runner intentionally does not impose a pass/fail timing threshold.
+Packaging requires CMake 4.3 or newer. Create source archives from a clean
+checkout because CPack includes the working tree. Packages include the README
+and [CC BY-NC 4.0 license](License.md).

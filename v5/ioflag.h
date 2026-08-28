@@ -47,7 +47,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "runtime",
             "TICKS",
             "unlimited",
-            "Cooperatively stop the search after this many elapsed std::clock ticks.",
+            "Stop after this many std::clock ticks.",
             {"runTime"}
         },
         {
@@ -55,7 +55,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "enum-max",
             "COUNT",
             "50000000",
-            "Cap unique connected masks, including one-edge masks, in the initial DAG.",
+            "Limit connected subgraphs in initial enumeration.",
             {"enumMax"}
         },
         {
@@ -63,7 +63,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "pathway",
             "0|1",
             "1",
-            "Write the recovered assembly pathway to INPUTPathway.",
+            "Write recovered pathway JSON to INPUTPathway.",
             {}
         },
         {
@@ -71,7 +71,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "remove-hydrogens",
             "0|1",
             "1",
-            "Remove explicit hydrogen atoms from molfile inputs.",
+            "Remove explicit hydrogens from molfile inputs.",
             {"removeHydrogens"}
         },
         {
@@ -79,7 +79,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "verbose",
             "0|1",
             "0",
-            "Print input summaries and parsed molecular graphs.",
+            "Print the parsed input graph.",
             {}
         },
         {
@@ -87,7 +87,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "compensate-disjoint",
             "0|1",
             "0",
-            "Subtract one per processed-graph component after the first.",
+            "Subtract one for each processed component after the first.",
             {"compensateDisjoint", "disjointCompensation"}
         },
         {
@@ -95,7 +95,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "memory-report",
             "0|1",
             "0",
-            "On Linux, write peak virtual memory (VmPeak) to ./memUsage.",
+            "On Linux, write VmPeak to ./memUsage.",
             {"memTest", "testMemory"}
         },
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -104,7 +104,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "telemetry",
             "0|1",
             "0",
-            "Write structured search counters and phase memory to INPUTTelemetry.json (telemetry build only).",
+            "Write search telemetry to INPUTTelemetry.json.",
             {}
         },
 #endif
@@ -113,7 +113,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "write-intermediate-mas",
             "0|1",
             "0",
-            "Write each new best assembly index and its elapsed std::clock tick.",
+            "Write index improvements to INPUTIntermediateMAs.",
             {"writeIntermediateMAs"}
         }
     };
@@ -151,8 +151,8 @@ unsigned long long parseUnsignedFlag(
     if (value.empty() || result.ec != std::errc() || result.ptr != end)
     {
         throw std::invalid_argument(
-            "option '" + inputFlagLabel(definition) +
-            "' expects a non-negative whole number; received '" + value + "'"
+            inputFlagLabel(definition) +
+            ": expected a non-negative integer; got '" + value + "'"
         );
     }
     return parsed;
@@ -163,8 +163,7 @@ bool parseBooleanFlag(const InputFlagDefinition& definition, const string& value
     if (value == "0") return false;
     if (value == "1") return true;
     throw std::invalid_argument(
-        "option '" + inputFlagLabel(definition) +
-        "' expects 0 or 1; received '" + value + "'"
+        inputFlagLabel(definition) + ": expected 0 or 1; got '" + value + "'"
     );
 }
 
@@ -185,9 +184,9 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             )
             {
                 throw std::invalid_argument(
-                    "option '" + inputFlagLabel(definition) + "' expects a value from 1 to " +
+                    inputFlagLabel(definition) + ": expected an integer from 1 to " +
                     std::to_string(std::numeric_limits<int>::max()) +
-                    "; received '" + value + "'"
+                    "; got '" + value + "'"
                 );
             }
             ENUM_MAX = static_cast<int>(parsed);
@@ -274,7 +273,9 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
             if (equals == string::npos)
             {
                 throw std::invalid_argument(
-                    "option '" + inputFlagLabel(*definition) + "' requires =<" +
+                    inputFlagLabel(*definition) +
+                    " requires a value in the form " +
+                    inputFlagLabel(*definition) + "=<" +
                     definition->valueName + ">"
                 );
             }
@@ -283,7 +284,7 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
             if (!seenFlags.insert(flagId).second)
             {
                 throw std::invalid_argument(
-                    "option '" + inputFlagLabel(*definition) + "' was specified more than once"
+                    inputFlagLabel(*definition) + " may be specified only once"
                 );
             }
             applyInputFlag(*definition, option.substr(equals + 1));
@@ -293,7 +294,7 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
         if (!parsed.input.empty())
         {
             throw std::invalid_argument(
-                "expected one INPUT, but received an extra argument '" + argument + "'"
+                "expected one INPUT; got extra argument '" + argument + "'"
             );
         }
         parsed.input = argument;
@@ -301,7 +302,7 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
 
     if (!parsed.showHelp && parsed.input.empty())
     {
-        throw std::invalid_argument("missing required INPUT");
+        throw std::invalid_argument("INPUT is required");
     }
     return parsed;
 }

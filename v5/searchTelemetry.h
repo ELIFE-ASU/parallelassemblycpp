@@ -9,6 +9,7 @@ inline bool searchTelemetryEnabled = false;
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -18,6 +19,8 @@ inline bool searchTelemetryEnabled = false;
 #include <ostream>
 #include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #ifdef __linux__
     #include <cerrno>
@@ -89,6 +92,7 @@ struct ProcessMemorySnapshot
 struct SearchTelemetryPhaseStats
 {
     uint64_t clockTicks = 0;
+    uint64_t wallNanoseconds = 0;
     uint64_t startResidentKiB = 0;
     uint64_t peakResidentKiB = 0;
     uint64_t endResidentKiB = 0;
@@ -111,18 +115,85 @@ struct SearchTelemetryState
     > phases;
     SearchTelemetryPhase currentPhase = SearchTelemetryPhase::count;
     clock_t phaseStart = 0;
+    uint64_t phaseWallStartNanoseconds = 0;
     size_t processedAtoms = 0;
     size_t processedEdges = 0;
     size_t activeMaskWords = 0;
     bool residualCacheEligible = false;
+    bool collectPhaseMemory = true;
     bool active = false;
     ProcessMemorySnapshot finalMemory;
+};
+
+/** One fixed-width worker record suitable for process and MPI reduction. */
+struct ParallelSearchWorkerTelemetry
+{
+    uint64_t mpiRank = 0;
+    uint64_t localWorkerIndex = 0;
+    uint64_t globalWorkerIndex = 0;
+    uint64_t rankPartitionIndex = 0;
+    uint64_t rankPartitionCount = 1;
+    uint64_t branchCandidates = 0;
+    uint64_t branchLeases = 0;
+    uint64_t branchAssignments = 0;
+    uint64_t depthTwoTasksSpawned = 0;
+    uint64_t depthTwoTasksExecuted = 0;
+    uint64_t proactiveTailRefills = 0;
+    uint64_t warmStartBranches = 0;
+    uint64_t elapsedNanoseconds = 0;
+    uint64_t busyNanoseconds = 0;
+    uint64_t processedAtoms = 0;
+    uint64_t processedEdges = 0;
+    uint64_t activeMaskWords = 0;
+    uint64_t residualCacheEligible = 0;
+    SearchTelemetryCounters counters;
+    std::array<
+        uint64_t,
+        static_cast<size_t>(SearchTelemetryPhase::count)
+    > phaseClockTicks{};
+    std::array<
+        uint64_t,
+        static_cast<size_t>(SearchTelemetryPhase::count)
+    > phaseWallNanoseconds{};
+    std::array<
+        uint64_t,
+        static_cast<size_t>(SearchTelemetryPhase::count)
+    > phaseActivations{};
+};
+
+static_assert(std::is_trivially_copyable_v<ParallelSearchWorkerTelemetry>);
+
+struct ParallelSearchTelemetrySummary
+{
+    bool enabled = false;
+    bool branchScanComplete = false;
+    bool branchSchedulerComplete = false;
+    bool branchCandidateCountsAgree = false;
+    std::string mode;
+    std::string aggregationScope;
+    uint64_t rankCount = 1;
+    uint64_t workerCount = 1;
+    uint64_t branchLeaseSize = 1;
+    uint64_t branchCandidateCount = 0;
+    uint64_t branchLeaseCount = 0;
+    uint64_t branchAssignmentCount = 0;
+    uint64_t depthTwoTaskSpawnCount = 0;
+    uint64_t depthTwoTaskExecutionCount = 0;
+    uint64_t proactiveTailRefillCount = 0;
+    uint64_t warmStartBranchCount = 0;
+    uint64_t elapsedNanoseconds = 0;
+    uint64_t workerElapsedNanoseconds = 0;
+    uint64_t workerBusyNanoseconds = 0;
+    std::vector<uint64_t> localThreadsPerRank;
+    SearchTelemetryCounters aggregateCounters;
+    std::vector<ParallelSearchWorkerTelemetry> workers;
 };
 
 inline constexpr bool searchTelemetryCompiled = true;
 
 inline bool searchTelemetryEnabled = false;
-inline SearchTelemetryState searchTelemetry;
+inline ASSEMBLYCPP_SEARCH_LOCAL SearchTelemetryState searchTelemetry;
+inline ParallelSearchTelemetrySummary parallelSearchTelemetry;
 
 inline const char* searchTelemetryPhaseName(SearchTelemetryPhase phase)
 {
@@ -147,6 +218,19 @@ inline uint64_t telemetryClockDifference(clock_t start, clock_t end)
     return static_cast<uint64_t>(
         static_cast<UnsignedClock>(end) - static_cast<UnsignedClock>(start)
     );
+}
+
+inline uint64_t searchTelemetryWallNanoseconds()
+{
+    using namespace std::chrono;
+    return static_cast<uint64_t>(duration_cast<nanoseconds>(
+        steady_clock::now().time_since_epoch()
+    ).count());
+}
+
+inline uint64_t telemetryNanosecondDifference(uint64_t start, uint64_t end)
+{
+    return end >= start ? end - start : 0;
 }
 
 #ifdef __linux__
@@ -269,6 +353,7 @@ inline void finishSearchTelemetryPhase()
     ) return;
 
     const clock_t now = clock();
+    const uint64_t wallNow = searchTelemetryWallNanoseconds();
     SearchTelemetryPhaseStats &stats = searchTelemetry.phases[
         static_cast<size_t>(searchTelemetry.currentPhase)
     ];
@@ -276,6 +361,11 @@ inline void finishSearchTelemetryPhase()
         searchTelemetry.phaseStart,
         now
     );
+    stats.wallNanoseconds += telemetryNanosecondDifference(
+        searchTelemetry.phaseWallStartNanoseconds,
+        wallNow
+    );
+    if (!searchTelemetry.collectPhaseMemory) return;
     ProcessMemorySnapshot memory = readProcessMemorySnapshot();
     stats.endResidentAvailable = memory.residentAvailable;
     if (memory.residentAvailable)
@@ -306,50 +396,56 @@ inline void setSearchTelemetryPhase(SearchTelemetryPhase phase)
     if (searchTelemetry.currentPhase == phase) return;
     finishSearchTelemetryPhase();
 
-    const bool exactResidentPeak = resetProcessResidentHighWaterMark();
-    ProcessMemorySnapshot memory = readProcessMemorySnapshot();
     SearchTelemetryPhaseStats &stats = searchTelemetry.phases[
         static_cast<size_t>(phase)
     ];
     const bool firstActivation = stats.activations == 0;
     ++stats.activations;
-    stats.exactResidentPeak =
-        (firstActivation || stats.exactResidentPeak) &&
-        exactResidentPeak &&
-        memory.residentAvailable;
-    stats.endResidentAvailable = memory.residentAvailable;
-    if (memory.residentAvailable)
+    if (searchTelemetry.collectPhaseMemory)
     {
-        if (firstActivation)
+        const bool exactResidentPeak = resetProcessResidentHighWaterMark();
+        ProcessMemorySnapshot memory = readProcessMemorySnapshot();
+        stats.exactResidentPeak =
+            (firstActivation || stats.exactResidentPeak) &&
+            exactResidentPeak &&
+            memory.residentAvailable;
+        stats.endResidentAvailable = memory.residentAvailable;
+        if (memory.residentAvailable)
         {
-            stats.startResidentAvailable = true;
-            stats.startResidentKiB = memory.residentKiB;
+            if (firstActivation)
+            {
+                stats.startResidentAvailable = true;
+                stats.startResidentKiB = memory.residentKiB;
+            }
+            stats.endResidentKiB = memory.residentKiB;
+            if (exactResidentPeak)
+            {
+                if (memory.residentHighWaterKiB > stats.peakResidentKiB)
+                    stats.peakResidentKiB = memory.residentHighWaterKiB;
+            }
         }
-        stats.endResidentKiB = memory.residentKiB;
-        if (exactResidentPeak)
+        stats.endVirtualAvailable = memory.virtualAvailable;
+        if (memory.virtualAvailable)
         {
-            if (memory.residentHighWaterKiB > stats.peakResidentKiB)
-                stats.peakResidentKiB = memory.residentHighWaterKiB;
+            if (firstActivation)
+            {
+                stats.startVirtualAvailable = true;
+                stats.startVirtualKiB = memory.virtualKiB;
+            }
+            stats.endVirtualKiB = memory.virtualKiB;
         }
-    }
-    stats.endVirtualAvailable = memory.virtualAvailable;
-    if (memory.virtualAvailable)
-    {
-        if (firstActivation)
-        {
-            stats.startVirtualAvailable = true;
-            stats.startVirtualKiB = memory.virtualKiB;
-        }
-        stats.endVirtualKiB = memory.virtualKiB;
     }
     searchTelemetry.currentPhase = phase;
     searchTelemetry.phaseStart = clock();
+    searchTelemetry.phaseWallStartNanoseconds =
+        searchTelemetryWallNanoseconds();
 }
 
-inline void resetSearchTelemetry()
+inline void resetSearchTelemetry(bool collectPhaseMemory = true)
 {
     if (!searchTelemetryCompiled || !searchTelemetryEnabled) return;
     searchTelemetry = SearchTelemetryState{};
+    searchTelemetry.collectPhaseMemory = collectPhaseMemory;
     searchTelemetry.active = true;
     setSearchTelemetryPhase(SearchTelemetryPhase::inputSetup);
 }
@@ -376,9 +472,486 @@ inline void finaliseSearchTelemetry()
         !searchTelemetry.active
     ) return;
     finishSearchTelemetryPhase();
-    searchTelemetry.finalMemory = readProcessMemorySnapshot();
+    if (searchTelemetry.collectPhaseMemory)
+        searchTelemetry.finalMemory = readProcessMemorySnapshot();
     searchTelemetry.currentPhase = SearchTelemetryPhase::count;
     searchTelemetry.active = false;
+}
+
+inline void addSearchTelemetryCounters(
+    SearchTelemetryCounters &destination,
+    const SearchTelemetryCounters &source
+)
+{
+    destination.retainedMaskAttempts += source.retainedMaskAttempts;
+    destination.retainedMasks += source.retainedMasks;
+    destination.duplicateMaskAttempts += source.duplicateMaskAttempts;
+    destination.rejectedMasks += source.rejectedMasks;
+    destination.matchingVisits += source.matchingVisits;
+
+    destination.canonicalisationCalls += source.canonicalisationCalls;
+    destination.canonicalisationMaskCacheHits +=
+        source.canonicalisationMaskCacheHits;
+    destination.canonicalisationMaskCacheMisses +=
+        source.canonicalisationMaskCacheMisses;
+    destination.canonicalClassInsertions +=
+        source.canonicalClassInsertions;
+    destination.canonicalClassReuses += source.canonicalClassReuses;
+    destination.vf2Calls += source.vf2Calls;
+    destination.vf2Matches += source.vf2Matches;
+
+    destination.residualDecompositionRequests +=
+        source.residualDecompositionRequests;
+    destination.residualCacheEligibleRequests +=
+        source.residualCacheEligibleRequests;
+    destination.residualCacheSmallMoleculeBypasses +=
+        source.residualCacheSmallMoleculeBypasses;
+    destination.residualCacheWideMoleculeBypasses +=
+        source.residualCacheWideMoleculeBypasses;
+    destination.residualCacheSmallResidualBypasses +=
+        source.residualCacheSmallResidualBypasses;
+    destination.residualCacheFirstOccurrenceBypasses +=
+        source.residualCacheFirstOccurrenceBypasses;
+    destination.residualCacheRuntimeDisabledBypasses +=
+        source.residualCacheRuntimeDisabledBypasses;
+    destination.residualCacheLookups += source.residualCacheLookups;
+    destination.residualCacheHits += source.residualCacheHits;
+    destination.residualCacheMisses += source.residualCacheMisses;
+    destination.residualCacheAdmissions += source.residualCacheAdmissions;
+
+    destination.assemblyCacheLookups += source.assemblyCacheLookups;
+    destination.assemblyCacheHits += source.assemblyCacheHits;
+    destination.assemblyCacheMisses += source.assemblyCacheMisses;
+    destination.assemblyCachePrunedHits += source.assemblyCachePrunedHits;
+    destination.assemblyCacheUpdatedHits += source.assemblyCacheUpdatedHits;
+
+    destination.pairBoundCacheLookups += source.pairBoundCacheLookups;
+    destination.pairBoundCacheHits += source.pairBoundCacheHits;
+    destination.pairBoundCacheMisses += source.pairBoundCacheMisses;
+}
+
+inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
+    uint64_t mpiRank,
+    uint64_t localWorkerIndex,
+    uint64_t globalWorkerIndex,
+    uint64_t rankPartitionIndex,
+    uint64_t rankPartitionCount,
+    uint64_t branchCandidates,
+    uint64_t branchLeases,
+    uint64_t branchAssignments,
+    uint64_t depthTwoTasksSpawned,
+    uint64_t depthTwoTasksExecuted,
+    uint64_t proactiveTailRefills,
+    uint64_t warmStartBranches,
+    uint64_t elapsedNanoseconds
+)
+{
+    finaliseSearchTelemetry();
+    ParallelSearchWorkerTelemetry result;
+    result.mpiRank = mpiRank;
+    result.localWorkerIndex = localWorkerIndex;
+    result.globalWorkerIndex = globalWorkerIndex;
+    result.rankPartitionIndex = rankPartitionIndex;
+    result.rankPartitionCount = rankPartitionCount;
+    result.branchCandidates = branchCandidates;
+    result.branchLeases = branchLeases;
+    result.branchAssignments = branchAssignments;
+    result.depthTwoTasksSpawned = depthTwoTasksSpawned;
+    result.depthTwoTasksExecuted = depthTwoTasksExecuted;
+    result.proactiveTailRefills = proactiveTailRefills;
+    result.warmStartBranches = warmStartBranches;
+    result.elapsedNanoseconds = elapsedNanoseconds;
+    result.processedAtoms = searchTelemetry.processedAtoms;
+    result.processedEdges = searchTelemetry.processedEdges;
+    result.activeMaskWords = searchTelemetry.activeMaskWords;
+    result.residualCacheEligible =
+        searchTelemetry.residualCacheEligible ? 1 : 0;
+    result.counters = searchTelemetry.counters;
+    for (size_t i = 0; i < result.phaseClockTicks.size(); ++i)
+    {
+        const SearchTelemetryPhaseStats &phase = searchTelemetry.phases[i];
+        result.phaseClockTicks[i] = phase.clockTicks;
+        result.phaseWallNanoseconds[i] = phase.wallNanoseconds;
+        result.phaseActivations[i] = static_cast<uint64_t>(phase.activations);
+        result.busyNanoseconds += phase.wallNanoseconds;
+    }
+    result.busyNanoseconds = std::min(
+        result.busyNanoseconds,
+        result.elapsedNanoseconds
+    );
+    return result;
+}
+
+inline void resetParallelSearchTelemetry()
+{
+    parallelSearchTelemetry = ParallelSearchTelemetrySummary{};
+}
+
+inline void configureParallelSearchTelemetry(
+    std::string mode,
+    std::string aggregationScope,
+    uint64_t rankCount,
+    uint64_t branchLeaseSize,
+    uint64_t elapsedNanoseconds,
+    bool completedSearch,
+    std::vector<ParallelSearchWorkerTelemetry> workers
+)
+{
+    resetParallelSearchTelemetry();
+    if (workers.empty()) return;
+
+    std::sort(
+        workers.begin(),
+        workers.end(),
+        [](const auto &left, const auto &right)
+        {
+            return left.globalWorkerIndex < right.globalWorkerIndex;
+        }
+    );
+
+    ParallelSearchTelemetrySummary &summary = parallelSearchTelemetry;
+    summary.enabled = true;
+    summary.mode = std::move(mode);
+    summary.aggregationScope = std::move(aggregationScope);
+    summary.rankCount = std::max<uint64_t>(1, rankCount);
+    summary.workerCount = static_cast<uint64_t>(workers.size());
+    summary.branchLeaseSize = branchLeaseSize;
+    summary.elapsedNanoseconds = elapsedNanoseconds;
+    summary.localThreadsPerRank.assign(summary.rankCount, 0);
+    summary.branchSchedulerComplete = branchLeaseSize > 0;
+    summary.branchCandidateCountsAgree = true;
+    summary.branchCandidateCount = workers.front().branchCandidates;
+
+    std::vector<bool> seenGlobalWorker(summary.workerCount, false);
+    std::vector<uint64_t> branchAssignmentsPerRank(summary.rankCount, 0);
+    const ParallelSearchWorkerTelemetry &first = workers.front();
+    SearchTelemetryState merged;
+    merged.collectPhaseMemory = false;
+    merged.processedAtoms = static_cast<size_t>(first.processedAtoms);
+    merged.processedEdges = static_cast<size_t>(first.processedEdges);
+    merged.activeMaskWords = static_cast<size_t>(first.activeMaskWords);
+    merged.residualCacheEligible = first.residualCacheEligible != 0;
+
+    for (const ParallelSearchWorkerTelemetry &worker : workers)
+    {
+        if (worker.mpiRank < summary.rankCount)
+        {
+            ++summary.localThreadsPerRank[worker.mpiRank];
+            branchAssignmentsPerRank[worker.mpiRank] +=
+                worker.branchAssignments;
+        }
+        else summary.branchSchedulerComplete = false;
+
+        if (
+            worker.globalWorkerIndex >= summary.workerCount ||
+            seenGlobalWorker[worker.globalWorkerIndex]
+        ) summary.branchSchedulerComplete = false;
+        else seenGlobalWorker[worker.globalWorkerIndex] = true;
+
+        if (
+            worker.rankPartitionIndex != worker.mpiRank ||
+            worker.rankPartitionCount != summary.rankCount
+        ) summary.branchSchedulerComplete = false;
+
+        if (
+            (worker.branchAssignments == 0 && worker.branchLeases != 0) ||
+            (worker.branchAssignments > 0 && (
+                summary.branchLeaseSize == 0 ||
+                worker.branchLeases == 0 ||
+                worker.branchLeases > worker.branchAssignments ||
+                1 + (worker.branchAssignments - 1) / summary.branchLeaseSize >
+                    worker.branchLeases
+            ))
+        ) summary.branchSchedulerComplete = false;
+
+        if (worker.branchCandidates != summary.branchCandidateCount)
+            summary.branchCandidateCountsAgree = false;
+        if (
+            worker.processedAtoms != first.processedAtoms ||
+            worker.processedEdges != first.processedEdges ||
+            worker.activeMaskWords != first.activeMaskWords ||
+            worker.residualCacheEligible != first.residualCacheEligible
+        ) summary.branchCandidateCountsAgree = false;
+
+        summary.branchLeaseCount += worker.branchLeases;
+        summary.branchAssignmentCount += worker.branchAssignments;
+        summary.depthTwoTaskSpawnCount += worker.depthTwoTasksSpawned;
+        summary.depthTwoTaskExecutionCount += worker.depthTwoTasksExecuted;
+        summary.proactiveTailRefillCount += worker.proactiveTailRefills;
+        summary.warmStartBranchCount += worker.warmStartBranches;
+        summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
+        summary.workerBusyNanoseconds += worker.busyNanoseconds;
+        addSearchTelemetryCounters(summary.aggregateCounters, worker.counters);
+
+        for (size_t i = 0; i < merged.phases.size(); ++i)
+        {
+            merged.phases[i].wallNanoseconds +=
+                worker.phaseWallNanoseconds[i];
+            merged.phases[i].activations +=
+                static_cast<size_t>(worker.phaseActivations[i]);
+        }
+    }
+    // clock() is process CPU time. Keep one observation for the legacy field;
+    // summing overlapping worker observations would overstate CPU time.
+    for (size_t i = 0; i < merged.phases.size(); ++i)
+        merged.phases[i].clockTicks = first.phaseClockTicks[i];
+
+    if (summary.branchCandidateCountsAgree)
+    {
+        for (uint64_t rank = 0; rank < summary.rankCount; ++rank)
+        {
+            const uint64_t expectedAssignments =
+                summary.branchCandidateCount <= rank
+                ? 0
+                : 1 +
+                    (summary.branchCandidateCount - 1 - rank) /
+                    summary.rankCount;
+            if (branchAssignmentsPerRank[rank] != expectedAssignments)
+                summary.branchSchedulerComplete = false;
+        }
+    }
+    summary.branchSchedulerComplete =
+        completedSearch &&
+        summary.branchSchedulerComplete &&
+        summary.branchCandidateCountsAgree &&
+        summary.branchAssignmentCount == summary.branchCandidateCount &&
+        summary.depthTwoTaskSpawnCount ==
+            summary.depthTwoTaskExecutionCount &&
+        summary.warmStartBranchCount ==
+            (summary.branchCandidateCount == 0 ? 0 : summary.rankCount);
+    summary.branchScanComplete = summary.branchSchedulerComplete;
+    summary.workers = std::move(workers);
+    merged.counters = summary.aggregateCounters;
+    searchTelemetry = std::move(merged);
+}
+
+inline void writeAllSearchTelemetryCounters(
+    std::ostream &output,
+    const SearchTelemetryCounters &counters,
+    const std::string &indent
+)
+{
+    output << "{\n"
+           << indent << "  \"retained_mask_attempts\": "
+           << counters.retainedMaskAttempts << ",\n"
+           << indent << "  \"retained_masks\": "
+           << counters.retainedMasks << ",\n"
+           << indent << "  \"duplicate_mask_attempts\": "
+           << counters.duplicateMaskAttempts << ",\n"
+           << indent << "  \"rejected_masks\": "
+           << counters.rejectedMasks << ",\n"
+           << indent << "  \"matching_visits\": "
+           << counters.matchingVisits << ",\n"
+           << indent << "  \"canonicalisation_calls\": "
+           << counters.canonicalisationCalls << ",\n"
+           << indent << "  \"canonicalisation_mask_cache_hits\": "
+           << counters.canonicalisationMaskCacheHits << ",\n"
+           << indent << "  \"canonicalisation_mask_cache_misses\": "
+           << counters.canonicalisationMaskCacheMisses << ",\n"
+           << indent << "  \"canonical_class_insertions\": "
+           << counters.canonicalClassInsertions << ",\n"
+           << indent << "  \"canonical_class_reuses\": "
+           << counters.canonicalClassReuses << ",\n"
+           << indent << "  \"vf2_calls\": " << counters.vf2Calls << ",\n"
+           << indent << "  \"vf2_matches\": " << counters.vf2Matches
+           << ",\n"
+           << indent << "  \"residual_decomposition_requests\": "
+           << counters.residualDecompositionRequests << ",\n"
+           << indent << "  \"residual_cache_eligible_requests\": "
+           << counters.residualCacheEligibleRequests << ",\n"
+           << indent << "  \"residual_cache_small_molecule_bypasses\": "
+           << counters.residualCacheSmallMoleculeBypasses << ",\n"
+           << indent << "  \"residual_cache_wide_molecule_bypasses\": "
+           << counters.residualCacheWideMoleculeBypasses << ",\n"
+           << indent << "  \"residual_cache_small_residual_bypasses\": "
+           << counters.residualCacheSmallResidualBypasses << ",\n"
+           << indent << "  \"residual_cache_first_occurrence_bypasses\": "
+           << counters.residualCacheFirstOccurrenceBypasses << ",\n"
+           << indent << "  \"residual_cache_runtime_disabled_bypasses\": "
+           << counters.residualCacheRuntimeDisabledBypasses << ",\n"
+           << indent << "  \"residual_cache_lookups\": "
+           << counters.residualCacheLookups << ",\n"
+           << indent << "  \"residual_cache_hits\": "
+           << counters.residualCacheHits << ",\n"
+           << indent << "  \"residual_cache_misses\": "
+           << counters.residualCacheMisses << ",\n"
+           << indent << "  \"residual_cache_admissions\": "
+           << counters.residualCacheAdmissions << ",\n"
+           << indent << "  \"assembly_cache_lookups\": "
+           << counters.assemblyCacheLookups << ",\n"
+           << indent << "  \"assembly_cache_hits\": "
+           << counters.assemblyCacheHits << ",\n"
+           << indent << "  \"assembly_cache_misses\": "
+           << counters.assemblyCacheMisses << ",\n"
+           << indent << "  \"assembly_cache_pruned_hits\": "
+           << counters.assemblyCachePrunedHits << ",\n"
+           << indent << "  \"assembly_cache_updated_hits\": "
+           << counters.assemblyCacheUpdatedHits << ",\n"
+           << indent << "  \"pair_bound_cache_lookups\": "
+           << counters.pairBoundCacheLookups << ",\n"
+           << indent << "  \"pair_bound_cache_hits\": "
+           << counters.pairBoundCacheHits << ",\n"
+           << indent << "  \"pair_bound_cache_misses\": "
+           << counters.pairBoundCacheMisses << '\n'
+           << indent << '}';
+}
+
+inline void writeParallelSearchTelemetry(std::ostream &output)
+{
+    const ParallelSearchTelemetrySummary &parallel = parallelSearchTelemetry;
+    bool uniformLocalThreads = !parallel.localThreadsPerRank.empty();
+    uint64_t localThreads = uniformLocalThreads
+        ? parallel.localThreadsPerRank.front()
+        : 0;
+    for (uint64_t count : parallel.localThreadsPerRank)
+        if (count != localThreads) uniformLocalThreads = false;
+
+    output << "  \"parallel\": {\n"
+           << "    \"enabled\": true,\n"
+           << "    \"mode\": \"" << parallel.mode << "\",\n"
+           << "    \"aggregation_scope\": \""
+           << parallel.aggregationScope << "\",\n"
+           << "    \"rank_count\": " << parallel.rankCount << ",\n"
+           << "    \"local_threads\": ";
+    if (uniformLocalThreads) output << localThreads;
+    else output << "null";
+    output << ",\n    \"local_threads_per_rank\": [";
+    for (size_t i = 0; i < parallel.localThreadsPerRank.size(); ++i)
+    {
+        if (i != 0) output << ", ";
+        output << parallel.localThreadsPerRank[i];
+    }
+    output << "],\n"
+           << "    \"worker_count\": " << parallel.workerCount << ",\n"
+           << "    \"elapsed_timing_method\": "
+              "\"parallel_region_steady_clock\",\n"
+           << "    \"busy_timing_method\": "
+              "\"instrumented_phase_wall_time\",\n"
+           << "    \"branch_scheduler\": {\n"
+           << "      \"strategy\": "
+              "\"dynamic_leases_with_static_mpi_rank_partition\",\n"
+           << "      \"lease_size\": "
+           << parallel.branchLeaseSize << ",\n"
+           << "      \"rank_partition_count\": "
+           << parallel.rankCount << ",\n"
+           << "      \"adaptive_splitting\": {\n"
+           << "        \"minimum_queued_tasks_per_worker\": "
+           << parallelMinimumQueuedTasksPerWorker << ",\n"
+           << "        \"target_queued_tasks_per_worker\": "
+           << parallelTargetQueuedTasksPerWorker << ",\n"
+           << "        \"maximum_queued_tasks_per_worker\": "
+           << parallelMaximumQueuedTasksPerWorker << ",\n"
+           << "        \"maximum_depth\": "
+           << parallelMaximumTaskDepth << ",\n"
+           << "        \"warm_start\": \"largest_duplicate_first\"\n"
+           << "      },\n"
+           << "      \"complete\": "
+           << (parallel.branchSchedulerComplete ? "true" : "false") << "\n"
+           << "    },\n"
+           << "    \"branch_scan_complete\": "
+           << (parallel.branchScanComplete ? "true" : "false") << ",\n"
+           << "    \"aggregate\": {\n"
+           << "      \"branch_candidates\": ";
+    if (parallel.branchCandidateCountsAgree)
+        output << parallel.branchCandidateCount;
+    else output << "null";
+    output << ",\n"
+           << "      \"branch_leases\": "
+           << parallel.branchLeaseCount << ",\n"
+           << "      \"branch_assignments\": "
+           << parallel.branchAssignmentCount << ",\n"
+           << "      \"depth_two_tasks_spawned\": "
+           << parallel.depthTwoTaskSpawnCount << ",\n"
+           << "      \"depth_two_tasks_executed\": "
+           << parallel.depthTwoTaskExecutionCount << ",\n"
+           << "      \"proactive_tail_refills\": "
+           << parallel.proactiveTailRefillCount << ",\n"
+           << "      \"warm_start_branches\": "
+           << parallel.warmStartBranchCount << ",\n"
+           << "      \"elapsed_nanoseconds\": "
+           << parallel.elapsedNanoseconds << ",\n"
+           << "      \"worker_elapsed_nanoseconds\": "
+           << parallel.workerElapsedNanoseconds << ",\n"
+           << "      \"worker_busy_nanoseconds\": "
+           << parallel.workerBusyNanoseconds << ",\n"
+           << "      \"counters\": ";
+    writeAllSearchTelemetryCounters(
+        output,
+        parallel.aggregateCounters,
+        "      "
+    );
+    output << "\n    },\n"
+           << "    \"workers\": [\n";
+    for (size_t workerIndex = 0; workerIndex < parallel.workers.size();
+         ++workerIndex)
+    {
+        const ParallelSearchWorkerTelemetry &worker =
+            parallel.workers[workerIndex];
+        output << "      {\n"
+               << "        \"rank\": " << worker.mpiRank << ",\n"
+               << "        \"local_worker_index\": "
+               << worker.localWorkerIndex << ",\n"
+               << "        \"global_worker_index\": "
+               << worker.globalWorkerIndex << ",\n"
+               << "        \"rank_partition\": {\n"
+               << "          \"index\": "
+               << worker.rankPartitionIndex << ",\n"
+               << "          \"count\": "
+               << worker.rankPartitionCount << "\n"
+               << "        },\n"
+               << "        \"branch_candidates\": "
+               << worker.branchCandidates << ",\n"
+               << "        \"branch_leases\": "
+               << worker.branchLeases << ",\n"
+               << "        \"branch_assignments\": "
+               << worker.branchAssignments << ",\n"
+               << "        \"depth_two_tasks_spawned\": "
+               << worker.depthTwoTasksSpawned << ",\n"
+               << "        \"depth_two_tasks_executed\": "
+               << worker.depthTwoTasksExecuted << ",\n"
+               << "        \"proactive_tail_refills\": "
+               << worker.proactiveTailRefills << ",\n"
+               << "        \"warm_start_branches\": "
+               << worker.warmStartBranches << ",\n"
+               << "        \"elapsed_nanoseconds\": "
+               << worker.elapsedNanoseconds << ",\n"
+               << "        \"busy_nanoseconds\": "
+               << worker.busyNanoseconds << ",\n"
+               << "        \"processed_graph\": {\n"
+               << "          \"atoms\": " << worker.processedAtoms << ",\n"
+               << "          \"edges\": " << worker.processedEdges << ",\n"
+               << "          \"active_mask_words\": "
+               << worker.activeMaskWords << ",\n"
+               << "          \"residual_cache_eligible\": "
+               << (worker.residualCacheEligible != 0 ? "true" : "false")
+               << "\n        },\n"
+               << "        \"phases\": {\n";
+        for (size_t i = 0;
+             i < static_cast<size_t>(SearchTelemetryPhase::count);
+             ++i)
+        {
+            const SearchTelemetryPhase phase =
+                static_cast<SearchTelemetryPhase>(i);
+            output << "          \"" << searchTelemetryPhaseName(phase)
+                   << "\": {\n"
+                   << "            \"wall_nanoseconds\": "
+                   << worker.phaseWallNanoseconds[i] << ",\n"
+                   << "            \"activations\": "
+                   << worker.phaseActivations[i] << "\n"
+                   << "          }";
+            if (i + 1 < static_cast<size_t>(SearchTelemetryPhase::count))
+                output << ',';
+            output << '\n';
+        }
+        output << "        },\n"
+               << "        \"counters\": ";
+        writeAllSearchTelemetryCounters(output, worker.counters, "        ");
+        output << "\n      }";
+        if (workerIndex + 1 < parallel.workers.size()) output << ',';
+        output << '\n';
+    }
+    output << "    ]\n"
+           << "  }";
 }
 
 inline void writeJsonRatio(
@@ -545,11 +1118,16 @@ inline bool writeSearchTelemetry(const std::string &filename)
            << "  },\n"
            << "  \"memory\": {\n"
            << "    \"method\": \"";
+    if (!searchTelemetry.collectPhaseMemory)
+        output << "disabled_parallel";
+    else
+    {
 #ifdef __linux__
-    output << "linux_proc_vmhwm_reset";
+        output << "linux_proc_vmhwm_reset";
 #else
-    output << "unavailable";
+        output << "unavailable";
 #endif
+    }
     output << "\",\n"
            << "    \"phase_peaks_are_absolute_not_additive\": true,\n"
            << "    \"phase_peaks_complete\": "
@@ -607,8 +1185,13 @@ inline bool writeSearchTelemetry(const std::string &filename)
         output << '\n';
     }
     output << "    }\n"
-           << "  }\n"
-           << "}\n";
+           << "  }";
+    if (parallelSearchTelemetry.enabled)
+    {
+        output << ",\n";
+        writeParallelSearchTelemetry(output);
+    }
+    output << "\n}\n";
     output.close();
     if (!output)
     {

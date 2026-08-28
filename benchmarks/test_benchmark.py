@@ -4,8 +4,12 @@ import contextlib
 import csv
 import io
 import json
+import os
+import shlex
+import signal
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -148,6 +152,226 @@ class BenchmarkTests(unittest.TestCase):
         )
         executable.chmod(0o755)
         return executable
+
+    def add_valid_parallel_telemetry(
+        self,
+        telemetry: dict[str, object],
+    ) -> None:
+        counters = telemetry["counters"]
+        caches = telemetry["caches"]
+        assert isinstance(counters, dict)
+        assert isinstance(caches, dict)
+        canonical = caches["canonical_mask"]
+        canonical_class = caches["canonical_class"]
+        residual = caches["residual_decomposition"]
+        assembly = caches["assembly_state"]
+        pair_bound = caches["pair_bound"]
+        assert all(
+            isinstance(value, dict)
+            for value in (canonical, canonical_class, residual, assembly, pair_bound)
+        )
+        aggregate_counters = {
+            "retained_mask_attempts": counters["retained_mask_attempts"],
+            "retained_masks": counters["retained_masks"],
+            "duplicate_mask_attempts": counters["duplicate_mask_attempts"],
+            "rejected_masks": counters["rejected_masks"],
+            "matching_visits": counters["matching_visits"],
+            "canonicalisation_calls": counters["canonicalisation_calls"],
+            "canonicalisation_mask_cache_hits": canonical["hits"],
+            "canonicalisation_mask_cache_misses": canonical["misses"],
+            "canonical_class_insertions": canonical_class["insertions"],
+            "canonical_class_reuses": canonical_class["reuses"],
+            "vf2_calls": counters["vf2_calls"],
+            "vf2_matches": counters["vf2_matches"],
+            "residual_decomposition_requests": residual["requests"],
+            "residual_cache_eligible_requests": residual["eligible_requests"],
+            "residual_cache_small_molecule_bypasses": residual[
+                "small_molecule_bypasses"
+            ],
+            "residual_cache_wide_molecule_bypasses": residual[
+                "wide_molecule_bypasses"
+            ],
+            "residual_cache_small_residual_bypasses": residual[
+                "small_residual_bypasses"
+            ],
+            "residual_cache_first_occurrence_bypasses": residual[
+                "first_occurrence_bypasses"
+            ],
+            "residual_cache_runtime_disabled_bypasses": residual[
+                "runtime_disabled_bypasses"
+            ],
+            "residual_cache_lookups": residual["lookups"],
+            "residual_cache_hits": residual["hits"],
+            "residual_cache_misses": residual["misses"],
+            "residual_cache_admissions": residual["admissions"],
+            "assembly_cache_lookups": assembly["lookups"],
+            "assembly_cache_hits": assembly["hits"],
+            "assembly_cache_misses": assembly["misses"],
+            "assembly_cache_pruned_hits": assembly["pruned_hits"],
+            "assembly_cache_updated_hits": assembly["updated_hits"],
+            "pair_bound_cache_lookups": pair_bound["lookups"],
+            "pair_bound_cache_hits": pair_bound["hits"],
+            "pair_bound_cache_misses": pair_bound["misses"],
+        }
+        empty_counters = {
+            name: 0 for name in benchmark.PARALLEL_TELEMETRY_COUNTERS
+        }
+        graph = telemetry["processed_graph"]
+        assert isinstance(graph, dict)
+        worker_graph = {
+            **graph,
+            "residual_cache_eligible": residual["eligible_for_processed_graph"],
+        }
+
+        def phases(wall_nanoseconds: int) -> dict[str, dict[str, int]]:
+            return {
+                name: {"wall_nanoseconds": wall_nanoseconds, "activations": 1}
+                for name in benchmark.SEARCH_TELEMETRY_PHASES
+            }
+
+        workers = [
+            {
+                "rank": 0,
+                "local_worker_index": 0,
+                "global_worker_index": 0,
+                "shard": {"index": 0, "count": 2},
+                "branch_candidates": 2,
+                "branch_assignments": 1,
+                "elapsed_nanoseconds": 100,
+                "busy_nanoseconds": 50,
+                "processed_graph": worker_graph,
+                "phases": phases(10),
+                "counters": aggregate_counters,
+            },
+            {
+                "rank": 0,
+                "local_worker_index": 1,
+                "global_worker_index": 1,
+                "shard": {"index": 1, "count": 2},
+                "branch_candidates": 2,
+                "branch_assignments": 1,
+                "elapsed_nanoseconds": 80,
+                "busy_nanoseconds": 30,
+                "processed_graph": worker_graph,
+                "phases": phases(6),
+                "counters": empty_counters,
+            },
+        ]
+        telemetry["parallel"] = {
+            "enabled": True,
+            "mode": "openmp",
+            "aggregation_scope": "process",
+            "elapsed_timing_method": "parallel_region_steady_clock",
+            "busy_timing_method": "instrumented_phase_wall_time",
+            "rank_count": 1,
+            "local_threads": 2,
+            "local_threads_per_rank": [2],
+            "worker_count": 2,
+            "shard_ownership": {
+                "strategy": "root_branch_ordinal_modulo_worker_count",
+                "complete": True,
+                "shard_count": 2,
+            },
+            "branch_scan_complete": True,
+            "aggregate": {
+                "counters": aggregate_counters,
+                "branch_candidates": 2,
+                "branch_assignments": 2,
+                "elapsed_nanoseconds": 100,
+                "worker_elapsed_nanoseconds": 180,
+                "worker_busy_nanoseconds": 80,
+            },
+            "workers": workers,
+        }
+
+        memory = telemetry["memory"]
+        assert isinstance(memory, dict)
+        memory["method"] = "disabled_parallel"
+        memory["phase_peaks_complete"] = False
+        memory["overall_peak_resident_kib"] = None
+        memory["process_peak_virtual_kib"] = None
+        memory_phases = memory["phases"]
+        assert isinstance(memory_phases, dict)
+        for phase in memory_phases.values():
+            assert isinstance(phase, dict)
+            phase["wall_nanoseconds"] = 1
+            for name in (
+                "start_rss_kib",
+                "peak_rss_kib",
+                "end_rss_kib",
+                "start_virtual_kib",
+                "end_virtual_kib",
+            ):
+                phase[name] = None
+
+    def add_valid_dynamic_parallel_telemetry(
+        self,
+        telemetry: dict[str, object],
+        mode: str = "openmp",
+    ) -> None:
+        self.add_valid_parallel_telemetry(telemetry)
+        parallel = telemetry["parallel"]
+        assert isinstance(parallel, dict)
+        del parallel["shard_ownership"]
+        parallel["branch_scheduler"] = {
+            "strategy": "dynamic_leases_with_static_mpi_rank_partition",
+            "lease_size": 2,
+            "rank_partition_count": 1 if mode == "openmp" else 2,
+            "complete": True,
+        }
+        aggregate = parallel["aggregate"]
+        workers = parallel["workers"]
+        assert isinstance(aggregate, dict)
+        assert isinstance(workers, list)
+        aggregate["branch_leases"] = 2
+
+        if mode == "openmp":
+            ranks = (0, 0)
+            local_worker_indexes = (0, 1)
+            rank_count = 1
+        else:
+            parallel["mode"] = mode
+            parallel["aggregation_scope"] = "all_mpi_ranks"
+            parallel["rank_count"] = 2
+            parallel["local_threads"] = 1
+            parallel["local_threads_per_rank"] = [1, 1]
+            ranks = (0, 1)
+            local_worker_indexes = (0, 0)
+            rank_count = 2
+
+        for worker, rank, local_worker_index in zip(
+            workers,
+            ranks,
+            local_worker_indexes,
+            strict=True,
+        ):
+            assert isinstance(worker, dict)
+            del worker["shard"]
+            worker["rank"] = rank
+            worker["local_worker_index"] = local_worker_index
+            worker["rank_partition"] = {"index": rank, "count": rank_count}
+            worker["branch_leases"] = 1
+
+    def create_forwarding_launcher(self, directory: Path) -> Path:
+        launcher = directory / "forwarding launcher"
+        launcher.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import os
+                import sys
+
+                if len(sys.argv) < 5 or sys.argv[1] != "--require":
+                    raise SystemExit(90)
+                if os.environ.get(sys.argv[2]) != sys.argv[3]:
+                    raise SystemExit(91)
+                os.execv(sys.argv[4], sys.argv[4:])
+                """
+            ),
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        return launcher
 
     def test_summary_statistics_support_one_sample_and_outliers(self) -> None:
         single = benchmark.summarize([4.0])
@@ -339,6 +563,286 @@ class BenchmarkTests(unittest.TestCase):
                 all(len(result.baseline_measurements) == 3 for result in results)
             )
 
+    def test_role_execution_configs_launch_with_environment_and_reach_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            candidate = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            baseline = self.create_fake_executable(
+                directory, "baseline", assembly_index=7, clock_ticks=200
+            )
+            launcher = self.create_forwarding_launcher(directory)
+            report_path = directory / "report.json"
+            candidate_launcher = [
+                str(launcher),
+                "--require",
+                "CANDIDATE_MODE",
+                "candidate enabled",
+            ]
+            baseline_launcher = [
+                str(launcher),
+                "--require",
+                "BASELINE_MODE",
+                "baseline enabled",
+            ]
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = benchmark.main(
+                    [
+                        "--input",
+                        str(fixture),
+                        "--expected",
+                        "7",
+                        "--executable",
+                        str(candidate),
+                        "--baseline-executable",
+                        str(baseline),
+                        "--candidate-launcher",
+                        shlex.join(candidate_launcher),
+                        "--baseline-launcher",
+                        shlex.join(baseline_launcher),
+                        "--candidate-env",
+                        "CANDIDATE_MODE=candidate enabled",
+                        "--baseline-env",
+                        "BASELINE_MODE=baseline enabled",
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "0",
+                        "--json-output",
+                        str(report_path),
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["execution"]["candidate"],
+                {
+                    "launcher": candidate_launcher,
+                    "environment": {"CANDIDATE_MODE": "candidate enabled"},
+                },
+            )
+            self.assertEqual(
+                report["execution"]["baseline"],
+                {
+                    "launcher": baseline_launcher,
+                    "environment": {"BASELINE_MODE": "baseline enabled"},
+                },
+            )
+            self.assertEqual(len(report["cases"][0]["candidate"]["measurements"]), 2)
+            self.assertEqual(len(report["cases"][0]["baseline"]["measurements"]), 2)
+
+    def test_same_executable_is_allowed_when_execution_configs_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            executable = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            report_path = directory / "report.json"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = benchmark.main(
+                    [
+                        "--input",
+                        str(fixture),
+                        "--expected",
+                        "7",
+                        "--executable",
+                        str(executable),
+                        "--baseline-executable",
+                        str(executable),
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=4",
+                        "--baseline-env",
+                        "OMP_NUM_THREADS=1",
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "0",
+                        "--json-output",
+                        str(report_path),
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["executables"]["candidate"]["sha256"],
+                report["executables"]["baseline"]["sha256"],
+            )
+            self.assertEqual(
+                report["execution"]["candidate"]["environment"],
+                {"OMP_NUM_THREADS": "4"},
+            )
+            self.assertEqual(
+                report["execution"]["baseline"]["environment"],
+                {"OMP_NUM_THREADS": "1"},
+            )
+
+    def test_identical_binary_copies_require_distinct_execution_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            candidate = self.create_fake_executable(
+                directory, "candidate", assembly_index=22, clock_ticks=100
+            )
+            baseline = self.create_fake_executable(
+                directory, "baseline", assembly_index=22, clock_ticks=100
+            )
+            self.assertNotEqual(candidate, baseline)
+            self.assertEqual(candidate.read_bytes(), baseline.read_bytes())
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = benchmark.main(
+                    [
+                        "--executable",
+                        str(candidate),
+                        "--baseline-executable",
+                        str(baseline),
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(status, 1)
+            self.assertIn("same binary fingerprint", stderr.getvalue())
+
+    def test_execution_config_rejects_invalid_or_ambiguous_settings(self) -> None:
+        parser = benchmark.create_argument_parser()
+        for arguments in (
+            ["--candidate-env", "missing-separator"],
+            ["--candidate-env", "1INVALID=value"],
+            ["--candidate-launcher", "'unterminated"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                parser.parse_args(arguments)
+
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            executable = self.create_fake_executable(
+                directory, "candidate", assembly_index=22, clock_ticks=100
+            )
+            scenarios = (
+                (
+                    ["--candidate-launcher", str(directory / "missing-launcher")],
+                    "candidate launcher not found",
+                ),
+                (
+                    ["--baseline-env", "OMP_NUM_THREADS=1"],
+                    "require --baseline-executable",
+                ),
+                (
+                    [
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=1",
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=2",
+                    ],
+                    "duplicate candidate environment setting",
+                ),
+            )
+            for arguments, expected_error in scenarios:
+                with self.subTest(arguments=arguments):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        status = benchmark.main(
+                            [
+                                "--executable",
+                                str(executable),
+                                "--runs",
+                                "1",
+                                "--warmup",
+                                "0",
+                                *arguments,
+                            ]
+                        )
+                    self.assertEqual(status, 1)
+                    self.assertIn(expected_error, stderr.getvalue())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups are required")
+    def test_configured_timeout_terminates_launcher_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            working_directory = directory / "working"
+            working_directory.mkdir()
+            marker = directory / "orphan-marker"
+            launcher = directory / "timeout-launcher"
+            launcher.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import subprocess
+                    import sys
+                    import time
+
+                    child = (
+                        "import pathlib,sys,time; time.sleep(0.4); "
+                        "pathlib.Path(sys.argv[1]).write_text('orphan')"
+                    )
+                    subprocess.Popen([sys.executable, "-c", child, sys.argv[1]])
+                    time.sleep(10)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            launcher.chmod(0o755)
+            executable = self.create_fake_executable(
+                directory, "candidate", assembly_index=7, clock_ticks=100
+            )
+            case = benchmark.BenchmarkCase(
+                "sample", fixture, 7, "reviewed", ("quick",), "timeout"
+            )
+            prepared = benchmark.PreparedCase(
+                case=case,
+                input_name=fixture.name,
+                output_path=working_directory / "inputOut",
+                telemetry_path=working_directory / "inputTelemetry.json",
+                working_directory=working_directory,
+            )
+
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "timed out"):
+                benchmark.run_once(
+                    executable,
+                    prepared,
+                    0.1,
+                    execution=benchmark.ExecutionConfig(
+                        launcher=(str(launcher), str(marker))
+                    ),
+                )
+            time.sleep(0.6)
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups are required")
+    def test_configured_interrupt_terminates_launcher_process_group(self) -> None:
+        process = mock.Mock(pid=12345, returncode=-signal.SIGKILL)
+        process.communicate.side_effect = [KeyboardInterrupt, ("", "")]
+
+        with (
+            mock.patch.object(benchmark.subprocess, "Popen", return_value=process),
+            mock.patch.object(benchmark.os, "killpg") as kill_group,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            benchmark.run_command(
+                ["launcher", "candidate"],
+                Path.cwd(),
+                30.0,
+                None,
+            )
+
+        kill_group.assert_called_once_with(12345, signal.SIGKILL)
+        self.assertEqual(process.communicate.call_count, 2)
+
     def test_legacy_default_and_custom_input_resolution(self) -> None:
         parser = benchmark.create_argument_parser()
         manifest, cases = benchmark.resolve_requested_cases(parser.parse_args([]))
@@ -440,11 +944,30 @@ class BenchmarkTests(unittest.TestCase):
             4,
         )
         scaling = benchmark.select_cases(cases, "scaling", [])
-        self.assertEqual(len(scaling), 13)
+        self.assertEqual(len(scaling), 18)
         self.assertTrue(all(case.expectation == "provisional" for case in scaling))
         self.assertEqual(
             [case.expected_assembly_index for case in scaling],
-            [10, 13, 15, 17, 19, 21, 23, 8, 6, 7, 10, 7, 8],
+            [
+                10,
+                13,
+                15,
+                17,
+                19,
+                21,
+                23,
+                25,
+                27,
+                29,
+                32,
+                34,
+                8,
+                6,
+                7,
+                10,
+                7,
+                8,
+            ],
         )
         self.assertEqual(
             [case.workload for case in scaling],
@@ -456,6 +979,11 @@ class BenchmarkTests(unittest.TestCase):
                 "53 atoms / 47 bonds / 6 comps",
                 "63 atoms / 56 bonds / 7 comps",
                 "68 atoms / 60 bonds / 8 comps",
+                "77 atoms / 68 bonds / 9 comps",
+                "86 atoms / 76 bonds / 10 comps",
+                "96 atoms / 85 bonds / 11 comps",
+                "105 atoms / 93 bonds / 12 comps",
+                "113 atoms / 100 bonds / 13 comps",
                 "64 atoms / 63 bonds / cache on / 1 word",
                 "65 atoms / 64 bonds / cache on / 1 word",
                 "66 atoms / 65 bonds / cache on / 2 words",
@@ -480,6 +1008,11 @@ class BenchmarkTests(unittest.TestCase):
             (53, 47, 6),
             (63, 56, 7),
             (68, 60, 8),
+            (77, 68, 9),
+            (86, 76, 10),
+            (96, 85, 11),
+            (105, 93, 12),
+            (113, 100, 13),
         ]
         blocks: list[tuple[list[str], list[str]]] = []
 
@@ -614,7 +1147,10 @@ class BenchmarkTests(unittest.TestCase):
                 )
 
             self.assertEqual(status, 0)
-            self.assertIn("Comparison summary", output.getvalue())
+            self.assertIn(
+                "Comparison (speedup > 1.0 = candidate faster)",
+                output.getvalue(),
+            )
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["schema_version"], 2)
             self.assertEqual(
@@ -676,6 +1212,296 @@ class BenchmarkTests(unittest.TestCase):
             wider_path.write_text(json.dumps(wider), encoding="utf-8")
             parsed = benchmark.parse_search_telemetry(wider_path)
             self.assertEqual(parsed["processed_graph"]["active_mask_words"], 9)
+
+            self.assertNotIn("parallel", telemetry)
+            parallel_telemetry = json.loads(json.dumps(telemetry))
+            self.add_valid_parallel_telemetry(parallel_telemetry)
+            parallel_path = directory / "parallel-telemetry.json"
+            parallel_path.write_text(
+                json.dumps(parallel_telemetry),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(parallel_path)
+            self.assertEqual(parsed["parallel"]["worker_count"], 2)
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["worker_busy_nanoseconds"],
+                80,
+            )
+            summary_output = io.StringIO()
+            with contextlib.redirect_stdout(summary_output):
+                benchmark.print_telemetry_summary(
+                    [
+                        benchmark.CaseResult(
+                            case=benchmark.BenchmarkCase(
+                                "parallel-sample",
+                                directory / "input.mol",
+                                7,
+                                "reviewed",
+                                ("quick",),
+                                "parallel telemetry",
+                            ),
+                            measurements=(benchmark.Measurement(1.0, 1, 7),),
+                            telemetry=parsed,
+                        )
+                    ]
+                )
+            self.assertIn("Parallel worker telemetry", summary_output.getvalue())
+            self.assertIn("openmp:2w", summary_output.getvalue())
+
+            dynamic_telemetry = json.loads(json.dumps(telemetry))
+            self.add_valid_dynamic_parallel_telemetry(dynamic_telemetry)
+            dynamic_path = directory / "parallel-dynamic-openmp.json"
+            dynamic_path.write_text(
+                json.dumps(dynamic_telemetry),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(dynamic_path)
+            self.assertNotIn("shard_ownership", parsed["parallel"])
+            self.assertEqual(
+                parsed["parallel"]["branch_scheduler"]["lease_size"],
+                2,
+            )
+            self.assertEqual(parsed["parallel"]["aggregate"]["branch_leases"], 2)
+
+            mpi_dynamic_telemetry = json.loads(json.dumps(telemetry))
+            self.add_valid_dynamic_parallel_telemetry(
+                mpi_dynamic_telemetry,
+                mode="mpi",
+            )
+            mpi_dynamic_path = directory / "parallel-dynamic-mpi.json"
+            mpi_dynamic_path.write_text(
+                json.dumps(mpi_dynamic_telemetry),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(mpi_dynamic_path)
+            self.assertEqual(parsed["parallel"]["rank_count"], 2)
+            self.assertEqual(
+                [
+                    worker["rank_partition"]["index"]
+                    for worker in parsed["parallel"]["workers"]
+                ],
+                [0, 1],
+            )
+
+            redistributed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
+            redistributed_dynamic["parallel"]["workers"][0][
+                "branch_assignments"
+            ] = 2
+            redistributed_dynamic["parallel"]["workers"][1][
+                "branch_assignments"
+            ] = 0
+            redistributed_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
+            redistributed_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
+            redistributed_path = directory / "parallel-dynamic-rank-redistribution.json"
+            redistributed_path.write_text(
+                json.dumps(redistributed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "rank 0 branch assignments do not match partition",
+            ):
+                benchmark.parse_search_telemetry(redistributed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["branch_scheduler"]["lease_size"] = 0
+            malformed_path = directory / "parallel-dynamic-lease-size.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent branch scheduler",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][1]["rank_partition"][
+                "index"
+            ] = 0
+            malformed_path = directory / "parallel-dynamic-rank-partition.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker rank partition",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["aggregate"]["branch_leases"] = 3
+            malformed_path = directory / "parallel-dynamic-aggregate-leases.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate branch leases do not match workers",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][0]["branch_leases"] = 0
+            malformed_path = directory / "parallel-dynamic-worker-leases.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent worker leases",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            idle_lease_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            idle_lease_dynamic["parallel"]["workers"][1][
+                "branch_assignments"
+            ] = 0
+            idle_lease_dynamic["parallel"]["aggregate"]["branch_assignments"] = 1
+            idle_lease_dynamic["parallel"]["branch_scan_complete"] = False
+            idle_lease_path = directory / "parallel-dynamic-idle-lease.json"
+            idle_lease_path.write_text(
+                json.dumps(idle_lease_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent worker leases",
+            ):
+                benchmark.parse_search_telemetry(idle_lease_path)
+
+            idle_lease_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
+            idle_lease_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
+            idle_lease_path.write_text(
+                json.dumps(idle_lease_dynamic),
+                encoding="utf-8",
+            )
+            parsed = benchmark.parse_search_telemetry(idle_lease_path)
+            self.assertEqual(
+                parsed["parallel"]["workers"][1]["branch_leases"],
+                0,
+            )
+
+            incomplete_dynamic = json.loads(json.dumps(idle_lease_dynamic))
+            incomplete_dynamic["parallel"]["branch_scan_complete"] = True
+            incomplete_path = directory / "parallel-dynamic-incomplete-scan.json"
+            incomplete_path.write_text(
+                json.dumps(incomplete_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "complete branch scan has incomplete assignments",
+            ):
+                benchmark.parse_search_telemetry(incomplete_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["enabled"] = False
+            malformed_path = directory / "parallel-disabled.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "parallel telemetry is not enabled",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][1][
+                "global_worker_index"
+            ] = 0
+            malformed_path = directory / "parallel-duplicate-worker.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker identity",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][0][
+                "busy_nanoseconds"
+            ] = 101
+            malformed_path = directory / "parallel-worker-busy.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "worker busy time exceeds elapsed time",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["aggregate"]["counters"][
+                "matching_visits"
+            ] += 1
+            malformed_path = directory / "parallel-counter-sum.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate counter matching_visits does not match workers",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][1][
+                "branch_candidates"
+            ] = 3
+            malformed_path = directory / "parallel-branch-disagreement.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate branch count does not match workers",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            del malformed_parallel["parallel"]["workers"][0]["phases"]["output"]
+            malformed_path = directory / "parallel-worker-phases.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker phases",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["aggregate"]["counters"][
+                "matching_visits"
+            ] += 1
+            malformed_parallel["parallel"]["workers"][0]["counters"][
+                "matching_visits"
+            ] += 1
+            malformed_path = directory / "parallel-legacy-mismatch.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate counters do not match legacy telemetry",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
 
     def test_json_output_rejects_protected_paths_before_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

@@ -1,50 +1,54 @@
-# Test data
+# Tests
 
-`regression_cases.tsv` is the canonical regression manifest. Each row names a
-fixture in this directory and its reviewed assembly-index expectation. Keep the
-fixture name unique and update an expectation only after confirming the change
-is intentional.
+`regression_cases.tsv` maps each reviewed fixture to its expected assembly
+index. `pathway_cases.tsv` selects cases whose pathway JSON must also match a
+file in `expected_pathways/`. Pathway comparisons ignore formatting.
 
-`pathway_cases.tsv` selects regression cases that must also match a reviewed
-JSON document in `expected_pathways/`. These comparisons parse JSON before
-comparing it, so formatting changes do not invalidate a structurally identical
-pathway. The selected cases cover numerical and named molfiles as well as the
-plain graph-input format.
-
-Before running molecule cases, `unitTester.py` also checks the executable's CLI:
-help text, strict option validation, compatibility names, option/input ordering,
-runtime and enumeration boundaries, hydrogen removal, disconnected-component
-compensation, output toggles and write failures, `.mol` path handling, and Linux
-memory reporting.
-
-Run only the pathway golden cases with:
+Run the focused developer suite from the repository root:
 
 ```bash
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+```
+
+Use the `ci` preset to run the complete regression manifest.
+
+Parallel solver parity and per-worker telemetry invariants use a dedicated
+preset so performance builds remain test-free:
+
+```bash
+cmake --preset parallel-tests
+cmake --build --preset parallel-tests
+ctest --preset parallel-tests
+```
+
+The parallel harness repeats serial/OpenMP calculations across 1, 2, and 4
+workers, including the 63/64/65 and 127/128/129 edge-mask boundaries and a
+disconnected molecule. It exercises both one-branch and chunked dynamic leases.
+When MPI targets are available, the same harness also checks rank-partitioned
+MPI and hybrid aggregation, exact lease reductions, and complete branch
+coverage.
+
+Run the Python harness directly when selecting cases or controlling parallelism:
+
+```bash
+python unitTests/unitTester.py build/release/AssemblyCpp --jobs 4
+python unitTests/unitTester.py build/release/AssemblyCpp --limit 20
 python unitTests/unitTester.py --build --pathways-only --verbose
 ```
 
-`--build` targets x86-64-v3 with POPCNT and enables search telemetry so the CLI
-and JSON schema checks can run. Aside from that diagnostic feature it matches
-the repository's documented optimized build. A standard executable still runs
-the ordinary CLI and regression checks; telemetry-only checks are detected and
-skipped. Use a separately compiled portable executable on older x86-64 or
-non-x86 systems.
+The harness always runs command-line checks before the selected regression
+cases. These cover validation, legacy names, limits, inputs, outputs, and Linux
+memory reporting. `--build` also compiles and runs the focused C++ tests, using
+an x86-64-v3 executable with telemetry as a test shortcut. Use a CMake portable
+build on older x86-64 or non-x86 systems.
 
-The build path also runs focused active-word mask, iterative tree-
-canonicalisation, and cyclic-canonicalisation tests. The cyclic tests compare
-the exact coloured-2-core form with an independent exact labelled-multigraph
-matcher across vertex permutations, atom and bond labels, pendant trees,
-disconnected fallbacks, multiedges, and regular graphs that colour refinement
-alone cannot distinguish. On Linux the tree tests use a 64 KiB stack and
-include 32,766- and 32,767-node labelled paths, preventing recursive traversal
-from returning unnoticed for either centroid shape.
-
-Run the manifest and fixture integrity audit with:
+Audit manifests and fixture coverage without running calculations:
 
 ```bash
 python unitTests/unitTester.py --audit
 ```
 
-Some `.mol` files are retained as a fixture library but do not yet have reviewed
-expected values. The audit reports these as fixture-only molecules; they are not
-silently treated as passing regression cases.
+Fixture-only molfiles are reported by the audit and are not treated as passing
+regression cases. Use `--verbose` to list them.
