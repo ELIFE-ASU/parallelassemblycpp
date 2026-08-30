@@ -855,6 +855,39 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             invalid_parallel(f"inconsistent {context} pair-bound counters")
         return value
 
+    def shared_assembly_cache_counters(
+        value: object,
+        rank_count: int,
+    ) -> dict[str, object]:
+        names = (
+            "table_count",
+            "hits",
+            "misses",
+            "collision_chain_steps",
+            "allocated_bytes",
+            "lock_acquisitions",
+            "lock_waits",
+            "lock_wait_nanoseconds",
+        )
+        if not isinstance(value, dict) or any(
+            not is_nonnegative_integer(value.get(name)) for name in names
+        ):
+            invalid_parallel("invalid shared assembly-cache counters")
+        assert isinstance(value, dict)
+        if value["table_count"] > rank_count:
+            invalid_parallel("shared assembly-cache table count exceeds ranks")
+        if value["lock_acquisitions"] != value["hits"] + value["misses"]:
+            invalid_parallel("inconsistent shared assembly-cache lookups")
+        if value["lock_waits"] > value["lock_acquisitions"]:
+            invalid_parallel("shared assembly-cache waits exceed acquisitions")
+        if (value["misses"] == 0) != (value["allocated_bytes"] == 0):
+            invalid_parallel("inconsistent shared assembly-cache allocation")
+        if value["table_count"] == 0 and any(
+            value[name] != 0 for name in names if name != "table_count"
+        ):
+            invalid_parallel("disabled shared assembly-cache has activity")
+        return value
+
     def validate_rate(
         container: dict[str, object],
         name: str,
@@ -1322,6 +1355,12 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         aggregate.get("counters"),
         "aggregate",
     )
+    # Schema v1 is additive and historical documents predate this object.
+    if "shared_assembly_cache" in aggregate:
+        shared_assembly_cache_counters(
+            aggregate["shared_assembly_cache"],
+            rank_count,
+        )
     aggregate_integer_names = (
         "branch_assignments",
         "elapsed_nanoseconds",

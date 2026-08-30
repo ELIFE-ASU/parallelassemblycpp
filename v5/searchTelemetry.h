@@ -79,6 +79,19 @@ struct SearchTelemetryCounters
     uint64_t pairBoundCacheMisses = 0;
 };
 
+/** Process-shared L2 diagnostics; one record is contributed by each rank. */
+struct SharedAssemblyCacheTelemetry
+{
+    uint64_t tableCount = 0;
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t collisionChainSteps = 0;
+    uint64_t allocatedBytes = 0;
+    uint64_t lockAcquisitions = 0;
+    uint64_t lockWaits = 0;
+    uint64_t lockWaitNanoseconds = 0;
+};
+
 struct ProcessMemorySnapshot
 {
     bool residentAvailable = false;
@@ -156,6 +169,7 @@ struct ParallelSearchWorkerTelemetry
     uint64_t processedEdges = 0;
     uint64_t activeMaskWords = 0;
     uint64_t residualCacheEligible = 0;
+    SharedAssemblyCacheTelemetry sharedAssemblyCache;
     SearchTelemetryCounters counters;
     std::array<
         uint64_t,
@@ -205,6 +219,7 @@ struct ParallelSearchTelemetrySummary
     uint64_t workerElapsedNanoseconds = 0;
     uint64_t workerBusyNanoseconds = 0;
     std::vector<uint64_t> localThreadsPerRank;
+    SharedAssemblyCacheTelemetry sharedAssemblyCache;
     SearchTelemetryCounters aggregateCounters;
     std::vector<ParallelSearchWorkerTelemetry> workers;
 };
@@ -550,6 +565,21 @@ inline void addSearchTelemetryCounters(
     destination.pairBoundCacheMisses += source.pairBoundCacheMisses;
 }
 
+inline void addSharedAssemblyCacheTelemetry(
+    SharedAssemblyCacheTelemetry &destination,
+    const SharedAssemblyCacheTelemetry &source
+)
+{
+    destination.tableCount += source.tableCount;
+    destination.hits += source.hits;
+    destination.misses += source.misses;
+    destination.collisionChainSteps += source.collisionChainSteps;
+    destination.allocatedBytes += source.allocatedBytes;
+    destination.lockAcquisitions += source.lockAcquisitions;
+    destination.lockWaits += source.lockWaits;
+    destination.lockWaitNanoseconds += source.lockWaitNanoseconds;
+}
+
 inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     uint64_t mpiRank,
     uint64_t localWorkerIndex,
@@ -733,6 +763,10 @@ inline void configureParallelSearchTelemetry(
         summary.warmStartBranchCount += worker.warmStartBranches;
         summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
         summary.workerBusyNanoseconds += worker.busyNanoseconds;
+        addSharedAssemblyCacheTelemetry(
+            summary.sharedAssemblyCache,
+            worker.sharedAssemblyCache
+        );
         addSearchTelemetryCounters(summary.aggregateCounters, worker.counters);
 
         for (size_t i = 0; i < merged.phases.size(); ++i)
@@ -949,6 +983,24 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.workerElapsedNanoseconds << ",\n"
            << "      \"worker_busy_nanoseconds\": "
            << parallel.workerBusyNanoseconds << ",\n"
+           << "      \"shared_assembly_cache\": {\n"
+           << "        \"table_count\": "
+           << parallel.sharedAssemblyCache.tableCount << ",\n"
+           << "        \"hits\": "
+           << parallel.sharedAssemblyCache.hits << ",\n"
+           << "        \"misses\": "
+           << parallel.sharedAssemblyCache.misses << ",\n"
+           << "        \"collision_chain_steps\": "
+           << parallel.sharedAssemblyCache.collisionChainSteps << ",\n"
+           << "        \"allocated_bytes\": "
+           << parallel.sharedAssemblyCache.allocatedBytes << ",\n"
+           << "        \"lock_acquisitions\": "
+           << parallel.sharedAssemblyCache.lockAcquisitions << ",\n"
+           << "        \"lock_waits\": "
+           << parallel.sharedAssemblyCache.lockWaits << ",\n"
+           << "        \"lock_wait_nanoseconds\": "
+           << parallel.sharedAssemblyCache.lockWaitNanoseconds << "\n"
+           << "      },\n"
            << "      \"counters\": ";
     writeAllSearchTelemetryCounters(
         output,

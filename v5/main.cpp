@@ -1385,6 +1385,25 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled)
     {
+        if (
+            searchContext.sharedStates != nullptr &&
+            !replicas.empty()
+        )
+        {
+            const sharedAssemblyTranspositionTable::statistics stats =
+                searchContext.sharedStates->stats();
+            SharedAssemblyCacheTelemetry &telemetry =
+                replicas.front().telemetry.sharedAssemblyCache;
+            telemetry.tableCount = 1;
+            telemetry.hits = stats.hitCount;
+            telemetry.misses = stats.missCount;
+            telemetry.collisionChainSteps = stats.collisionChainSteps;
+            telemetry.allocatedBytes = stats.allocatedBytes;
+            telemetry.lockAcquisitions = stats.lockAcquisitionCount;
+            telemetry.lockWaits = stats.lockWaitCount;
+            telemetry.lockWaitNanoseconds = stats.lockWaitNanoseconds;
+        }
+
         vector<ParallelSearchWorkerTelemetry> localWorkerTelemetry;
         localWorkerTelemetry.reserve(replicas.size());
         for (const ParallelReplicaResult &replica : replicas)

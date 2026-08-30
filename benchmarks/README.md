@@ -82,7 +82,9 @@ distributed root-queue participation, dynamic branch leases, global root-branch
 coverage, depth-two and deeper task transfers, local executions and steals,
 scheduler idle waits, deep-refill activations, task-queue high-water marks,
 maximum executed task depth, incumbent warm starts, steady-clock worker timing,
-and all 31 raw search counters per worker plus their exact aggregate.
+and all 31 raw search counters per worker plus their exact aggregate. The
+parallel aggregate also reports shared-L2 hits, misses, collision-chain probe
+steps, retained entry bytes, and contended shard-lock waits and wait time.
 Parallel phase memory is disabled because `/proc` peak resets are process-wide.
 A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
 critical parallel-region wall time; worker elapsed and busy values are sums,

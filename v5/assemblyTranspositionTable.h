@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <array>
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    #include <chrono>
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -322,23 +325,35 @@ private:
  * @brief Exact process-shared L2 table split across independent lock shards.
  *
  * A worker computes and canonicalises its complete key before calling this
- * table. Hashing, key copying, and node allocation happen before the shard
- * lock; the fixed-bucket critical section is limited to one exact checked
- * pointer link, score improvement, or dominated lookup and never resizes.
+ * table. Each shard uses a flat open-addressed index that grows independently.
+ * Hits are resolved without allocating; a miss prepares and publishes its
+ * node while its one shard lock still proves absence, so speculative hits and
+ * concurrent first sightings cannot consume worker-arena storage.
  */
 class sharedAssemblyTranspositionTable
 {
 public:
     static constexpr std::size_t shardCount = 64;
 
-    explicit sharedAssemblyTranspositionTable(std::size_t workerCount = 0)
+    /**
+     * Build one unsynchronised arena per worker. workerUpstream is non-owning,
+     * must outlive the table, and must support concurrent arena refills when
+     * more than one worker is configured.
+     */
+    explicit sharedAssemblyTranspositionTable(
+        std::size_t workerCount = 0,
+        std::pmr::memory_resource *workerUpstream =
+            std::pmr::new_delete_resource()
+    )
     {
+        if (workerUpstream == nullptr)
+            throw std::invalid_argument("shared-table worker upstream is null");
         workerPools.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker)
         {
             workerPools.push_back(std::make_unique<
                 std::pmr::monotonic_buffer_resource
-            >(64 * 1024, std::pmr::new_delete_resource()));
+            >(64 * 1024, workerUpstream));
         }
     }
 
@@ -346,24 +361,22 @@ public:
     {
         for (shard &selected : shards)
         {
-            for (entry *head : selected.buckets)
+            for (entry *stored : selected.activeSlots())
             {
-                while (head != nullptr)
+                if (stored != nullptr)
                 {
-                    entry *next = head->next;
-                    const bool pooled = head->pooled != 0;
+                    const bool pooled = stored->pooled != 0;
                     const std::size_t bytes =
-                        sizeof(entry) + sizeof(int) * head->length;
-                    std::destroy_at(head);
+                        sizeof(entry) + sizeof(int) * stored->length;
+                    std::destroy_at(stored);
                     if (!pooled)
                     {
                         std::pmr::new_delete_resource()->deallocate(
-                            head,
+                            stored,
                             bytes,
                             alignof(entry)
                         );
                     }
-                    head = next;
                 }
             }
         }
@@ -380,6 +393,27 @@ public:
     {
         assemblyTranspositionTable::result outcome;
         int bestSumDupBonds;
+    };
+
+    /**
+     * Aggregate contention, lookup, and retained-storage diagnostics.
+     * collisionChainSteps counts occupied non-matches visited by caller
+     * lookups (not rehash work). allocatedBytes counts published entry/key
+     * bytes, excluding slot arrays and arena chunk slack. Lock counters cover
+     * completed considerations, so allocation failures do not break the
+     * hit+miss invariant. lockWaitCount counts failed initial try_lock
+     * attempts. Wait counts and nanosecond timing are collected only in
+     * telemetry builds so timed production builds use a direct blocking lock.
+     */
+    struct statistics
+    {
+        std::uint64_t hitCount = 0;
+        std::uint64_t missCount = 0;
+        std::uint64_t collisionChainSteps = 0;
+        std::uint64_t allocatedBytes = 0;
+        std::uint64_t lockAcquisitionCount = 0;
+        std::uint64_t lockWaitCount = 0;
+        std::uint64_t lockWaitNanoseconds = 0;
     };
 
     assemblyTranspositionTable::result consider(
@@ -439,12 +473,28 @@ public:
         return result;
     }
 
+    [[nodiscard]] statistics stats() const
+    {
+        statistics result;
+        for (const shard &selected : shards)
+        {
+            std::lock_guard lock(selected.mutex);
+            result.hitCount += selected.hitCount;
+            result.missCount += selected.missCount;
+            result.collisionChainSteps += selected.collisionChainSteps;
+            result.allocatedBytes += selected.allocatedBytes;
+            result.lockAcquisitionCount += selected.lockAcquisitionCount;
+            result.lockWaitCount += selected.lockWaitCount;
+            result.lockWaitNanoseconds += selected.lockWaitNanoseconds;
+        }
+        return result;
+    }
+
 private:
-    static constexpr std::size_t bucketCount = 1024;
+    static constexpr std::size_t minimumShardCapacity = 1024;
 
     struct alignas(int) entry
     {
-        entry *next;
         std::uint32_t hash;
         std::uint32_t length;
         int bestSumDupBonds;
@@ -468,11 +518,32 @@ private:
 
     using ownedEntry = std::unique_ptr<entry, entryDeleter>;
 
+    struct entryFindResult
+    {
+        entry *value = nullptr;
+        std::size_t index = 0;
+        std::uint64_t collisionChainSteps = 0;
+    };
+
     struct alignas(64) shard
     {
         mutable std::mutex mutex;
-        std::array<entry *, bucketCount> buckets{};
+        std::array<entry *, minimumShardCapacity> initialSlots{};
+        std::vector<entry *> expandedSlots;
         std::size_t sizeValue = 0;
+        std::uint64_t hitCount = 0;
+        std::uint64_t missCount = 0;
+        std::uint64_t collisionChainSteps = 0;
+        std::uint64_t allocatedBytes = 0;
+        std::uint64_t lockAcquisitionCount = 0;
+        std::uint64_t lockWaitCount = 0;
+        std::uint64_t lockWaitNanoseconds = 0;
+
+        std::span<entry *> activeSlots() noexcept
+        {
+            if (expandedSlots.empty()) return initialSlots;
+            return expandedSlots;
+        }
     };
 
     // Pools are declared before shards so their storage remains alive until
@@ -493,25 +564,55 @@ private:
             throw std::length_error("assembly-state key is too long");
 
         const std::uint32_t hash = assemblyTranspositionTable::keyHash(key);
-        // The worker arena makes preparation a bump allocation. Preparing
-        // before the lock avoids a second mutex round trip on every L2 miss;
-        // a cross-worker hit simply drops the unused prepared node afterward.
-        ownedEntry prepared = prepareEntry(
-            key,
-            sumDupBonds,
-            hash,
-            resource,
-            pooled
-        );
         shard &selected = shards[shardIndex(hash)];
         {
-            std::lock_guard lock(selected.mutex);
-            if (entry *existing = find(selected, key, hash))
-                return updateExisting(*existing, sumDupBonds);
-            const std::size_t bucket = bucketIndex(hash);
-            prepared->next = selected.buckets[bucket];
-            selected.buckets[bucket] = prepared.release();
+            bool lockWaited = false;
+            std::uint64_t lockWaitNanoseconds = 0;
+            std::unique_lock lock = lockShard(
+                selected,
+                lockWaited,
+                lockWaitNanoseconds
+            );
+            const entryFindResult found = find(selected, key, hash);
+            selected.collisionChainSteps += found.collisionChainSteps;
+            if (found.value != nullptr)
+            {
+                ++selected.hitCount;
+                recordCompletedLock(
+                    selected,
+                    lockWaited,
+                    lockWaitNanoseconds
+                );
+                return updateExisting(*found.value, sumDupBonds);
+            }
+            std::size_t insertionIndex = found.index;
+            if (selected.sizeValue >= maximumShardEntries(
+                selected.activeSlots().size()
+            ))
+            {
+                grow(selected);
+                insertionIndex = emptySlot(selected.activeSlots(), hash);
+            }
+            // Worker allocations are cheap bump operations. Performing the
+            // miss allocation under the shard lock prevents speculative
+            // arena consumption and retains one scan/acquisition per call.
+            // Grow first so a failed index expansion consumes no key storage.
+            ownedEntry prepared = prepareEntry(
+                key,
+                sumDupBonds,
+                hash,
+                resource,
+                pooled
+            );
+            selected.activeSlots()[insertionIndex] = prepared.release();
             ++selected.sizeValue;
+            ++selected.missCount;
+            selected.allocatedBytes += entryBytes(key.size());
+            recordCompletedLock(
+                selected,
+                lockWaited,
+                lockWaitNanoseconds
+            );
         }
         return {
             assemblyTranspositionTable::result::inserted,
@@ -536,21 +637,116 @@ private:
         );
     }
 
-    static entry *find(
+    static entryFindResult find(
         shard &selected,
         std::span<const int> key,
         std::uint32_t hash
     ) noexcept
     {
-        entry *candidate = selected.buckets[bucketIndex(hash)];
-        while (candidate != nullptr)
+        entryFindResult result;
+        const std::span<entry *> slots = selected.activeSlots();
+        const std::size_t mask = slots.size() - 1;
+        std::size_t index = slotIndex(hash, mask);
+        while (slots[index] != nullptr)
         {
+            entry *candidate = slots[index];
             if (
                 candidate->hash == hash && keysEqual(*candidate, key)
-            ) return candidate;
-            candidate = candidate->next;
+            )
+            {
+                result.value = candidate;
+                result.index = index;
+                return result;
+            }
+            ++result.collisionChainSteps;
+            index = (index + 1) & mask;
         }
-        return nullptr;
+        result.index = index;
+        return result;
+    }
+
+    static std::size_t maximumShardEntries(std::size_t capacity) noexcept
+    {
+        return capacity - (capacity + 4) / 5;
+    }
+
+    static std::size_t slotIndex(
+        std::uint32_t hash,
+        std::size_t mask
+    ) noexcept
+    {
+        // The low bits selected the shard; use the following bits within it.
+        return (static_cast<std::size_t>(hash) / shardCount) & mask;
+    }
+
+    static std::size_t emptySlot(
+        std::span<entry *const> destination,
+        std::uint32_t hash
+    ) noexcept
+    {
+        const std::size_t mask = destination.size() - 1;
+        std::size_t index = slotIndex(hash, mask);
+        while (destination[index] != nullptr)
+            index = (index + 1) & mask;
+        return index;
+    }
+
+    static void grow(shard &selected)
+    {
+        const std::span<entry *> current = selected.activeSlots();
+        if (current.size() > selected.expandedSlots.max_size() / 4)
+            throw std::length_error("shared transposition shard is too large");
+        // Fourfold tiers avoid repeatedly rehashing the large shared-state
+        // workloads while retaining the small inline table for short cases.
+        std::vector<entry *> expanded(current.size() * 4);
+        for (entry *stored : current)
+        {
+            if (stored != nullptr)
+                expanded[emptySlot(expanded, stored->hash)] = stored;
+        }
+        selected.expandedSlots.swap(expanded);
+    }
+
+    static std::unique_lock<std::mutex> lockShard(
+        shard &selected,
+        bool &waited,
+        std::uint64_t &waitNanoseconds
+    )
+    {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        std::unique_lock<std::mutex> lock(
+            selected.mutex,
+            std::try_to_lock
+        );
+        if (lock.owns_lock()) return lock;
+
+        const auto waitStarted = std::chrono::steady_clock::now();
+        lock.lock();
+        const auto waitDuration = std::chrono::duration_cast<
+            std::chrono::nanoseconds
+        >(std::chrono::steady_clock::now() - waitStarted).count();
+        waited = true;
+        waitNanoseconds = static_cast<std::uint64_t>(waitDuration);
+        return lock;
+#else
+        static_cast<void>(waited);
+        static_cast<void>(waitNanoseconds);
+        return std::unique_lock<std::mutex>(selected.mutex);
+#endif
+    }
+
+    static void recordCompletedLock(
+        shard &selected,
+        bool waited,
+        std::uint64_t waitNanoseconds
+    ) noexcept
+    {
+        ++selected.lockAcquisitionCount;
+        if (waited)
+        {
+            ++selected.lockWaitCount;
+            selected.lockWaitNanoseconds += waitNanoseconds;
+        }
     }
 
     static consideration updateExisting(entry &existing, int score) noexcept
@@ -584,7 +780,6 @@ private:
             std::construct_at(
                 static_cast<entry *>(memory),
                 entry{
-                    nullptr,
                     hash,
                     static_cast<std::uint32_t>(key.size()),
                     score,
@@ -601,20 +796,17 @@ private:
         return prepared;
     }
 
+    static std::size_t entryBytes(std::size_t keyLength) noexcept
+    {
+        return sizeof(entry) + sizeof(int) * keyLength;
+    }
+
     static std::size_t shardIndex(std::uint32_t hash) noexcept
     {
         static_assert((shardCount & (shardCount - 1)) == 0);
         return static_cast<std::size_t>(hash) & (shardCount - 1);
     }
 
-    static std::size_t bucketIndex(std::uint32_t hash) noexcept
-    {
-        static_assert((bucketCount & (bucketCount - 1)) == 0);
-        return (
-            static_cast<std::size_t>(hash) /
-            shardCount
-        ) & (bucketCount - 1);
-    }
 };
 
 #endif

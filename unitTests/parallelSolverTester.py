@@ -452,6 +452,50 @@ def validate_counter_sum(
         )
 
 
+def validate_shared_assembly_cache(
+    value: object,
+    rank_count: int,
+    path: str,
+) -> dict[str, int]:
+    counters = require_mapping(value, path)
+    names = (
+        "table_count",
+        "hits",
+        "misses",
+        "collision_chain_steps",
+        "allocated_bytes",
+        "lock_acquisitions",
+        "lock_waits",
+        "lock_wait_nanoseconds",
+    )
+    parsed = {
+        name: require_nonnegative_integer(counters.get(name), f"{path}.{name}")
+        for name in names
+    }
+    require(
+        parsed["table_count"] <= rank_count,
+        f"{path}.table_count exceeds rank count",
+    )
+    require(
+        parsed["lock_acquisitions"] == parsed["hits"] + parsed["misses"],
+        f"{path} lookup counters are inconsistent",
+    )
+    require(
+        parsed["lock_waits"] <= parsed["lock_acquisitions"],
+        f"{path}.lock_waits exceeds acquisitions",
+    )
+    require(
+        (parsed["misses"] == 0) == (parsed["allocated_bytes"] == 0),
+        f"{path} allocation counters are inconsistent",
+    )
+    if parsed["table_count"] == 0:
+        require(
+            all(parsed[name] == 0 for name in names if name != "table_count"),
+            f"{path} reports activity without a table",
+        )
+    return parsed
+
+
 def validate_root_enumeration_phases(
     document: Mapping[str, Any],
     workers: Sequence[Mapping[str, Any]],
@@ -736,6 +780,20 @@ def validate_parallel_telemetry(
         [worker.get("counters") for worker in workers],
         f"{prefix}: parallel.aggregate.counters",
     )
+    shared_assembly_cache = validate_shared_assembly_cache(
+        aggregate.get("shared_assembly_cache"),
+        topology.rank_count,
+        f"{prefix}: parallel.aggregate.shared_assembly_cache",
+    )
+    if case.name == "amino-acid-scale-04c" and local_threads > 1:
+        require(
+            shared_assembly_cache["table_count"] == topology.rank_count,
+            f"{prefix}: expected one active shared assembly cache per rank",
+        )
+        require(
+            shared_assembly_cache["hits"] + shared_assembly_cache["misses"] > 0,
+            f"{prefix}: shared assembly cache emitted no lookup activity",
+        )
 
     worker_branch_candidates: list[int] = []
     branch_leases = 0

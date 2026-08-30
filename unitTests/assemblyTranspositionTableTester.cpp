@@ -255,6 +255,15 @@ void testSharedExactKeysAndHashCollisions()
     assert(table.consider(prefix, 1) == tableResult::inserted);
     assert(table.consider(extension, 1) == tableResult::inserted);
     assert(table.size() == 6);
+
+    const auto stats = table.stats();
+    assert(stats.hitCount == 3);
+    assert(stats.missCount == 6);
+    assert(stats.collisionChainSteps > 0);
+    assert(stats.allocatedBytes > 0);
+    assert(stats.hitCount + stats.missCount == 9);
+    assert(stats.lockAcquisitionCount == 9);
+    assert(stats.lockWaitCount <= stats.lockAcquisitionCount);
 }
 
 void testSharedBorrowedScratchLifetime()
@@ -274,6 +283,47 @@ void testSharedBorrowedScratchLifetime()
     assert(table.consider(original, 13) == tableResult::improved);
     assert(table.consider(original, 13) == tableResult::dominated);
     assert(table.size() == 1);
+
+    const auto stats = table.stats();
+    assert(stats.hitCount == 3);
+    assert(stats.missCount == 1);
+    assert(stats.allocatedBytes > original.size() * sizeof(int));
+}
+
+void testSharedWorkerHitsDoNotConsumeArenaStorage()
+{
+    countingMemoryResource upstream;
+    {
+        sharedAssemblyTranspositionTable table(1, &upstream);
+        std::vector<int> key(4096);
+        for (std::size_t index = 0; index < key.size(); ++index)
+            key[index] = static_cast<int>(index * 31 + 7);
+
+        assert(table.considerWithBestForWorker(key, 4, 0).outcome ==
+            tableResult::inserted);
+        assert(upstream.allocationCalls > 0);
+        const std::size_t callsAfterMiss = upstream.allocationCalls;
+        const std::size_t bytesAfterMiss = upstream.allocatedBytes;
+        const std::uint64_t retainedBytesAfterMiss =
+            table.stats().allocatedBytes;
+
+        for (int score = 0; score < 4096; ++score)
+        {
+            static_cast<void>(table.considerWithBestForWorker(
+                key,
+                score,
+                0
+            ));
+        }
+        assert(table.size() == 1);
+        assert(upstream.allocationCalls == callsAfterMiss);
+        assert(upstream.allocatedBytes == bytesAfterMiss);
+        const auto stats = table.stats();
+        assert(stats.missCount == 1);
+        assert(stats.hitCount == 4096);
+        assert(stats.allocatedBytes == retainedBytesAfterMiss);
+    }
+    assert(upstream.deallocationCalls == upstream.allocationCalls);
 }
 
 void testSharedBestScoreSupportsLocalPromotion()
@@ -355,6 +405,20 @@ void testSharedConcurrentSameKeyMonotonicUpdate()
         table.considerWithBestForWorker(key, maximumScore + 1, 0).outcome ==
         tableResult::dominated
     );
+
+    const auto stats = table.stats();
+    assert(stats.missCount == 1);
+    assert(stats.hitCount == threadCount * rounds + 2);
+    assert(stats.hitCount + stats.missCount == threadCount * rounds + 3);
+    assert(stats.lockAcquisitionCount == stats.hitCount + stats.missCount);
+    assert(stats.lockWaitCount <= stats.lockAcquisitionCount);
+#ifndef ASSEMBLY_ENABLE_TELEMETRY
+    assert(stats.lockWaitCount == 0);
+    assert(stats.lockWaitNanoseconds == 0);
+#endif
+    assert(stats.allocatedBytes > key.size() * sizeof(int));
+    assert(stats.allocatedBytes <
+        2 * (key.size() * sizeof(int) + 64));
 }
 
 void testSharedIndependentKeyShardStress()
@@ -430,6 +494,52 @@ void testSharedIndependentKeyShardStress()
             assert(table.consider(key, score) == tableResult::dominated);
         }
     }
+
+
+    const auto stats = table.stats();
+    assert(stats.missCount == threadCount * keysPerThread);
+    assert(stats.hitCount == 4ULL * threadCount * keysPerThread);
+    assert(stats.hitCount + stats.missCount ==
+        5ULL * threadCount * keysPerThread);
+    assert(stats.allocatedBytes > 0);
+}
+
+void testSharedFlatShardGrowthPreservesEntries()
+{
+    sharedAssemblyTranspositionTable table;
+    constexpr std::size_t keyCount = 1000;
+    std::vector<std::array<int, 2>> keys;
+    keys.reserve(keyCount);
+    for (int candidate = 0; keys.size() < keyCount; ++candidate)
+    {
+        const std::array<int, 2> key{0x2468ace, candidate};
+        if (
+            (assemblyTranspositionTable::keyHash(key) &
+                (sharedAssemblyTranspositionTable::shardCount - 1)) == 0
+        ) keys.push_back(key);
+    }
+
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        assert(table.consider(
+            keys[index],
+            static_cast<int>(index)
+        ) == tableResult::inserted);
+    }
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        assert(table.consider(
+            keys[index],
+            static_cast<int>(index)
+        ) == tableResult::dominated);
+    }
+
+    assert(table.size() == keyCount);
+    const auto stats = table.stats();
+    assert(stats.missCount == keyCount);
+    assert(stats.hitCount == keyCount);
+    assert(stats.lockAcquisitionCount == 2 * keyCount);
+    assert(stats.collisionChainSteps > 0);
 }
 
 int main()
@@ -440,7 +550,9 @@ int main()
     testRandomisedDifferential();
     testSharedExactKeysAndHashCollisions();
     testSharedBorrowedScratchLifetime();
+    testSharedWorkerHitsDoNotConsumeArenaStorage();
     testSharedBestScoreSupportsLocalPromotion();
     testSharedConcurrentSameKeyMonotonicUpdate();
     testSharedIndependentKeyShardStress();
+    testSharedFlatShardGrowthPreservesEntries();
 }

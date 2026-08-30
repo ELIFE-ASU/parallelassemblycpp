@@ -314,6 +314,16 @@ class BenchmarkTests(unittest.TestCase):
                 "elapsed_nanoseconds": 100,
                 "worker_elapsed_nanoseconds": 180,
                 "worker_busy_nanoseconds": 80,
+                "shared_assembly_cache": {
+                    "table_count": 0,
+                    "hits": 0,
+                    "misses": 0,
+                    "collision_chain_steps": 0,
+                    "allocated_bytes": 0,
+                    "lock_acquisitions": 0,
+                    "lock_waits": 0,
+                    "lock_wait_nanoseconds": 0,
+                },
             },
             "workers": workers,
         }
@@ -1651,7 +1661,25 @@ class BenchmarkTests(unittest.TestCase):
                 [0, 1],
             )
 
+            malformed_shared_cache = json.loads(json.dumps(mpi_dynamic_telemetry))
+            malformed_shared_cache["parallel"]["aggregate"][
+                "shared_assembly_cache"
+            ]["lock_acquisitions"] = 1
+            malformed_path = directory / "parallel-shared-cache-lookups.json"
+            malformed_path.write_text(
+                json.dumps(malformed_shared_cache),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent shared assembly-cache lookups",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
             legacy_mpi_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
+            del legacy_mpi_dynamic["parallel"]["aggregate"][
+                "shared_assembly_cache"
+            ]
             legacy_scheduler = legacy_mpi_dynamic["parallel"]["branch_scheduler"]
             legacy_scheduler["strategy"] = (
                 "dynamic_leases_with_static_mpi_rank_partition"
