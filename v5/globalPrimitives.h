@@ -124,7 +124,11 @@ constexpr size_t parallelMinimumQueuedTasksPerWorker = 8;
 constexpr size_t parallelTargetQueuedTasksPerWorker = 16;
 constexpr size_t parallelMaximumQueuedTasksPerWorker = 32;
 constexpr size_t parallelPromisingFrontierLeaseSize = 4;
-constexpr unsigned int parallelMaximumTaskDepth = 2;
+// Deeper transfers are armed one level at a time only after workers fail to
+// find stealable work.  The fixed ceiling bounds serialization and queueing
+// even when a search tree has a very long irregular tail.
+constexpr unsigned int parallelMaximumTaskDepth = 4;
+constexpr size_t schedulerCacheLineBytes = 64;
 
 bool interruptionRequested()
 {

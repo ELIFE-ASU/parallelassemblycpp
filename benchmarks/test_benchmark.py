@@ -229,6 +229,24 @@ class BenchmarkTests(unittest.TestCase):
                 for name in benchmark.SEARCH_TELEMETRY_PHASES
             }
 
+        def scheduler_metrics(idle_waits: int) -> dict[str, int]:
+            return {
+                "depth_two_tasks_spawned": 0,
+                "depth_two_tasks_executed": 0,
+                "deeper_tasks_spawned": 0,
+                "deeper_tasks_executed": 0,
+                "task_steal_attempts": 0,
+                "task_steals": 0,
+                "local_task_executions": 0,
+                "scheduler_idle_waits": idle_waits,
+                "scheduler_idle_nanoseconds": 50,
+                "deep_refill_activations": 0,
+                "task_queue_high_watermark": 0,
+                "maximum_task_depth_executed": 0,
+                "proactive_tail_refills": 0,
+                "warm_start_branches": 0,
+            }
+
         workers = [
             {
                 "rank": 0,
@@ -237,6 +255,7 @@ class BenchmarkTests(unittest.TestCase):
                 "shard": {"index": 0, "count": 2},
                 "branch_candidates": 2,
                 "branch_assignments": 1,
+                **scheduler_metrics(1),
                 "elapsed_nanoseconds": 100,
                 "busy_nanoseconds": 50,
                 "processed_graph": worker_graph,
@@ -250,6 +269,7 @@ class BenchmarkTests(unittest.TestCase):
                 "shard": {"index": 1, "count": 2},
                 "branch_candidates": 2,
                 "branch_assignments": 1,
+                **scheduler_metrics(2),
                 "elapsed_nanoseconds": 80,
                 "busy_nanoseconds": 30,
                 "processed_graph": worker_graph,
@@ -262,7 +282,7 @@ class BenchmarkTests(unittest.TestCase):
             "mode": "openmp",
             "aggregation_scope": "process",
             "elapsed_timing_method": "parallel_region_steady_clock",
-            "busy_timing_method": "instrumented_phase_wall_time",
+            "busy_timing_method": "elapsed_minus_scheduler_idle_time",
             "rank_count": 1,
             "local_threads": 2,
             "local_threads_per_rank": [2],
@@ -277,6 +297,20 @@ class BenchmarkTests(unittest.TestCase):
                 "counters": aggregate_counters,
                 "branch_candidates": 2,
                 "branch_assignments": 2,
+                "depth_two_tasks_spawned": 0,
+                "depth_two_tasks_executed": 0,
+                "deeper_tasks_spawned": 0,
+                "deeper_tasks_executed": 0,
+                "task_steal_attempts": 0,
+                "task_steals": 0,
+                "local_task_executions": 0,
+                "scheduler_idle_waits": 3,
+                "scheduler_idle_nanoseconds": 100,
+                "deep_refill_activations": 0,
+                "task_queue_high_watermark": 0,
+                "maximum_task_depth_executed": 0,
+                "proactive_tail_refills": 0,
+                "warm_start_branches": 0,
                 "elapsed_nanoseconds": 100,
                 "worker_elapsed_nanoseconds": 180,
                 "worker_busy_nanoseconds": 80,
@@ -317,6 +351,7 @@ class BenchmarkTests(unittest.TestCase):
             "strategy": "dynamic_leases_with_static_mpi_rank_partition",
             "lease_size": 2,
             "rank_partition_count": 1 if mode == "openmp" else 2,
+            "adaptive_splitting": dict(benchmark.ADAPTIVE_SPLITTING_POLICY),
             "complete": True,
         }
         aggregate = parallel["aggregate"]
@@ -351,6 +386,57 @@ class BenchmarkTests(unittest.TestCase):
             worker["local_worker_index"] = local_worker_index
             worker["rank_partition"] = {"index": rank, "count": rank_count}
             worker["branch_leases"] = 1
+
+        first_worker = workers[0]
+        second_worker = workers[1]
+        assert isinstance(first_worker, dict)
+        assert isinstance(second_worker, dict)
+        first_worker.update(
+            {
+                "depth_two_tasks_spawned": 2,
+                "depth_two_tasks_executed": 1,
+                "deeper_tasks_spawned": 1,
+                "deeper_tasks_executed": 0,
+                "task_steal_attempts": 1,
+                "task_steals": 0,
+                "local_task_executions": 1,
+                "deep_refill_activations": 1,
+                "task_queue_high_watermark": 2,
+                "maximum_task_depth_executed": 2,
+                "proactive_tail_refills": 1,
+                "warm_start_branches": 1,
+            }
+        )
+        second_worker.update(
+            {
+                "depth_two_tasks_spawned": 0,
+                "depth_two_tasks_executed": 1,
+                "deeper_tasks_spawned": 0,
+                "deeper_tasks_executed": 1,
+                "task_steal_attempts": 3,
+                "task_steals": 2,
+                "local_task_executions": 0,
+                "task_queue_high_watermark": 0,
+                "maximum_task_depth_executed": 3,
+                "warm_start_branches": 1 if mode != "openmp" else 0,
+            }
+        )
+        aggregate.update(
+            {
+                "depth_two_tasks_spawned": 2,
+                "depth_two_tasks_executed": 2,
+                "deeper_tasks_spawned": 1,
+                "deeper_tasks_executed": 1,
+                "task_steal_attempts": 4,
+                "task_steals": 2,
+                "local_task_executions": 1,
+                "deep_refill_activations": 1,
+                "task_queue_high_watermark": 2,
+                "maximum_task_depth_executed": 3,
+                "proactive_tail_refills": 1,
+                "warm_start_branches": rank_count,
+            }
+        )
 
     def create_forwarding_launcher(self, directory: Path) -> Path:
         launcher = directory / "forwarding launcher"
@@ -1261,7 +1347,180 @@ class BenchmarkTests(unittest.TestCase):
                 parsed["parallel"]["branch_scheduler"]["lease_size"],
                 2,
             )
+            self.assertEqual(
+                parsed["parallel"]["branch_scheduler"]["adaptive_splitting"][
+                    "maximum_depth"
+                ],
+                4,
+            )
             self.assertEqual(parsed["parallel"]["aggregate"]["branch_leases"], 2)
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["deeper_tasks_executed"],
+                1,
+            )
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["task_queue_high_watermark"],
+                2,
+            )
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["maximum_task_depth_executed"],
+                3,
+            )
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["branch_scheduler"][
+                "adaptive_splitting"
+            ]["maximum_depth"] = 2
+            malformed_path = directory / "parallel-dynamic-task-depth-policy.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent branch scheduler",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][0][
+                "scheduler_idle_waits"
+            ] = -1
+            malformed_path = directory / "parallel-dynamic-negative-scheduler.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker measurement",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][0]["task_steals"] = 2
+            malformed_path = directory / "parallel-dynamic-steal-attempts.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "worker task steals exceed attempts",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][0][
+                "local_task_executions"
+            ] = 0
+            malformed_path = directory / "parallel-dynamic-task-executions.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "worker task executions do not match transferred tasks",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["aggregate"][
+                "scheduler_idle_waits"
+            ] += 1
+            malformed_path = directory / "parallel-dynamic-scheduler-sum.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate scheduler field scheduler_idle_waits",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["aggregate"][
+                "task_queue_high_watermark"
+            ] += 1
+            malformed_path = directory / "parallel-dynamic-queue-maximum.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "aggregate task queue high-water mark",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][1][
+                "maximum_task_depth_executed"
+            ] = 5
+            malformed_dynamic["parallel"]["aggregate"][
+                "maximum_task_depth_executed"
+            ] = 5
+            malformed_path = directory / "parallel-dynamic-depth-bound.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker maximum task depth",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][1][
+                "maximum_task_depth_executed"
+            ] = 0
+            malformed_path = directory / "parallel-dynamic-zero-task-depth.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "invalid worker maximum task depth",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
+            malformed_dynamic["parallel"]["workers"][0][
+                "depth_two_tasks_spawned"
+            ] += 1
+            malformed_dynamic["parallel"]["aggregate"][
+                "depth_two_tasks_spawned"
+            ] += 1
+            malformed_path = directory / "parallel-dynamic-depth-two-balance.json"
+            malformed_path.write_text(
+                json.dumps(malformed_dynamic),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "spawned depth-two tasks were not each executed once",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_parallel = json.loads(json.dumps(parallel_telemetry))
+            malformed_parallel["parallel"]["workers"][0]["busy_nanoseconds"] = 51
+            malformed_parallel["parallel"]["aggregate"][
+                "worker_busy_nanoseconds"
+            ] = 81
+            malformed_path = directory / "parallel-scheduler-busy-time.json"
+            malformed_path.write_text(
+                json.dumps(malformed_parallel),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "inconsistent worker busy time",
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
 
             mpi_dynamic_telemetry = json.loads(json.dumps(telemetry))
             self.add_valid_dynamic_parallel_telemetry(

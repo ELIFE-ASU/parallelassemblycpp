@@ -79,13 +79,25 @@ Telemetry is excluded from timing aggregates. It records graph size, retained
 masks, matching and canonicalisation activity, cache rates, phase clock ticks,
 and phase memory. Parallel telemetry additionally records rank/thread topology,
 dynamic branch leases, MPI rank partitions, root-branch coverage, depth-two
-task transfers, incumbent warm starts, steady-clock worker timing, and all 31
-raw counters per worker plus their exact aggregate.
+and deeper task transfers, local executions and steals, scheduler idle waits,
+deep-refill activations, task-queue high-water marks, maximum executed task
+depth, incumbent warm starts, steady-clock worker timing, and all 31 raw search
+counters per worker plus their exact aggregate.
 Parallel phase memory is disabled because `/proc` peak resets are process-wide.
 A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
 critical parallel-region wall time; worker elapsed and busy values are sums,
-and busy is instrumented phase coverage rather than CPU utilization. Legacy VF2
-counters remain in the schema but are zero with the exact cyclic canonicaliser.
+and each worker's busy time is its elapsed time minus measured scheduler-idle
+wait time, not CPU utilization. The aggregate queue high-water mark and maximum
+task depth are maxima across workers; the other scheduler event fields are
+sums. Legacy VF2 counters remain in the schema but are zero with the exact
+cyclic canonicaliser.
+
+The aggregate and worker records expose `deeper_tasks_spawned`,
+`deeper_tasks_executed`, `task_steal_attempts`, `task_steals`,
+`local_task_executions`, `scheduler_idle_waits`,
+`scheduler_idle_nanoseconds`, `deep_refill_activations`,
+`task_queue_high_watermark`, and `maximum_task_depth_executed`. The reported
+`busy_timing_method` is `elapsed_minus_scheduler_idle_time`.
 
 ## Paired comparisons
 
@@ -188,15 +200,33 @@ The default root scheduler uses fixed leases of four for compact frontiers and
 guided leases for larger ones. It assigns the promising leading frontier in
 groups of at most four, keeps about sixteen claimable root tasks per worker
 through the bulk, and shrinks toward single jobs at the tail. Root jobs take
-priority over transferred work. When the initial root frontier is markedly
-below eight jobs per local worker, or half the local workers remain idle behind
-active root work, a root search may expose immediate children to a rank-local
-depth-two queue. Frontiers that begin with at least sixty-four roots per worker
-also arm donation when their unclaimed tail drops below eight per worker, so a
-final root can hand off its first child before idleness is observed. The queue
-targets sixteen and is capped at thirty-two tasks per local worker. The largest
-initial duplicate is evaluated first to publish a valid first-step incumbent
-before concurrent searching begins. Depth-two transfer is disabled in an
+priority over transferred work. The existing shallow policy lets a root search
+expose immediate children as depth-two tasks when its rank starts with fewer
+than four roots per local worker or workers demonstrate idle pressure behind
+active root work. Frontiers that begin with at least sixty-four roots per
+worker also arm depth-two donation when their unclaimed tail drops below eight
+per worker, so a final root can hand off its first child before idleness is
+observed. The idle trigger is at least half the workers on ranks with fewer
+than eight local workers, and roughly one quarter (with a minimum of two) on
+larger ranks.
+
+Each rank has one lazily populated deque per local worker. Producers push to
+their own deque and execute its newest task (owner LIFO); idle peers take the
+oldest task from another worker (thief FIFO). After a worker fails to find
+local or stealable work and the live idle count reaches the trigger, the
+scheduler can request a refill before entering its 1 ms signal-poll wait.
+Depths three and four are armed only through this observed-starvation path,
+one level at a time while work at the preceding depth remains outstanding.
+The estimated rank frontier must be below eight tasks per worker to request a
+starvation refill. Donation stops around a target of sixteen tasks per worker,
+with a hard rank-wide task-slot cap of thirty-two times the local worker count
+and an absolute transferred-task depth cap of four. The hot root-lease cursor,
+root/task outstanding counts, ready/slot/idle counts, and donation request
+occupy separate 64-byte-aligned storage; worker deque state is aligned
+separately too.
+
+The largest initial duplicate is evaluated first to publish a valid first-step
+incumbent before concurrent searching begins. Task transfer is disabled in an
 MPI-only rank with one local worker, but remains available within hybrid ranks.
 
 Set the positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a

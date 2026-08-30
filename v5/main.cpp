@@ -532,17 +532,56 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     constexpr size_t rankPartitionIndex = 0;
     constexpr size_t rankPartitionCount = 1;
 #endif
-    ParallelTaskScheduler taskScheduler(
-        searchContext.rootJobs.size(),
-        rankPartitionIndex,
-        rankPartitionCount,
-        static_cast<size_t>(localThreads),
-        branchLeaseSize,
-        adaptiveBranchLeases
+    unique_ptr<ParallelTaskScheduler> taskSchedulerStorage;
+    vector<ParallelReplicaResult> replicas;
+    int schedulerPreparationSucceeded = 1;
+    try
+    {
+        taskSchedulerStorage = make_unique<ParallelTaskScheduler>(
+            searchContext.rootJobs.size(),
+            rankPartitionIndex,
+            rankPartitionCount,
+            static_cast<size_t>(localThreads),
+            branchLeaseSize,
+            adaptiveBranchLeases
+        );
+        replicas.resize(static_cast<size_t>(localThreads));
+    }
+    catch (const std::exception &exception)
+    {
+        preparationError = exception.what();
+        schedulerPreparationSucceeded = 0;
+    }
+    catch (...)
+    {
+        preparationError = "unknown parallel scheduler preparation failure";
+        schedulerPreparationSucceeded = 0;
+    }
+#if defined(ASSEMBLYCPP_USE_MPI)
+    int allSchedulersPrepared = schedulerPreparationSucceeded;
+    MPI_Allreduce(
+        &schedulerPreparationSucceeded,
+        &allSchedulersPrepared,
+        1,
+        MPI_INT,
+        MPI_MIN,
+        MPI_COMM_WORLD
     );
-    vector<ParallelReplicaResult> replicas(
-        static_cast<size_t>(localThreads)
-    );
+    schedulerPreparationSucceeded = allSchedulersPrepared;
+#endif
+    if (schedulerPreparationSucceeded == 0)
+    {
+        if (isPrimaryProcess())
+        {
+            if (preparationError.empty())
+                preparationError =
+                    "another MPI rank could not prepare the scheduler";
+            cerr << "error: parallel scheduler preparation failed: "
+                 << preparationError << '\n';
+        }
+        return false;
+    }
+    ParallelTaskScheduler &taskScheduler = *taskSchedulerStorage;
 
     auto runReplica = [&](int threadIndex)
     {
@@ -556,13 +595,23 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         searchRankPartitionCount = 1;
 #endif
         searchBranchLeaseSize = branchLeaseSize;
-        parallelTaskScheduler = taskScheduler.depthTwoTasksEnabled()
+        parallelTaskScheduler = taskScheduler.transferableTasksEnabled()
             ? &taskScheduler
             : nullptr;
         sharedAssemblyIndex = &processBest;
         suppressSearchOutput = true;
         searchDepthTwoTasksSpawned = 0;
         searchDepthTwoTasksExecuted = 0;
+        searchDeeperTasksSpawned = 0;
+        searchDeeperTasksExecuted = 0;
+        searchTaskStealAttempts = 0;
+        searchTaskSteals = 0;
+        searchLocalTaskExecutions = 0;
+        searchSchedulerIdleWaits = 0;
+        searchSchedulerIdleNanoseconds = 0;
+        searchDeepRefillActivations = 0;
+        searchTaskQueueHighWatermark = 0;
+        searchMaximumTaskDepthExecuted = 0;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         searchProactiveTailRefills = 0;
 #endif
@@ -600,7 +649,10 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
             {
                 // Construct and destroy every EdgeMask-owning object on this
                 // worker; only the primitive job index crosses the queue.
-                WorkerContext worker(searchContext);
+                WorkerContext worker(
+                    searchContext,
+                    static_cast<size_t>(threadIndex)
+                );
                 if (threadIndex == 0)
                 {
                     warmStartParallelIncumbent(
@@ -685,6 +737,16 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                 static_cast<uint64_t>(searchBranchAssignmentCount),
                 static_cast<uint64_t>(searchDepthTwoTasksSpawned),
                 static_cast<uint64_t>(searchDepthTwoTasksExecuted),
+                static_cast<uint64_t>(searchDeeperTasksSpawned),
+                static_cast<uint64_t>(searchDeeperTasksExecuted),
+                static_cast<uint64_t>(searchTaskStealAttempts),
+                static_cast<uint64_t>(searchTaskSteals),
+                static_cast<uint64_t>(searchLocalTaskExecutions),
+                static_cast<uint64_t>(searchSchedulerIdleWaits),
+                static_cast<uint64_t>(searchSchedulerIdleNanoseconds),
+                static_cast<uint64_t>(searchDeepRefillActivations),
+                static_cast<uint64_t>(searchTaskQueueHighWatermark),
+                static_cast<uint64_t>(searchMaximumTaskDepthExecuted),
                 static_cast<uint64_t>(searchProactiveTailRefills),
                 static_cast<uint64_t>(searchWarmStartBranches),
                 workerElapsedNanoseconds
@@ -702,6 +764,16 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         searchBranchAssignmentCount = 0;
         searchDepthTwoTasksSpawned = 0;
         searchDepthTwoTasksExecuted = 0;
+        searchDeeperTasksSpawned = 0;
+        searchDeeperTasksExecuted = 0;
+        searchTaskStealAttempts = 0;
+        searchTaskSteals = 0;
+        searchLocalTaskExecutions = 0;
+        searchSchedulerIdleWaits = 0;
+        searchSchedulerIdleNanoseconds = 0;
+        searchDeepRefillActivations = 0;
+        searchTaskQueueHighWatermark = 0;
+        searchMaximumTaskDepthExecuted = 0;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         searchProactiveTailRefills = 0;
 #endif

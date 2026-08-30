@@ -866,7 +866,7 @@ constexpr size_t pairBoundMinimumMoleculeEdges = 27;
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation = false,
+    bool allowParallelDonation = false,
     bool useSharedStates = false,
     bool enableFragmentPairBlocks = false
 >
@@ -922,7 +922,7 @@ void recordImprovedAssemblyIndex(
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation = false,
+    bool allowParallelDonation = false,
     bool useSharedStates = false,
     fragmentPairBlockMode pairBlockMode = fragmentPairBlockMode::automatic
 >
@@ -994,7 +994,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
             dagRecursiveAssemblyWithWorkspaceImpl<
                 equivalenceMode,
                 trackPath,
-                allowDepthTwoDonation,
+                allowParallelDonation,
                 useSharedStates,
                 true
             >(
@@ -1010,7 +1010,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
             dagRecursiveAssemblyWithWorkspaceImpl<
                 equivalenceMode,
                 trackPath,
-                allowDepthTwoDonation,
+                allowParallelDonation,
                 useSharedStates,
                 false
             >(
@@ -1030,7 +1030,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
             dagRecursiveAssemblyWithWorkspaceImpl<
                 equivalenceMode,
                 trackPath,
-                allowDepthTwoDonation,
+                allowParallelDonation,
                 useSharedStates,
                 true
             >(
@@ -1046,7 +1046,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
             dagRecursiveAssemblyWithWorkspaceImpl<
                 equivalenceMode,
                 trackPath,
-                allowDepthTwoDonation,
+                allowParallelDonation,
                 useSharedStates,
                 false
             >(
@@ -1063,7 +1063,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
         dagRecursiveAssemblyWithWorkspaceImpl<
             equivalenceMode,
             trackPath,
-            allowDepthTwoDonation,
+            allowParallelDonation,
             useSharedStates,
             false
         >(
@@ -1081,7 +1081,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation = false,
+    bool allowParallelDonation = false,
     bool useSharedStates = false,
     fragmentPairBlockMode pairBlockMode = fragmentPairBlockMode::automatic
 >
@@ -1099,7 +1099,7 @@ bool continueAssemblySearchWithWorkspace(
     return continueCanonicalAssemblySearchWithWorkspace<
         equivalenceMode,
         trackPath,
-        allowDepthTwoDonation,
+        allowParallelDonation,
         useSharedStates,
         pairBlockMode
     >(
@@ -1125,7 +1125,7 @@ bool continueAssemblySearchWithWorkspace(
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
-    bool allowDepthTwoDonation,
+    bool allowParallelDonation,
     bool useSharedStates,
     bool enableFragmentPairBlocks
 >
@@ -1363,20 +1363,38 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                     if (candidateAIBound < AI)
                     {
 #if defined(ASSEMBLYCPP_USE_OPENMP) || defined(ASSEMBLYCPP_USE_MPI)
-                        if constexpr (allowDepthTwoDonation && !trackPath)
+                        if constexpr (allowParallelDonation && !trackPath)
                         {
+                            const size_t relativeDepth =
+                                searchStorage.recursiveDepth;
+                            const unsigned int taskDepth =
+                                searchStorage.parallelTaskDepth <=
+                                    ParallelTaskScheduler::maximumTaskDepth &&
+                                relativeDepth <=
+                                    ParallelTaskScheduler::maximumTaskDepth -
+                                        searchStorage.parallelTaskDepth
+                                ? searchStorage.parallelTaskDepth +
+                                    static_cast<unsigned int>(relativeDepth)
+                                : ParallelTaskScheduler::maximumTaskDepth + 1;
                             if (
+                                taskDepth <=
+                                    ParallelTaskScheduler::maximumTaskDepth &&
                                 parallelTaskScheduler != nullptr &&
-                                parallelTaskScheduler
-                                    ->depthTwoRefillRequested() &&
-                                parallelTaskScheduler->tryEnqueueDepthTwo(
+                                parallelTaskScheduler->taskDonationRequested(
+                                    taskDepth
+                                ) &&
+                                parallelTaskScheduler->tryEnqueueTask(
+                                    searchStorage.parallelWorkerIndex,
                                     candidate,
-                                    candidateAIBound
+                                    candidateAIBound,
+                                    taskDepth
                                 )
                             ) [[unlikely]]
                             {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
-                                ++searchDepthTwoTasksSpawned;
+                                if (taskDepth == 2)
+                                    ++searchDepthTwoTasksSpawned;
+                                else ++searchDeeperTasksSpawned;
 #endif
                                 return true;
                             }
@@ -1388,13 +1406,13 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             candidateKey,
                             fragmentationWorkspace
                         )) return false;
-                        // The default false specialization is deliberate:
-                        // only this root state's immediate children may be
-                        // donated, never descendants of an inline child.
+                        // Parallel searches retain donation capability while
+                        // runtime starvation telemetry and the depth bound
+                        // decide whether this particular descendant moves.
                         if (!continueAssemblySearchWithWorkspace<
                             equivalenceMode,
                             trackPath,
-                            false,
+                            allowParallelDonation,
                             useSharedStates,
                             enableFragmentPairBlocks
                                 ? fragmentPairBlockMode::enabled
@@ -2378,8 +2396,8 @@ void warmStartParallelIncumbent(
 #endif
 }
 
-void reconstructDepthTwoTask(
-    const parallelDepthTwoTaskDescriptor &task,
+void reconstructParallelTask(
+    const parallelSearchTaskDescriptor &task,
     assemblyState &state
 )
 {
@@ -2391,7 +2409,7 @@ void reconstructDepthTwoTask(
         if (
             fragment.wordOffset > task.fragmentWords.size() ||
             wordCount > task.fragmentWords.size() - fragment.wordOffset
-        ) throw logic_error("serialized depth-two task mask is incomplete");
+        ) throw logic_error("serialized parallel task mask is incomplete");
         EdgeMask mask = EdgeMask::fromActiveWords(
             task.fragmentWords.data() + fragment.wordOffset
         );
@@ -2406,9 +2424,9 @@ void reconstructDepthTwoTask(
 }
 
 template<matchingEquivalenceMode equivalenceMode, bool useSharedStates>
-bool runParallelDepthTwoJobImpl(
+bool runParallelTaskImpl(
     const SearchContext &context,
-    const parallelDepthTwoTaskDescriptor &task,
+    const parallelSearchTaskDescriptor &task,
     WorkerContext &worker
 )
 {
@@ -2423,7 +2441,8 @@ bool runParallelDepthTwoJobImpl(
     // The previous root may have ended on a bound-pruned raw fragmentation.
     // Its deferred cache binding does not describe this transferred state.
     worker.fragmentation.beginFragmentation();
-    reconstructDepthTwoTask(task, worker.candidate);
+    reconstructParallelTask(task, worker.candidate);
+    worker.search.parallelTaskDepth = task.depth;
     if (searchShouldStop()) return false;
 
     vi &candidateKey = worker.search.candidateKey;
@@ -2435,7 +2454,7 @@ bool runParallelDepthTwoJobImpl(
     return continueCanonicalAssemblySearchWithWorkspace<
         equivalenceMode,
         false,
-        false,
+        true,
         useSharedStates
     >(
         context.dag,
@@ -2449,20 +2468,20 @@ bool runParallelDepthTwoJobImpl(
 }
 
 template<bool useSharedStates>
-bool runParallelDepthTwoJob(
+bool runParallelTask(
     const SearchContext &context,
-    const parallelDepthTwoTaskDescriptor &task,
+    const parallelSearchTaskDescriptor &task,
     WorkerContext &worker
 )
 {
     if (!worker.fragmentation.homogeneousPathEdgePositions.empty())
     {
-        return runParallelDepthTwoJobImpl<
+        return runParallelTaskImpl<
             matchingEquivalenceMode::homogeneousPath,
             useSharedStates
         >(context, task, worker);
     }
-    return runParallelDepthTwoJobImpl<
+    return runParallelTaskImpl<
         matchingEquivalenceMode::none,
         useSharedStates
     >(context, task, worker);
@@ -2483,6 +2502,7 @@ void runParallelRootJobs(
         size_t end = 0;
         if (scheduler.claimRootLease(begin, end))
         {
+            worker.search.parallelTaskDepth = 1;
             ++searchBranchLeaseCount;
             for (size_t partitionOrdinal = begin;
                  partitionOrdinal < end;
@@ -2517,25 +2537,30 @@ void runParallelRootJobs(
             continue;
         }
 
-        if (!scheduler.depthTwoTasksEnabled()) return;
+        if (!scheduler.transferableTasksEnabled()) return;
 
         // Root work remains the normal scheduling frontier. Depth-two tasks
         // are consumed only after no root lease is immediately claimable.
-        parallelDepthTwoTaskDescriptor task;
+        parallelSearchTaskDescriptor task;
         const ParallelTaskScheduler::WorkAvailability availability =
-            scheduler.nextWork(task);
+            scheduler.nextWork(worker.search.parallelWorkerIndex, task);
         if (
             availability ==
-                ParallelTaskScheduler::WorkAvailability::depthTwo
+                ParallelTaskScheduler::WorkAvailability::task
         )
         {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
-            ++searchDepthTwoTasksExecuted;
+            if (task.depth == 2) ++searchDepthTwoTasksExecuted;
+            else ++searchDeeperTasksExecuted;
+            searchMaximumTaskDepthExecuted = std::max(
+                searchMaximumTaskDepthExecuted,
+                task.depth
+            );
 #endif
             bool completed = false;
             try
             {
-                completed = runParallelDepthTwoJob<useSharedStates>(
+                completed = runParallelTask<useSharedStates>(
                     context,
                     task,
                     worker
@@ -2543,10 +2568,10 @@ void runParallelRootJobs(
             }
             catch (...)
             {
-                scheduler.completeDepthTwoJob();
+                scheduler.completeTask(task.depth);
                 throw;
             }
-            scheduler.completeDepthTwoJob();
+            scheduler.completeTask(task.depth);
             if (!completed) return;
             continue;
         }
@@ -2554,7 +2579,7 @@ void runParallelRootJobs(
         if (
             availability == ParallelTaskScheduler::WorkAvailability::complete
         ) return;
-        scheduler.waitForWork();
+        scheduler.waitForWork(worker.search.parallelWorkerIndex);
     }
 }
 

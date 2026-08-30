@@ -87,6 +87,27 @@ PARALLEL_TELEMETRY_COUNTERS = frozenset(
         "pair_bound_cache_misses",
     )
 )
+ADAPTIVE_SPLITTING_POLICY = {
+    "minimum_queued_tasks_per_worker": 8,
+    "target_queued_tasks_per_worker": 16,
+    "maximum_queued_tasks_per_worker": 32,
+    "maximum_depth": 4,
+    "warm_start": "largest_duplicate_first",
+}
+PARALLEL_SCHEDULER_SUM_FIELDS = (
+    "depth_two_tasks_spawned",
+    "depth_two_tasks_executed",
+    "deeper_tasks_spawned",
+    "deeper_tasks_executed",
+    "task_steal_attempts",
+    "task_steals",
+    "local_task_executions",
+    "scheduler_idle_waits",
+    "scheduler_idle_nanoseconds",
+    "deep_refill_activations",
+    "proactive_tail_refills",
+    "warm_start_branches",
+)
 
 
 class BenchmarkError(RuntimeError):
@@ -1178,7 +1199,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("invalid mode")
     if scope not in {"process", "all_mpi_ranks"}:
         invalid_parallel("invalid aggregation scope")
-    if parallel.get("busy_timing_method") != "instrumented_phase_wall_time":
+    if (
+        parallel.get("busy_timing_method")
+        != "elapsed_minus_scheduler_idle_time"
+    ):
         invalid_parallel("invalid busy timing method")
     if parallel.get("elapsed_timing_method") != "parallel_region_steady_clock":
         invalid_parallel("invalid elapsed timing method")
@@ -1248,6 +1272,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         lease_size = branch_scheduler.get("lease_size")
         rank_partition_count = branch_scheduler.get("rank_partition_count")
         scheduler_complete = branch_scheduler.get("complete")
+        adaptive_splitting = branch_scheduler.get("adaptive_splitting")
         if (
             branch_scheduler.get("strategy")
             != "dynamic_leases_with_static_mpi_rank_partition"
@@ -1256,6 +1281,16 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             or not is_nonnegative_integer(rank_partition_count)
             or rank_partition_count != rank_count
             or type(scheduler_complete) is not bool
+            or not isinstance(adaptive_splitting, dict)
+            or any(
+                (
+                    not is_nonnegative_integer(adaptive_splitting.get(name))
+                    or adaptive_splitting.get(name) != expected
+                )
+                if isinstance(expected, int)
+                else adaptive_splitting.get(name) != expected
+                for name, expected in ADAPTIVE_SPLITTING_POLICY.items()
+            )
         ):
             invalid_parallel("inconsistent branch scheduler")
     if type(parallel.get("branch_scan_complete")) is not bool:
@@ -1274,6 +1309,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         "elapsed_nanoseconds",
         "worker_elapsed_nanoseconds",
         "worker_busy_nanoseconds",
+        "task_queue_high_watermark",
+        "maximum_task_depth_executed",
+        *PARALLEL_SCHEDULER_SUM_FIELDS,
     )
     if any(
         not is_nonnegative_integer(aggregate.get(name))
@@ -1307,6 +1345,11 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     total_elapsed = 0
     total_busy = 0
     maximum_elapsed = 0
+    scheduler_sums = {
+        name: 0 for name in PARALLEL_SCHEDULER_SUM_FIELDS
+    }
+    maximum_task_queue_high_watermark = 0
+    maximum_task_depth_executed = 0
     rank_offsets = []
     offset = 0
     for threads in threads_per_rank:
@@ -1362,9 +1405,22 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         branch_assignments = worker.get("branch_assignments")
         elapsed = worker.get("elapsed_nanoseconds")
         busy = worker.get("busy_nanoseconds")
+        worker_scheduler_values = {
+            name: worker.get(name) for name in PARALLEL_SCHEDULER_SUM_FIELDS
+        }
+        task_queue_high_watermark = worker.get("task_queue_high_watermark")
+        task_depth = worker.get("maximum_task_depth_executed")
         if any(
             not is_nonnegative_integer(value)
-            for value in (branch_candidates, branch_assignments, elapsed, busy)
+            for value in (
+                branch_candidates,
+                branch_assignments,
+                elapsed,
+                busy,
+                task_queue_high_watermark,
+                task_depth,
+                *worker_scheduler_values.values(),
+            )
         ):
             invalid_parallel(f"invalid worker measurement at record {worker_index}")
         if branch_assignments > branch_candidates:
@@ -1385,6 +1441,46 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             )
         if busy > elapsed:
             invalid_parallel(f"worker busy time exceeds elapsed time at record {worker_index}")
+        task_steal_attempts = worker_scheduler_values["task_steal_attempts"]
+        task_steals = worker_scheduler_values["task_steals"]
+        local_task_executions = worker_scheduler_values[
+            "local_task_executions"
+        ]
+        transferred_tasks_executed = (
+            worker_scheduler_values["depth_two_tasks_executed"]
+            + worker_scheduler_values["deeper_tasks_executed"]
+        )
+        if task_steals > task_steal_attempts:
+            invalid_parallel(
+                f"worker task steals exceed attempts at record {worker_index}"
+            )
+        if local_task_executions + task_steals != transferred_tasks_executed:
+            invalid_parallel(
+                "worker task executions do not match transferred tasks at "
+                f"record {worker_index}"
+            )
+        if not (
+            (transferred_tasks_executed == 0 and task_depth == 0)
+            or (
+                transferred_tasks_executed > 0
+                and 2
+                <= task_depth
+                <= ADAPTIVE_SPLITTING_POLICY["maximum_depth"]
+            )
+        ):
+            invalid_parallel(
+                f"invalid worker maximum task depth at record {worker_index}"
+            )
+        if worker_scheduler_values["warm_start_branches"] > 1:
+            invalid_parallel(
+                f"invalid worker warm start count at record {worker_index}"
+            )
+        if busy != elapsed - min(
+            worker_scheduler_values["scheduler_idle_nanoseconds"], elapsed
+        ):
+            invalid_parallel(
+                f"inconsistent worker busy time at record {worker_index}"
+            )
         worker_branch_candidates.append(branch_candidates)
         rank_branch_assignments[rank] += branch_assignments
         total_branch_leases += branch_leases
@@ -1392,6 +1488,16 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         total_elapsed += elapsed
         total_busy += busy
         maximum_elapsed = max(maximum_elapsed, elapsed)
+        for name, value in worker_scheduler_values.items():
+            scheduler_sums[name] += value
+        maximum_task_queue_high_watermark = max(
+            maximum_task_queue_high_watermark,
+            task_queue_high_watermark,
+        )
+        maximum_task_depth_executed = max(
+            maximum_task_depth_executed,
+            task_depth,
+        )
 
         graph = worker.get("processed_graph")
         if not isinstance(graph, dict):
@@ -1416,7 +1522,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             or set(worker_phases) != SEARCH_TELEMETRY_PHASES
         ):
             invalid_parallel(f"invalid worker phases at record {worker_index}")
-        phase_wall_total = 0
         for phase in worker_phases.values():
             if not isinstance(phase, dict) or any(
                 not is_nonnegative_integer(phase.get(name))
@@ -1425,9 +1530,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 invalid_parallel(f"invalid worker phase at record {worker_index}")
             if phase["activations"] == 0 and phase["wall_nanoseconds"] != 0:
                 invalid_parallel(f"inactive worker phase has time at record {worker_index}")
-            phase_wall_total += phase["wall_nanoseconds"]
-        if busy != min(phase_wall_total, elapsed):
-            invalid_parallel(f"inconsistent worker busy time at record {worker_index}")
 
         worker_counters.append(
             parallel_counters(worker.get("counters"), f"worker {worker_index}")
@@ -1452,6 +1554,58 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("aggregate worker busy time does not match workers")
     if aggregate["elapsed_nanoseconds"] < maximum_elapsed:
         invalid_parallel("aggregate elapsed time is shorter than a worker")
+    for name, worker_sum in scheduler_sums.items():
+        if aggregate[name] != worker_sum:
+            invalid_parallel(
+                f"aggregate scheduler field {name} does not match workers"
+            )
+    if (
+        aggregate["task_queue_high_watermark"]
+        != maximum_task_queue_high_watermark
+    ):
+        invalid_parallel(
+            "aggregate task queue high-water mark does not match workers"
+        )
+    if (
+        aggregate["maximum_task_depth_executed"]
+        != maximum_task_depth_executed
+    ):
+        invalid_parallel("aggregate maximum task depth does not match workers")
+    aggregate_depth_two_spawned = aggregate["depth_two_tasks_spawned"]
+    aggregate_depth_two_executed = aggregate["depth_two_tasks_executed"]
+    aggregate_deeper_spawned = aggregate["deeper_tasks_spawned"]
+    aggregate_deeper_executed = aggregate["deeper_tasks_executed"]
+    aggregate_transferred_tasks_executed = (
+        aggregate_depth_two_executed + aggregate_deeper_executed
+    )
+    if aggregate["task_steals"] > aggregate["task_steal_attempts"]:
+        invalid_parallel("aggregate task steals exceed attempts")
+    if (
+        aggregate["local_task_executions"] + aggregate["task_steals"]
+        != aggregate_transferred_tasks_executed
+    ):
+        invalid_parallel("aggregate task executions do not match transferred tasks")
+    if aggregate_depth_two_spawned != aggregate_depth_two_executed:
+        invalid_parallel("spawned depth-two tasks were not each executed once")
+    if (
+        aggregate_depth_two_spawned + aggregate_deeper_spawned
+        != aggregate_transferred_tasks_executed
+    ):
+        invalid_parallel("spawned transferred tasks were not each executed once")
+    aggregate_maximum_task_depth = aggregate["maximum_task_depth_executed"]
+    if not (
+        (
+            aggregate_transferred_tasks_executed == 0
+            and aggregate_maximum_task_depth == 0
+        )
+        or (
+            aggregate_transferred_tasks_executed > 0
+            and 2
+            <= aggregate_maximum_task_depth
+            <= ADAPTIVE_SPLITTING_POLICY["maximum_depth"]
+        )
+    ):
+        invalid_parallel("invalid aggregate maximum task depth")
     for name in PARALLEL_TELEMETRY_COUNTERS:
         if aggregate_counters[name] != sum(
             counters[name] for counters in worker_counters

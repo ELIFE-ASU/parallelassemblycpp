@@ -177,6 +177,11 @@ struct assemblySearchStorage
     vi candidateKey;
     deque<dagAssemblySearchFrame> recursiveFrames;
     size_t recursiveDepth = 0;
+    // Parallel workers use these to route donated descendants back to their
+    // owner deque and to derive an absolute, bounded search-tree depth. Serial
+    // searches retain the harmless defaults.
+    size_t parallelWorkerIndex = 0;
+    unsigned int parallelTaskDepth = 1;
 
     explicit assemblySearchStorage(assemblyPathWitness *_pathway = nullptr):
         states(1024),
@@ -278,13 +283,17 @@ struct WorkerContext
     assemblyState candidate;
     int assemblyIndex;
 
-    explicit WorkerContext(const SearchContext &context):
+    explicit WorkerContext(
+        const SearchContext &context,
+        std::size_t workerIndex = 0
+    ):
         fragmentation(
             context.processedMolecule.mg.size(),
             context.universeEdges.size()
         ),
         assemblyIndex(context.rootAssemblyIndex)
     {
+        search.parallelWorkerIndex = workerIndex;
         fragmentation.homogeneousPathEdgePositions =
             context.homogeneousPathEdgePositions;
 
@@ -307,7 +316,7 @@ struct WorkerContext
     WorkerContext &operator=(WorkerContext &&) = delete;
 };
 
-/** One fragment of a depth-two task, stored without an owning EdgeMask. */
+/** One fragment of a transferable search task, stored without an EdgeMask. */
 struct parallelTaskFragmentDescriptor
 {
     std::size_t wordOffset = 0;
@@ -316,36 +325,93 @@ struct parallelTaskFragmentDescriptor
 };
 
 /**
- * A depth-two assembly state that may safely move between worker threads.
+ * An assembly state that may safely move between worker threads.
  *
  * Canonical IDs are deliberately omitted: after the shared root seed they are
  * process-global only when L2 reuse is enabled, and worker-local otherwise.
  * The receiving worker reconstructs the masks and canonicalises them through
  * the active mode before continuing the search.
  */
-struct parallelDepthTwoTaskDescriptor
+struct parallelSearchTaskDescriptor
 {
     std::vector<parallelTaskFragmentDescriptor> fragments;
     std::vector<std::uint64_t> fragmentWords;
     int sumDupBonds = 0;
     int lowerBoundAssemblyIndex = 0;
+    unsigned int depth = 2;
+};
+
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksSpawned = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksExecuted = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeeperTasksSpawned = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeeperTasksExecuted = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskStealAttempts = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskSteals = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchLocalTaskExecutions = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchSchedulerIdleWaits = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchSchedulerIdleNanoseconds = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeepRefillActivations = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskQueueHighWatermark = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL unsigned int searchMaximumTaskDepthExecuted = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchWarmStartBranches = 0;
+
+/** Keep independent scheduler ownership domains off the same cache line. */
+template<typename Value>
+struct alignas(schedulerCacheLineBytes) schedulerAtomicValue
+{
+    std::atomic<Value> value;
+
+    explicit schedulerAtomicValue(Value initial = Value{}) noexcept:
+        value(initial) {}
+
+    schedulerAtomicValue(const schedulerAtomicValue &) = delete;
+    schedulerAtomicValue &operator=(const schedulerAtomicValue &) = delete;
+};
+
+static_assert(
+    alignof(schedulerAtomicValue<std::size_t>) >= schedulerCacheLineBytes
+);
+static_assert(
+    sizeof(schedulerAtomicValue<std::size_t>) >= schedulerCacheLineBytes
+);
+
+struct alignas(schedulerCacheLineBytes) schedulerTaskDepthCounts
+{
+    std::array<
+        std::atomic<std::size_t>,
+        parallelMaximumTaskDepth + 1
+    > values;
+};
+
+static_assert(sizeof(schedulerTaskDepthCounts) >= schedulerCacheLineBytes);
+
+struct alignas(schedulerCacheLineBytes) parallelWorkerTaskDeque
+{
+    std::atomic<std::size_t> ready{0};
+    std::mutex mutex;
+    // Keep regular searches allocation-free; construct a deque only after
+    // live starvation or the existing shallow policy requests donation.
+    std::optional<std::deque<parallelSearchTaskDescriptor>> tasks;
+    // Only this deque's owner updates its rotating steal origin.
+    std::size_t stealOffset = 0;
 };
 
 /**
  * Rank-local adaptive work controller.
  *
  * Root jobs retain their stable modulo MPI partition and are claimed in
- * leases. When the unclaimed root jobs plus active root work fall below eight
- * per local worker, root searches may donate immediate children until roughly
- * sixteen jobs per worker are ready. The hard policy ceiling is thirty-two
- * queued jobs per worker.
+ * leases. Shallow donation retains the existing sparse/proactive policy.
+ * Deeper donation is armed one level at a time only after idle workers have
+ * failed to find local or stealable work. Each worker owns a LIFO deque; other
+ * workers steal older tasks from its opposite end. Queue size and task depth
+ * are both bounded.
  */
 class ParallelTaskScheduler
 {
 public:
     enum class WorkAvailability
     {
-        depthTwo,
+        task,
         complete,
         wait
     };
@@ -377,8 +443,16 @@ public:
                 : 1 + (rootJobCount - 1 - rankIndex) / rankCount
         ),
         workerCount(std::max<std::size_t>(1, localWorkerCount)),
+        taskDeques(std::make_unique<parallelWorkerTaskDeque[]>(
+            std::max<std::size_t>(1, localWorkerCount)
+        )),
         rootLeaseCursor(0),
         rootJobsOutstanding(rankRootJobCount),
+        taskJobsOutstanding(0),
+        readyTaskCount(0),
+        taskSlotsInUse(0),
+        idleWorkers(0),
+        requestedDonationDepth(0),
         lowWatermark(saturatedProduct(
             workerCount,
             minimumTasksPerWorker
@@ -392,9 +466,9 @@ public:
             maximumTasksPerWorker
         )),
         adaptiveRootLeases(useAdaptiveRootLeases),
-        depthTwoEnabled(localWorkerCount > 1),
+        taskTransfersEnabled(localWorkerCount > 1),
         proactiveTailRefillEnabled(
-            depthTwoEnabled &&
+            taskTransfersEnabled &&
             rankRootJobCount >= saturatedProduct(
                 targetWatermark,
                 parallelPromisingFrontierLeaseSize
@@ -403,18 +477,22 @@ public:
         idleWorkerTrigger(
             localWorkerCount <= 1
                 ? 1
-                : (localWorkerCount + 1) / 2
+                : localWorkerCount < 8
+                    ? (localWorkerCount + 1) / 2
+                    : std::max<std::size_t>(
+                        2,
+                        (localWorkerCount + 3) / 4
+                    )
         )
     {
+        for (auto &outstanding : taskDepthOutstanding.values)
+            outstanding.store(0, std::memory_order_relaxed);
         const std::size_t sparseThreshold = std::max<std::size_t>(
             1,
             lowWatermark / 2
         );
-        if (depthTwoEnabled && rankRootJobCount < sparseThreshold)
-        {
-            refilling = true;
-            refillRequested.store(true, std::memory_order_relaxed);
-        }
+        if (taskTransfersEnabled && rankRootJobCount < sparseThreshold)
+            requestedDonationDepth.value.store(2, std::memory_order_relaxed);
     }
 
     [[nodiscard]] std::size_t warmStartRootJob() const noexcept
@@ -427,7 +505,7 @@ public:
     /** Claim one stable range of rank-partition ordinals. */
     bool claimRootLease(std::size_t &begin, std::size_t &end)
     {
-        begin = rootLeaseCursor.load(std::memory_order_relaxed);
+        begin = rootLeaseCursor.value.load(std::memory_order_relaxed);
         do
         {
             if (begin >= rankRootJobCount) return false;
@@ -439,7 +517,7 @@ public:
                 ? rankRootJobCount
                 : begin + claimSize;
         }
-        while (!rootLeaseCursor.compare_exchange_weak(
+        while (!rootLeaseCursor.value.compare_exchange_weak(
             begin,
             end,
             std::memory_order_relaxed,
@@ -458,71 +536,64 @@ public:
             )
         )
         {
-            std::lock_guard<std::mutex> lock(mutex);
             if (!cancelled.load(std::memory_order_relaxed))
             {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
                 ++searchProactiveTailRefills;
 #endif
-                refilling = true;
-                refillRequested.store(true, std::memory_order_relaxed);
-                condition.notify_all();
+                requestDonationDepth(2);
+                notifyWaiters(true);
             }
         }
         return true;
     }
 
-    [[nodiscard]] bool depthTwoRefillRequested() const noexcept
+    [[nodiscard]] bool taskDonationRequested(
+        unsigned int taskDepth
+    ) const noexcept
     {
-        return refillRequested.load(std::memory_order_relaxed);
+        return taskDepth <= requestedDonationDepth.value.load(
+            std::memory_order_relaxed
+        );
     }
 
-    [[nodiscard]] bool depthTwoTasksEnabled() const noexcept
+    [[nodiscard]] bool transferableTasksEnabled() const noexcept
     {
-        return depthTwoEnabled;
+        return taskTransfersEnabled;
     }
 
     /**
-     * Queue an immediate child of a root job when the ready frontier is low.
+     * Queue a bounded descendant on the producer's own deque.
      */
-    bool tryEnqueueDepthTwo(
+    bool tryEnqueueTask(
+        std::size_t workerIndex,
         const assemblyState &state,
-        int lowerBoundAssemblyIndex
+        int lowerBoundAssemblyIndex,
+        unsigned int taskDepth
     )
     {
-        if (!depthTwoRefillRequested()) return false;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (cancelled.load(std::memory_order_relaxed)) return false;
+        if (
+            workerIndex >= workerCount ||
+            taskDepth < 2 ||
+            taskDepth > maximumTaskDepth ||
+            !taskDonationRequested(taskDepth) ||
+            cancelled.load(std::memory_order_relaxed) ||
+            !reserveTaskSlot(taskDepth)
+        ) return false;
 
-            const std::size_t queued = queuedTaskEstimateLocked();
-            if (!refilling)
-            {
-                refillRequested.store(false, std::memory_order_relaxed);
-                return false;
-            }
-            if (queued >= targetWatermark || queued >= maximumQueuedTasks)
-            {
-                refilling = false;
-                refillRequested.store(false, std::memory_order_relaxed);
-                return false;
-            }
-            ++depthTwoReservations;
-            updateRefillStateLocked();
-        }
-
-        parallelDepthTwoTaskDescriptor task;
+        parallelSearchTaskDescriptor task;
         try
         {
             task.sumDupBonds = state.sumDupBonds;
             task.lowerBoundAssemblyIndex = lowerBoundAssemblyIndex;
+            task.depth = taskDepth;
             task.fragments.reserve(state.fragments.size());
             const std::size_t wordCount = EdgeMask::activeWordCount();
             if (
                 wordCount != 0 &&
                 state.fragments.size() >
                     std::numeric_limits<std::size_t>::max() / wordCount
-            ) throw std::length_error("depth-two task masks exceed capacity");
+            ) throw std::length_error("parallel task masks exceed capacity");
             task.fragmentWords.reserve(state.fragments.size() * wordCount);
             for (const assemblyFragment &fragment : state.fragments)
             {
@@ -537,60 +608,114 @@ public:
         }
         catch (...)
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            --depthTwoReservations;
-            updateRefillStateLocked();
-            condition.notify_all();
+            releaseReservedTask(taskDepth);
+            notifyWaiters(true);
             throw;
         }
 
+        if (cancelled.load(std::memory_order_relaxed))
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            --depthTwoReservations;
-            if (cancelled.load(std::memory_order_relaxed))
-            {
-                updateRefillStateLocked();
-                condition.notify_all();
-                return false;
-            }
-            if (!depthTwoQueue.has_value()) depthTwoQueue.emplace();
-            depthTwoQueue->push_back(std::move(task));
-            ++depthTwoJobsOutstanding;
-            updateRefillStateLocked();
-            condition.notify_one();
+            releaseReservedTask(taskDepth);
+            notifyWaiters(true);
+            return false;
         }
+
+        parallelWorkerTaskDeque &owner = taskDeques[workerIndex];
+        std::size_t ownerQueueSize = 0;
+        try
+        {
+            std::lock_guard<std::mutex> lock(owner.mutex);
+            if (!owner.tasks.has_value()) owner.tasks.emplace();
+            owner.tasks->push_back(std::move(task));
+            ownerQueueSize = owner.tasks->size();
+            owner.ready.fetch_add(1, std::memory_order_release);
+            readyTaskCount.value.fetch_add(1, std::memory_order_release);
+        }
+        catch (...)
+        {
+            releaseReservedTask(taskDepth);
+            notifyWaiters(true);
+            throw;
+        }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        searchTaskQueueHighWatermark = std::max(
+            searchTaskQueueHighWatermark,
+            ownerQueueSize
+        );
+#endif
+        disableDonationAtTarget();
+        notifyWaiters(false);
         return true;
     }
 
-    WorkAvailability nextWork(parallelDepthTwoTaskDescriptor &task)
+    WorkAvailability nextWork(
+        std::size_t workerIndex,
+        parallelSearchTaskDescriptor &task
+    )
     {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (depthTwoQueue.has_value() && !depthTwoQueue->empty())
+        if (workerIndex >= workerCount)
+            throw std::out_of_range("parallel worker deque index");
+
+        if (popLocalTask(workerIndex, task))
         {
-            task = std::move(depthTwoQueue->front());
-            depthTwoQueue->pop_front();
-            updateRefillStateLocked();
-            return WorkAvailability::depthTwo;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            ++searchLocalTaskExecutions;
+#endif
+            return WorkAvailability::task;
+        }
+
+        const std::size_t victimCount = workerCount - 1;
+        const std::size_t firstRelativeVictim = victimCount == 0
+            ? 0
+            : 1 + taskDeques[workerIndex].stealOffset % victimCount;
+        for (std::size_t offset = 0; offset < victimCount; ++offset)
+        {
+            if (readyTaskCount.value.load(std::memory_order_acquire) == 0)
+                break;
+            const std::size_t relativeVictim = 1 + (
+                firstRelativeVictim - 1 + offset
+            ) % victimCount;
+            const std::size_t victim = (workerIndex + relativeVictim) %
+                workerCount;
+            if (taskDeques[victim].ready.load(
+                std::memory_order_acquire
+            ) == 0) continue;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            ++searchTaskStealAttempts;
+#endif
+            if (stealTask(victim, task))
+            {
+                taskDeques[workerIndex].stealOffset = relativeVictim;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                ++searchTaskSteals;
+#endif
+                return WorkAvailability::task;
+            }
+        }
+        if (victimCount != 0)
+        {
+            taskDeques[workerIndex].stealOffset =
+                (taskDeques[workerIndex].stealOffset + 1) % victimCount;
         }
         if (
-            rootJobsOutstanding.load(std::memory_order_acquire) == 0 &&
-            depthTwoJobsOutstanding == 0
+            rootJobsOutstanding.value.load(std::memory_order_acquire) == 0 &&
+            taskJobsOutstanding.value.load(std::memory_order_acquire) == 0
         ) return WorkAvailability::complete;
         return WorkAvailability::wait;
     }
 
     void completeRootLease(std::size_t completedRootJobs)
     {
-        if (!depthTwoEnabled) return;
+        if (!taskTransfersEnabled) return;
         if (completedRootJobs != 0)
         {
-            const std::size_t previous = rootJobsOutstanding.fetch_sub(
+            const std::size_t previous = rootJobsOutstanding.value.fetch_sub(
                 completedRootJobs,
                 std::memory_order_acq_rel
             );
             if (previous < completedRootJobs)
             {
-                rootJobsOutstanding.fetch_add(
+                rootJobsOutstanding.value.fetch_add(
                     completedRootJobs,
                     std::memory_order_relaxed
                 );
@@ -598,54 +723,83 @@ public:
                     "adaptive scheduler completed extra root jobs"
                 );
             }
-            if (previous == completedRootJobs) condition.notify_all();
+            if (previous == completedRootJobs) notifyWaiters(true);
         }
     }
 
-    void completeDepthTwoJob()
+    void completeTask(unsigned int taskDepth)
     {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (depthTwoJobsOutstanding == 0)
+        if (taskDepth < 2 || taskDepth > maximumTaskDepth)
+            throw std::logic_error("adaptive scheduler task depth is invalid");
+        const std::size_t previousDepth =
+            taskDepthOutstanding.values[taskDepth]
+            .fetch_sub(1, std::memory_order_acq_rel);
+        if (previousDepth == 0)
         {
+            taskDepthOutstanding.values[taskDepth].fetch_add(
+                1,
+                std::memory_order_relaxed
+            );
             throw std::logic_error(
-                "adaptive scheduler completed an extra depth-two job"
+                "adaptive scheduler completed an extra task at this depth"
             );
         }
-        --depthTwoJobsOutstanding;
-        condition.notify_all();
+        const std::size_t previous = taskJobsOutstanding.value.fetch_sub(
+            1,
+            std::memory_order_acq_rel
+        );
+        if (previous == 0)
+        {
+            taskJobsOutstanding.value.fetch_add(1, std::memory_order_relaxed);
+            taskDepthOutstanding.values[taskDepth].fetch_add(
+                1,
+                std::memory_order_relaxed
+            );
+            throw std::logic_error("adaptive scheduler completed an extra task");
+        }
+        if (previous == 1) notifyWaiters(true);
     }
 
-    void waitForWork()
+    void waitForWork(std::size_t workerIndex)
     {
-        std::unique_lock<std::mutex> lock(mutex);
-        ++idleWorkers;
-        const bool workReady = condition.wait_for(
+        if (workerIndex >= workerCount)
+            throw std::out_of_range("parallel worker wait index");
+        std::unique_lock<std::mutex> lock(waitMutex);
+        idleWorkers.value.fetch_add(1, std::memory_order_acq_rel);
+        requestStarvationRefill();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        ++searchSchedulerIdleWaits;
+        const auto idleStarted = std::chrono::steady_clock::now();
+#endif
+        // The timeout only polls process signals. Refill has already been
+        // requested from live starvation telemetry before sleeping.
+        condition.wait_for(
             lock,
             std::chrono::milliseconds(1),
             [&]
             {
                 return
                     cancelled.load(std::memory_order_relaxed) ||
-                    (depthTwoQueue.has_value() && !depthTwoQueue->empty()) ||
-                    rootLeaseCursor.load(std::memory_order_relaxed) <
+                    readyTaskCount.value.load(std::memory_order_acquire) != 0 ||
+                    rootLeaseCursor.value.load(std::memory_order_relaxed) <
                         rankRootJobCount ||
-                    (rootJobsOutstanding.load(std::memory_order_acquire) == 0 &&
-                        depthTwoJobsOutstanding == 0);
+                    (rootJobsOutstanding.value.load(
+                        std::memory_order_acquire
+                    ) == 0 && taskJobsOutstanding.value.load(
+                        std::memory_order_acquire
+                    ) == 0);
             }
         );
-        if (
-            !workReady &&
-            depthTwoEnabled &&
-            idleWorkers >= idleWorkerTrigger &&
-            !cancelled.load(std::memory_order_relaxed) &&
-            rootJobsOutstanding.load(std::memory_order_acquire) != 0 &&
-            queuedTaskEstimateLocked() < lowWatermark
-        )
-        {
-            refilling = true;
-            refillRequested.store(true, std::memory_order_relaxed);
-        }
-        --idleWorkers;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        const auto idleElapsed = std::chrono::duration_cast<
+            std::chrono::nanoseconds
+        >(std::chrono::steady_clock::now() - idleStarted).count();
+        if (idleElapsed > 0)
+            searchSchedulerIdleNanoseconds += static_cast<std::uint64_t>(
+                idleElapsed
+            );
+#endif
+        idleWorkers.value.fetch_sub(1, std::memory_order_acq_rel);
     }
 
     void cancel() noexcept
@@ -687,22 +841,38 @@ private:
         return std::min(leaseSize, guided);
     }
 
-    [[nodiscard]] std::size_t queuedTaskEstimateLocked() const noexcept
+    [[nodiscard]] std::size_t queuedTaskEstimate() const noexcept
     {
         const std::size_t claimed = std::min(
-            rootLeaseCursor.load(std::memory_order_relaxed),
+            rootLeaseCursor.value.load(std::memory_order_relaxed),
             rankRootJobCount
         );
         const std::size_t remainingRootJobs = rankRootJobCount - claimed;
-        const std::size_t outstanding = rootJobsOutstanding.load(
+        const std::size_t outstandingRoots = rootJobsOutstanding.value.load(
             std::memory_order_relaxed
         );
-        const std::size_t claimedOutstanding = outstanding > remainingRootJobs
-            ? outstanding - remainingRootJobs
+        const std::size_t claimedOutstanding =
+            outstandingRoots > remainingRootJobs
+            ? outstandingRoots - remainingRootJobs
             : 0;
-        const std::size_t activeEstimate = std::min(
+        const std::size_t activeRoots = std::min(
             claimedOutstanding,
             workerCount
+        );
+        const std::size_t slots = taskSlotsInUse.value.load(
+            std::memory_order_relaxed
+        );
+        const std::size_t outstandingTasks = taskJobsOutstanding.value.load(
+            std::memory_order_relaxed
+        );
+        const std::size_t activeTasks = outstandingTasks > slots
+            ? std::min(outstandingTasks - slots, workerCount)
+            : 0;
+        const std::size_t activeEstimate = std::min(
+            workerCount,
+            activeRoots > workerCount - std::min(activeTasks, workerCount)
+                ? workerCount
+                : activeRoots + activeTasks
         );
         if (activeEstimate >
             std::numeric_limits<std::size_t>::max() - remainingRootJobs)
@@ -710,22 +880,186 @@ private:
             return std::numeric_limits<std::size_t>::max();
         }
         const std::size_t roots = remainingRootJobs + activeEstimate;
-        const std::size_t queuedDepthTwoTasks = depthTwoQueue.has_value()
-            ? depthTwoQueue->size()
-            : 0;
-        if (
-            queuedDepthTwoTasks + depthTwoReservations < queuedDepthTwoTasks ||
-            queuedDepthTwoTasks + depthTwoReservations >
-                std::numeric_limits<std::size_t>::max() - roots
-        ) return std::numeric_limits<std::size_t>::max();
-        return roots + queuedDepthTwoTasks + depthTwoReservations;
+        if (slots > std::numeric_limits<std::size_t>::max() - roots)
+            return std::numeric_limits<std::size_t>::max();
+        return roots + slots;
     }
 
-    void updateRefillStateLocked() noexcept
+    bool reserveTaskSlot(unsigned int taskDepth) noexcept
     {
-        const std::size_t queued = queuedTaskEstimateLocked();
-        if (refilling && queued >= targetWatermark) refilling = false;
-        refillRequested.store(refilling, std::memory_order_relaxed);
+        std::size_t slots = taskSlotsInUse.value.load(
+            std::memory_order_relaxed
+        );
+        while (true)
+        {
+            if (
+                slots >= maximumQueuedTasks ||
+                queuedTaskEstimate() >= targetWatermark ||
+                !taskDonationRequested(taskDepth) ||
+                cancelled.load(std::memory_order_relaxed)
+            ) return false;
+            if (taskSlotsInUse.value.compare_exchange_weak(
+                slots,
+                slots + 1,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed
+            )) break;
+        }
+        taskJobsOutstanding.value.fetch_add(1, std::memory_order_acq_rel);
+        taskDepthOutstanding.values[taskDepth].fetch_add(
+            1,
+            std::memory_order_acq_rel
+        );
+        return true;
+    }
+
+    void releaseReservedTask(unsigned int taskDepth) noexcept
+    {
+        taskDepthOutstanding.values[taskDepth].fetch_sub(
+            1,
+            std::memory_order_acq_rel
+        );
+        taskJobsOutstanding.value.fetch_sub(1, std::memory_order_acq_rel);
+        taskSlotsInUse.value.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    void consumePublishedTaskSlot() noexcept
+    {
+        const std::size_t ready = readyTaskCount.value.fetch_sub(
+            1,
+            std::memory_order_acq_rel
+        );
+        const std::size_t slots = taskSlotsInUse.value.fetch_sub(
+            1,
+            std::memory_order_acq_rel
+        );
+        if (ready == 0 || slots == 0) std::terminate();
+    }
+
+    bool popLocalTask(
+        std::size_t workerIndex,
+        parallelSearchTaskDescriptor &task
+    )
+    {
+        if (readyTaskCount.value.load(std::memory_order_acquire) == 0)
+            return false;
+        parallelWorkerTaskDeque &owner = taskDeques[workerIndex];
+        std::lock_guard<std::mutex> lock(owner.mutex);
+        if (!owner.tasks.has_value() || owner.tasks->empty()) return false;
+        task = std::move(owner.tasks->back());
+        owner.tasks->pop_back();
+        if (owner.ready.fetch_sub(1, std::memory_order_acq_rel) == 0)
+            std::terminate();
+        consumePublishedTaskSlot();
+        return true;
+    }
+
+    bool stealTask(
+        std::size_t victimIndex,
+        parallelSearchTaskDescriptor &task
+    )
+    {
+        if (
+            readyTaskCount.value.load(std::memory_order_acquire) == 0 ||
+            taskDeques[victimIndex].ready.load(std::memory_order_acquire) == 0
+        )
+            return false;
+        parallelWorkerTaskDeque &victim = taskDeques[victimIndex];
+        std::unique_lock<std::mutex> lock(victim.mutex, std::try_to_lock);
+        if (
+            !lock.owns_lock() ||
+            !victim.tasks.has_value() ||
+            victim.tasks->empty()
+        ) return false;
+        task = std::move(victim.tasks->front());
+        victim.tasks->pop_front();
+        if (victim.ready.fetch_sub(1, std::memory_order_acq_rel) == 0)
+            std::terminate();
+        consumePublishedTaskSlot();
+        return true;
+    }
+
+    bool requestDonationDepth(unsigned int depth) noexcept
+    {
+        depth = std::min(depth, maximumTaskDepth);
+        unsigned int requested = requestedDonationDepth.value.load(
+            std::memory_order_relaxed
+        );
+        while (requested < depth)
+        {
+            if (requestedDonationDepth.value.compare_exchange_weak(
+                requested,
+                depth,
+                std::memory_order_release,
+                std::memory_order_relaxed
+            )) return true;
+        }
+        return false;
+    }
+
+    void disableDonationAtTarget() noexcept
+    {
+        if (queuedTaskEstimate() < targetWatermark) return;
+        unsigned int requested = requestedDonationDepth.value.load(
+            std::memory_order_relaxed
+        );
+        while (
+            requested != 0 &&
+            !requestedDonationDepth.value.compare_exchange_weak(
+                requested,
+                0,
+                std::memory_order_release,
+                std::memory_order_relaxed
+            )
+        ) {}
+    }
+
+    void requestStarvationRefill() noexcept
+    {
+        if (
+            !taskTransfersEnabled ||
+            cancelled.load(std::memory_order_relaxed) ||
+            readyTaskCount.value.load(std::memory_order_acquire) != 0 ||
+            idleWorkers.value.load(std::memory_order_acquire) <
+                idleWorkerTrigger ||
+            queuedTaskEstimate() >= lowWatermark
+        ) return;
+
+        unsigned int desiredDepth = 0;
+        for (unsigned int depth = maximumTaskDepth; depth > 2; --depth)
+        {
+            if (taskDepthOutstanding.values[depth - 1].load(
+                std::memory_order_acquire
+            ) != 0)
+            {
+                desiredDepth = depth;
+                break;
+            }
+        }
+        if (
+            desiredDepth == 0 &&
+            rootJobsOutstanding.value.load(std::memory_order_acquire) != 0
+        ) desiredDepth = 2;
+        if (desiredDepth == 0) return;
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        const bool activated = requestDonationDepth(desiredDepth);
+        if (desiredDepth > 2 && activated)
+            ++searchDeepRefillActivations;
+#else
+        static_cast<void>(requestDonationDepth(desiredDepth));
+#endif
+    }
+
+    void notifyWaiters(bool all)
+    {
+        // Publication happens before acquiring this mutex. A waiter cannot
+        // miss the subsequent notification between its predicate and sleep.
+        {
+            std::lock_guard<std::mutex> lock(waitMutex);
+        }
+        if (all) condition.notify_all();
+        else condition.notify_one();
     }
 
     const std::size_t globalRootJobCount;
@@ -734,28 +1068,26 @@ private:
     const std::size_t leaseSize;
     const std::size_t rankRootJobCount;
     const std::size_t workerCount;
-    std::atomic<std::size_t> rootLeaseCursor;
-    mutable std::mutex mutex;
+    std::unique_ptr<parallelWorkerTaskDeque[]> taskDeques;
+    schedulerAtomicValue<std::size_t> rootLeaseCursor;
+    schedulerAtomicValue<std::size_t> rootJobsOutstanding;
+    schedulerAtomicValue<std::size_t> taskJobsOutstanding;
+    schedulerAtomicValue<std::size_t> readyTaskCount;
+    schedulerAtomicValue<std::size_t> taskSlotsInUse;
+    schedulerAtomicValue<std::size_t> idleWorkers;
+    schedulerAtomicValue<unsigned int> requestedDonationDepth;
+    schedulerTaskDepthCounts taskDepthOutstanding;
+    mutable std::mutex waitMutex;
     std::condition_variable condition;
-    std::optional<std::deque<parallelDepthTwoTaskDescriptor>> depthTwoQueue;
-    std::size_t depthTwoReservations = 0;
-    std::atomic<std::size_t> rootJobsOutstanding;
-    std::size_t depthTwoJobsOutstanding = 0;
     const std::size_t lowWatermark;
     const std::size_t targetWatermark;
     const std::size_t maximumQueuedTasks;
     const bool adaptiveRootLeases;
-    const bool depthTwoEnabled;
+    const bool taskTransfersEnabled;
     const bool proactiveTailRefillEnabled;
     const std::size_t idleWorkerTrigger;
-    std::size_t idleWorkers = 0;
-    bool refilling = false;
     std::atomic_bool rootFrontierRefillActivated{false};
-    std::atomic_bool refillRequested{false};
     std::atomic_bool cancelled{false};
 };
 
 ASSEMBLYCPP_SEARCH_LOCAL ParallelTaskScheduler *parallelTaskScheduler = nullptr;
-ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksSpawned = 0;
-ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksExecuted = 0;
-ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchWarmStartBranches = 0;

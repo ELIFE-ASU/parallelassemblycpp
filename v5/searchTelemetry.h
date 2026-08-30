@@ -138,6 +138,16 @@ struct ParallelSearchWorkerTelemetry
     uint64_t branchAssignments = 0;
     uint64_t depthTwoTasksSpawned = 0;
     uint64_t depthTwoTasksExecuted = 0;
+    uint64_t deeperTasksSpawned = 0;
+    uint64_t deeperTasksExecuted = 0;
+    uint64_t taskStealAttempts = 0;
+    uint64_t taskSteals = 0;
+    uint64_t localTaskExecutions = 0;
+    uint64_t schedulerIdleWaits = 0;
+    uint64_t schedulerIdleNanoseconds = 0;
+    uint64_t deepRefillActivations = 0;
+    uint64_t taskQueueHighWatermark = 0;
+    uint64_t maximumTaskDepthExecuted = 0;
     uint64_t proactiveTailRefills = 0;
     uint64_t warmStartBranches = 0;
     uint64_t elapsedNanoseconds = 0;
@@ -179,6 +189,16 @@ struct ParallelSearchTelemetrySummary
     uint64_t branchAssignmentCount = 0;
     uint64_t depthTwoTaskSpawnCount = 0;
     uint64_t depthTwoTaskExecutionCount = 0;
+    uint64_t deeperTaskSpawnCount = 0;
+    uint64_t deeperTaskExecutionCount = 0;
+    uint64_t taskStealAttemptCount = 0;
+    uint64_t taskStealCount = 0;
+    uint64_t localTaskExecutionCount = 0;
+    uint64_t schedulerIdleWaitCount = 0;
+    uint64_t schedulerIdleNanoseconds = 0;
+    uint64_t deepRefillActivationCount = 0;
+    uint64_t taskQueueHighWatermark = 0;
+    uint64_t maximumTaskDepthExecuted = 0;
     uint64_t proactiveTailRefillCount = 0;
     uint64_t warmStartBranchCount = 0;
     uint64_t elapsedNanoseconds = 0;
@@ -541,6 +561,16 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     uint64_t branchAssignments,
     uint64_t depthTwoTasksSpawned,
     uint64_t depthTwoTasksExecuted,
+    uint64_t deeperTasksSpawned,
+    uint64_t deeperTasksExecuted,
+    uint64_t taskStealAttempts,
+    uint64_t taskSteals,
+    uint64_t localTaskExecutions,
+    uint64_t schedulerIdleWaits,
+    uint64_t schedulerIdleNanoseconds,
+    uint64_t deepRefillActivations,
+    uint64_t taskQueueHighWatermark,
+    uint64_t maximumTaskDepthExecuted,
     uint64_t proactiveTailRefills,
     uint64_t warmStartBranches,
     uint64_t elapsedNanoseconds
@@ -558,6 +588,16 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     result.branchAssignments = branchAssignments;
     result.depthTwoTasksSpawned = depthTwoTasksSpawned;
     result.depthTwoTasksExecuted = depthTwoTasksExecuted;
+    result.deeperTasksSpawned = deeperTasksSpawned;
+    result.deeperTasksExecuted = deeperTasksExecuted;
+    result.taskStealAttempts = taskStealAttempts;
+    result.taskSteals = taskSteals;
+    result.localTaskExecutions = localTaskExecutions;
+    result.schedulerIdleWaits = schedulerIdleWaits;
+    result.schedulerIdleNanoseconds = schedulerIdleNanoseconds;
+    result.deepRefillActivations = deepRefillActivations;
+    result.taskQueueHighWatermark = taskQueueHighWatermark;
+    result.maximumTaskDepthExecuted = maximumTaskDepthExecuted;
     result.proactiveTailRefills = proactiveTailRefills;
     result.warmStartBranches = warmStartBranches;
     result.elapsedNanoseconds = elapsedNanoseconds;
@@ -573,10 +613,9 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
         result.phaseClockTicks[i] = phase.clockTicks;
         result.phaseWallNanoseconds[i] = phase.wallNanoseconds;
         result.phaseActivations[i] = static_cast<uint64_t>(phase.activations);
-        result.busyNanoseconds += phase.wallNanoseconds;
     }
-    result.busyNanoseconds = std::min(
-        result.busyNanoseconds,
+    result.busyNanoseconds = result.elapsedNanoseconds - std::min(
+        result.schedulerIdleNanoseconds,
         result.elapsedNanoseconds
     );
     return result;
@@ -677,6 +716,22 @@ inline void configureParallelSearchTelemetry(
         summary.branchAssignmentCount += worker.branchAssignments;
         summary.depthTwoTaskSpawnCount += worker.depthTwoTasksSpawned;
         summary.depthTwoTaskExecutionCount += worker.depthTwoTasksExecuted;
+        summary.deeperTaskSpawnCount += worker.deeperTasksSpawned;
+        summary.deeperTaskExecutionCount += worker.deeperTasksExecuted;
+        summary.taskStealAttemptCount += worker.taskStealAttempts;
+        summary.taskStealCount += worker.taskSteals;
+        summary.localTaskExecutionCount += worker.localTaskExecutions;
+        summary.schedulerIdleWaitCount += worker.schedulerIdleWaits;
+        summary.schedulerIdleNanoseconds += worker.schedulerIdleNanoseconds;
+        summary.deepRefillActivationCount += worker.deepRefillActivations;
+        summary.taskQueueHighWatermark = std::max(
+            summary.taskQueueHighWatermark,
+            worker.taskQueueHighWatermark
+        );
+        summary.maximumTaskDepthExecuted = std::max(
+            summary.maximumTaskDepthExecuted,
+            worker.maximumTaskDepthExecuted
+        );
         summary.proactiveTailRefillCount += worker.proactiveTailRefills;
         summary.warmStartBranchCount += worker.warmStartBranches;
         summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
@@ -710,6 +765,9 @@ inline void configureParallelSearchTelemetry(
                 summary.branchSchedulerComplete = false;
         }
     }
+    const uint64_t transferredTaskExecutions =
+        summary.depthTwoTaskExecutionCount +
+        summary.deeperTaskExecutionCount;
     summary.branchSchedulerComplete =
         completedSearch &&
         summary.branchSchedulerComplete &&
@@ -717,6 +775,18 @@ inline void configureParallelSearchTelemetry(
         summary.branchAssignmentCount == summary.branchCandidateCount &&
         summary.depthTwoTaskSpawnCount ==
             summary.depthTwoTaskExecutionCount &&
+        summary.deeperTaskSpawnCount == summary.deeperTaskExecutionCount &&
+        summary.taskStealCount <= summary.taskStealAttemptCount &&
+        summary.localTaskExecutionCount + summary.taskStealCount ==
+            transferredTaskExecutions &&
+        (
+            (transferredTaskExecutions == 0 &&
+                summary.maximumTaskDepthExecuted == 0) ||
+            (transferredTaskExecutions != 0 &&
+                summary.maximumTaskDepthExecuted >= 2 &&
+                summary.maximumTaskDepthExecuted <=
+                    parallelMaximumTaskDepth)
+        ) &&
         summary.warmStartBranchCount ==
             (summary.branchCandidateCount == 0 ? 0 : summary.rankCount);
     summary.branchScanComplete = summary.branchSchedulerComplete;
@@ -826,7 +896,7 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << "    \"elapsed_timing_method\": "
               "\"parallel_region_steady_clock\",\n"
            << "    \"busy_timing_method\": "
-              "\"instrumented_phase_wall_time\",\n"
+              "\"elapsed_minus_scheduler_idle_time\",\n"
            << "    \"branch_scheduler\": {\n"
            << "      \"strategy\": "
               "\"dynamic_leases_with_static_mpi_rank_partition\",\n"
@@ -864,6 +934,26 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.depthTwoTaskSpawnCount << ",\n"
            << "      \"depth_two_tasks_executed\": "
            << parallel.depthTwoTaskExecutionCount << ",\n"
+           << "      \"deeper_tasks_spawned\": "
+           << parallel.deeperTaskSpawnCount << ",\n"
+           << "      \"deeper_tasks_executed\": "
+           << parallel.deeperTaskExecutionCount << ",\n"
+           << "      \"task_steal_attempts\": "
+           << parallel.taskStealAttemptCount << ",\n"
+           << "      \"task_steals\": "
+           << parallel.taskStealCount << ",\n"
+           << "      \"local_task_executions\": "
+           << parallel.localTaskExecutionCount << ",\n"
+           << "      \"scheduler_idle_waits\": "
+           << parallel.schedulerIdleWaitCount << ",\n"
+           << "      \"scheduler_idle_nanoseconds\": "
+           << parallel.schedulerIdleNanoseconds << ",\n"
+           << "      \"deep_refill_activations\": "
+           << parallel.deepRefillActivationCount << ",\n"
+           << "      \"task_queue_high_watermark\": "
+           << parallel.taskQueueHighWatermark << ",\n"
+           << "      \"maximum_task_depth_executed\": "
+           << parallel.maximumTaskDepthExecuted << ",\n"
            << "      \"proactive_tail_refills\": "
            << parallel.proactiveTailRefillCount << ",\n"
            << "      \"warm_start_branches\": "
@@ -909,6 +999,26 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
                << worker.depthTwoTasksSpawned << ",\n"
                << "        \"depth_two_tasks_executed\": "
                << worker.depthTwoTasksExecuted << ",\n"
+               << "        \"deeper_tasks_spawned\": "
+               << worker.deeperTasksSpawned << ",\n"
+               << "        \"deeper_tasks_executed\": "
+               << worker.deeperTasksExecuted << ",\n"
+               << "        \"task_steal_attempts\": "
+               << worker.taskStealAttempts << ",\n"
+               << "        \"task_steals\": "
+               << worker.taskSteals << ",\n"
+               << "        \"local_task_executions\": "
+               << worker.localTaskExecutions << ",\n"
+               << "        \"scheduler_idle_waits\": "
+               << worker.schedulerIdleWaits << ",\n"
+               << "        \"scheduler_idle_nanoseconds\": "
+               << worker.schedulerIdleNanoseconds << ",\n"
+               << "        \"deep_refill_activations\": "
+               << worker.deepRefillActivations << ",\n"
+               << "        \"task_queue_high_watermark\": "
+               << worker.taskQueueHighWatermark << ",\n"
+               << "        \"maximum_task_depth_executed\": "
+               << worker.maximumTaskDepthExecuted << ",\n"
                << "        \"proactive_tail_refills\": "
                << worker.proactiveTailRefills << ",\n"
                << "        \"warm_start_branches\": "

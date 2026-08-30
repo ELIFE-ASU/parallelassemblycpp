@@ -29,9 +29,23 @@ ADAPTIVE_SPLITTING_POLICY = {
     "minimum_queued_tasks_per_worker": 8,
     "target_queued_tasks_per_worker": 16,
     "maximum_queued_tasks_per_worker": 32,
-    "maximum_depth": 2,
+    "maximum_depth": 4,
     "warm_start": "largest_duplicate_first",
 }
+SCHEDULER_SUM_FIELDS = (
+    "depth_two_tasks_spawned",
+    "depth_two_tasks_executed",
+    "deeper_tasks_spawned",
+    "deeper_tasks_executed",
+    "task_steal_attempts",
+    "task_steals",
+    "local_task_executions",
+    "scheduler_idle_waits",
+    "scheduler_idle_nanoseconds",
+    "deep_refill_activations",
+    "proactive_tail_refills",
+    "warm_start_branches",
+)
 
 
 @dataclass(frozen=True)
@@ -534,6 +548,16 @@ def validate_parallel_telemetry(
         f"{prefix}: parallel.worker_count must be {requested_workers}",
     )
     require(
+        parallel.get("elapsed_timing_method")
+        == "parallel_region_steady_clock",
+        f"{prefix}: parallel.elapsed_timing_method is incorrect",
+    )
+    require(
+        parallel.get("busy_timing_method")
+        == "elapsed_minus_scheduler_idle_time",
+        f"{prefix}: parallel.busy_timing_method is incorrect",
+    )
+    require(
         parallel.get("branch_scan_complete") is True,
         f"{prefix}: parallel.branch_scan_complete must be true",
     )
@@ -710,10 +734,9 @@ def validate_parallel_telemetry(
     branch_leases = 0
     branch_assignments = 0
     assignments_per_rank = [0 for _ in range(topology.rank_count)]
-    depth_two_tasks_spawned = 0
-    depth_two_tasks_executed = 0
-    proactive_tail_refills = 0
-    warm_start_branches = 0
+    scheduler_sums = {name: 0 for name in SCHEDULER_SUM_FIELDS}
+    maximum_task_queue_high_watermark = 0
+    maximum_task_depth_executed = 0
     warm_starts_per_rank = [0 for _ in range(topology.rank_count)]
     worker_elapsed = 0
     worker_busy = 0
@@ -741,32 +764,61 @@ def validate_parallel_telemetry(
         branch_leases += leases
         branch_assignments += assignments
         assignments_per_rank[worker_ranks[index]] += assignments
-        if adaptive_splitting is not None:
-            spawned = require_nonnegative_integer(
-                worker.get("depth_two_tasks_spawned"),
-                f"{worker_path}.depth_two_tasks_spawned",
+        scheduler_values = {
+            name: require_nonnegative_integer(
+                worker.get(name), f"{worker_path}.{name}"
             )
-            executed = require_nonnegative_integer(
-                worker.get("depth_two_tasks_executed"),
-                f"{worker_path}.depth_two_tasks_executed",
-            )
-            tail_refills = require_nonnegative_integer(
-                worker.get("proactive_tail_refills"),
-                f"{worker_path}.proactive_tail_refills",
-            )
-            warm_starts = require_nonnegative_integer(
-                worker.get("warm_start_branches"),
-                f"{worker_path}.warm_start_branches",
-            )
-            require(
-                warm_starts <= 1,
-                f"{worker_path}: worker warmed more than one root branch",
-            )
-            depth_two_tasks_spawned += spawned
-            depth_two_tasks_executed += executed
-            proactive_tail_refills += tail_refills
-            warm_start_branches += warm_starts
-            warm_starts_per_rank[worker_ranks[index]] += warm_starts
+            for name in SCHEDULER_SUM_FIELDS
+        }
+        task_queue_high_watermark = require_nonnegative_integer(
+            worker.get("task_queue_high_watermark"),
+            f"{worker_path}.task_queue_high_watermark",
+        )
+        task_depth = require_nonnegative_integer(
+            worker.get("maximum_task_depth_executed"),
+            f"{worker_path}.maximum_task_depth_executed",
+        )
+        require(
+            scheduler_values["task_steals"]
+            <= scheduler_values["task_steal_attempts"],
+            f"{worker_path}: successful task steals exceed attempts",
+        )
+        executed_tasks = (
+            scheduler_values["depth_two_tasks_executed"]
+            + scheduler_values["deeper_tasks_executed"]
+        )
+        require(
+            scheduler_values["local_task_executions"]
+            + scheduler_values["task_steals"]
+            == executed_tasks,
+            f"{worker_path}: local executions plus steals do not equal "
+            "executed transferred tasks",
+        )
+        require(
+            (executed_tasks == 0 and task_depth == 0)
+            or (
+                executed_tasks > 0
+                and 2 <= task_depth <= ADAPTIVE_SPLITTING_POLICY["maximum_depth"]
+            ),
+            f"{worker_path}: maximum executed task depth is inconsistent with "
+            "transferred work",
+        )
+        warm_starts = scheduler_values["warm_start_branches"]
+        require(
+            warm_starts <= 1,
+            f"{worker_path}: worker warmed more than one root branch",
+        )
+        for name, value in scheduler_values.items():
+            scheduler_sums[name] += value
+        maximum_task_queue_high_watermark = max(
+            maximum_task_queue_high_watermark,
+            task_queue_high_watermark,
+        )
+        maximum_task_depth_executed = max(
+            maximum_task_depth_executed,
+            task_depth,
+        )
+        warm_starts_per_rank[worker_ranks[index]] += warm_starts
         elapsed = require_nonnegative_integer(
             worker.get("elapsed_nanoseconds"), f"{worker_path}.elapsed_nanoseconds"
         )
@@ -774,6 +826,13 @@ def validate_parallel_telemetry(
             worker.get("busy_nanoseconds"), f"{worker_path}.busy_nanoseconds"
         )
         require(busy <= elapsed, f"{worker_path}: busy time exceeds elapsed time")
+        require(
+            busy
+            == elapsed
+            - min(scheduler_values["scheduler_idle_nanoseconds"], elapsed),
+            f"{worker_path}: busy time does not equal elapsed time minus "
+            "scheduler idle time",
+        )
         worker_elapsed += elapsed
         worker_busy += busy
         maximum_worker_elapsed = max(maximum_worker_elapsed, elapsed)
@@ -808,43 +867,83 @@ def validate_parallel_telemetry(
         aggregate_assignments == aggregate_candidates,
         f"{prefix}: complete branch scan did not assign every candidate",
     )
+    aggregate_scheduler_values = {
+        name: require_nonnegative_integer(
+            aggregate.get(name), f"{prefix}: parallel.aggregate.{name}"
+        )
+        for name in SCHEDULER_SUM_FIELDS
+    }
+    aggregate_task_queue_high_watermark = require_nonnegative_integer(
+        aggregate.get("task_queue_high_watermark"),
+        f"{prefix}: parallel.aggregate.task_queue_high_watermark",
+    )
+    aggregate_maximum_task_depth = require_nonnegative_integer(
+        aggregate.get("maximum_task_depth_executed"),
+        f"{prefix}: parallel.aggregate.maximum_task_depth_executed",
+    )
+    for name, worker_sum in scheduler_sums.items():
+        require(
+            aggregate_scheduler_values[name] == worker_sum,
+            f"{prefix}: aggregate {name} is not the worker sum",
+        )
+    require(
+        aggregate_task_queue_high_watermark
+        == maximum_task_queue_high_watermark,
+        f"{prefix}: aggregate task queue high-water mark is not the worker maximum",
+    )
+    require(
+        aggregate_maximum_task_depth == maximum_task_depth_executed,
+        f"{prefix}: aggregate maximum task depth is not the worker maximum",
+    )
+    aggregate_depth_two_spawned = aggregate_scheduler_values[
+        "depth_two_tasks_spawned"
+    ]
+    aggregate_depth_two_executed = aggregate_scheduler_values[
+        "depth_two_tasks_executed"
+    ]
+    aggregate_deeper_spawned = aggregate_scheduler_values[
+        "deeper_tasks_spawned"
+    ]
+    aggregate_deeper_executed = aggregate_scheduler_values[
+        "deeper_tasks_executed"
+    ]
+    aggregate_executed_tasks = (
+        aggregate_depth_two_executed + aggregate_deeper_executed
+    )
+    require(
+        aggregate_scheduler_values["task_steals"]
+        <= aggregate_scheduler_values["task_steal_attempts"],
+        f"{prefix}: aggregate successful task steals exceed attempts",
+    )
+    require(
+        aggregate_scheduler_values["local_task_executions"]
+        + aggregate_scheduler_values["task_steals"]
+        == aggregate_executed_tasks,
+        f"{prefix}: aggregate local executions plus steals do not equal "
+        "executed transferred tasks",
+    )
+    require(
+        aggregate_depth_two_spawned == aggregate_depth_two_executed,
+        f"{prefix}: spawned depth-two tasks were not each executed once",
+    )
+    require(
+        aggregate_depth_two_spawned + aggregate_deeper_spawned
+        == aggregate_executed_tasks,
+        f"{prefix}: spawned transferred tasks were not each executed once",
+    )
+    require(
+        (aggregate_executed_tasks == 0 and aggregate_maximum_task_depth == 0)
+        or (
+            aggregate_executed_tasks > 0
+            and 2
+            <= aggregate_maximum_task_depth
+            <= ADAPTIVE_SPLITTING_POLICY["maximum_depth"]
+        ),
+        f"{prefix}: aggregate maximum executed task depth is inconsistent with "
+        "transferred work",
+    )
     if adaptive_splitting is not None:
-        aggregate_spawned = require_nonnegative_integer(
-            aggregate.get("depth_two_tasks_spawned"),
-            f"{prefix}: parallel.aggregate.depth_two_tasks_spawned",
-        )
-        aggregate_executed = require_nonnegative_integer(
-            aggregate.get("depth_two_tasks_executed"),
-            f"{prefix}: parallel.aggregate.depth_two_tasks_executed",
-        )
-        aggregate_tail_refills = require_nonnegative_integer(
-            aggregate.get("proactive_tail_refills"),
-            f"{prefix}: parallel.aggregate.proactive_tail_refills",
-        )
-        aggregate_warm_starts = require_nonnegative_integer(
-            aggregate.get("warm_start_branches"),
-            f"{prefix}: parallel.aggregate.warm_start_branches",
-        )
-        require(
-            aggregate_spawned == depth_two_tasks_spawned,
-            f"{prefix}: aggregate depth-two spawn total is not the worker sum",
-        )
-        require(
-            aggregate_executed == depth_two_tasks_executed,
-            f"{prefix}: aggregate depth-two execution total is not the worker sum",
-        )
-        require(
-            aggregate_tail_refills == proactive_tail_refills,
-            f"{prefix}: aggregate proactive tail-refill total is not the worker sum",
-        )
-        require(
-            aggregate_warm_starts == warm_start_branches,
-            f"{prefix}: aggregate warm-start total is not the worker sum",
-        )
-        require(
-            aggregate_spawned == aggregate_executed,
-            f"{prefix}: spawned depth-two tasks were not each executed once",
-        )
+        aggregate_warm_starts = aggregate_scheduler_values["warm_start_branches"]
         expected_warm_starts_per_rank = 1 if aggregate_candidates > 0 else 0
         for rank, warm_starts in enumerate(warm_starts_per_rank):
             require(
@@ -858,7 +957,7 @@ def validate_parallel_telemetry(
             f"{prefix}: aggregate warm-start count is incorrect",
         )
         require(
-            not require_depth_two_tasks or aggregate_spawned > 0,
+            not require_depth_two_tasks or aggregate_depth_two_spawned > 0,
             f"{prefix}: adaptive frontier did not expose depth-two work",
         )
     for rank, assignments in enumerate(assignments_per_rank):
@@ -1123,7 +1222,7 @@ def run_late_refill_adaptive_telemetry_suite(
     telemetry_openmp: Path,
     timeout: float,
 ) -> int:
-    """Require depth-two refill after a large root frontier falls below target."""
+    """Require shallow and telemetry-gated deep refill on an irregular tail."""
     case = LATE_REFILL_ADAPTIVE_TELEMETRY_CASE
     serial_index, _ = run_solver(serial, case, timeout)
     require(
@@ -1179,12 +1278,41 @@ def run_late_refill_adaptive_telemetry_suite(
         proactive_tail_refills > 0,
         f"{case.name}: large root frontier did not trigger a proactive tail refill",
     )
+    deeper_tasks = require_nonnegative_integer(
+        aggregate.get("deeper_tasks_spawned"),
+        f"{case.name}: parallel.aggregate.deeper_tasks_spawned",
+    )
+    task_steals = require_nonnegative_integer(
+        aggregate.get("task_steals"),
+        f"{case.name}: parallel.aggregate.task_steals",
+    )
+    scheduler_idle_waits = require_nonnegative_integer(
+        aggregate.get("scheduler_idle_waits"),
+        f"{case.name}: parallel.aggregate.scheduler_idle_waits",
+    )
+    deep_refills = require_nonnegative_integer(
+        aggregate.get("deep_refill_activations"),
+        f"{case.name}: parallel.aggregate.deep_refill_activations",
+    )
+    maximum_task_depth = require_nonnegative_integer(
+        aggregate.get("maximum_task_depth_executed"),
+        f"{case.name}: parallel.aggregate.maximum_task_depth_executed",
+    )
+    require(
+        deeper_tasks > 0
+        and task_steals > 0
+        and scheduler_idle_waits > 0
+        and deep_refills > 0
+        and maximum_task_depth > 2,
+        f"{case.name}: irregular tail did not prove starvation and expose "
+        "stealable deeper work",
+    )
     low_watermark = (
         topology.worker_count
         * ADAPTIVE_SPLITTING_POLICY["minimum_queued_tasks_per_worker"]
     )
     print(
-        f"PASS telemetry {case.name}: late depth-two refill from "
+        f"PASS telemetry {case.name}: late shallow/deep refill from "
         f"{root_candidates} roots across the {low_watermark}-task low "
         f"watermark and index parity"
     )

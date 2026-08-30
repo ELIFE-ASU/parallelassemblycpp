@@ -154,18 +154,30 @@ bulk uses larger leases, and the tail shrinks back toward single jobs.
 The largest initial duplicate is evaluated first to publish a valid one-step
 incumbent before the workers start searching.
 
-Root work remains the normal frontier. If the initial frontier is markedly
-below eight root jobs per local worker, or at least half of the local workers
-wait behind active heavy roots, immediate children can be transferred as
-depth-two tasks. On substantial frontiers of at least sixty-four roots per
-worker, donation is also armed as the unclaimed tail falls below eight roots
-per worker, allowing a final root's first child to be handed off before the
-pool stalls. The rank-local queue refills toward sixteen tasks per worker and
-never exceeds thirty-two per worker. MPI-only ranks have no local peer to
-receive such work;
-hybrid ranks can transfer it between their OpenMP workers. A positive
-`ASSEMBLYCPP_BRANCH_LEASE_SIZE` disables guided lease sizing and selects a
-fixed root lease size for experiments.
+Root work remains the normal frontier. The existing shallow policy arms
+depth-two donation for an initially sparse rank partition (fewer than four
+roots per local worker), for observed idle pressure while root work remains,
+or near the tail of a substantial frontier. The proactive tail case requires
+at least sixty-four initial roots per worker and fewer than eight unclaimed
+roots per worker. On ranks with two through seven local workers, idle pressure
+means at least half the workers are waiting; from eight workers onward the
+threshold is roughly one quarter, with a minimum of two.
+
+Transferred descendants use a rank-local set of per-worker deques whose task
+storage is allocated on first use. An owner pushes and executes its newest
+task (LIFO), while a peer steals the oldest task (FIFO). A worker reaches the
+idle path only after finding neither local nor stealable transferred work.
+Before the 1 ms signal-poll timeout, the scheduler can then arm deeper donation
+one level at a time: depth three requires outstanding depth-two work, and depth
+four requires outstanding depth-three work. Starvation refills are considered
+below an estimated eight tasks per worker, target sixteen, and have a rank-wide
+task-slot ceiling of thirty-two times the local worker count; transferred task
+depth is capped at four. MPI-only ranks have no local peer to receive such
+work, while hybrid ranks can transfer it between their OpenMP workers. The hot
+root-lease cursor, root/task outstanding counts, ready/slot/idle counts, and
+donation request occupy separate 64-byte-aligned storage, as does each worker
+deque. A positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` disables guided lease sizing
+and selects a fixed root lease size for experiments.
 
 ## Tests
 
