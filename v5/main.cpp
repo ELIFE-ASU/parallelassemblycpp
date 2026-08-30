@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -136,23 +137,41 @@ bool loadMoleculeInput(
 {
     const bool explicitMolfile = hasMolfileExtension(input);
     const string molfileName = explicitMolfile ? input : input + ".mol";
-    ifstream molfile(molfileName);
+    string parsedName;
 
     try
     {
-        if (molfile.is_open())
+        ifstream exactFile(input);
+        if (exactFile.is_open())
         {
-            if (verbose) cout << "Input: " << molfileName << '\n';
-            molfileParser(molfile, molGraphOutput);
+            if (verbose) cout << "Input: " << input << '\n';
+            parsedName = input;
+            if (explicitMolfile) molfileParser(exactFile, molGraphOutput);
+            else graphio(exactFile, molGraphOutput);
             return true;
         }
+
+        error_code statusError;
+        if (filesystem::exists(input, statusError))
+        {
+            error = "could not open input file '" + input + "'";
+            return false;
+        }
+        if (statusError)
+        {
+            error = "could not inspect input path '" + input + "': " +
+                    statusError.message();
+            return false;
+        }
+
         if (!explicitMolfile)
         {
-            ifstream graphFile(input);
-            if (graphFile.is_open())
+            ifstream molfile(molfileName);
+            if (molfile.is_open())
             {
-                if (verbose) cout << "Input: " << input << '\n';
-                graphio(graphFile, molGraphOutput);
+                if (verbose) cout << "Input: " << molfileName << '\n';
+                parsedName = molfileName;
+                molfileParser(molfile, molGraphOutput);
                 return true;
             }
             error = "input file not found: '" + input + "' (also tried '" +
@@ -164,7 +183,6 @@ bool loadMoleculeInput(
     }
     catch (const std::exception &exception)
     {
-        const string &parsedName = molfile.is_open() ? molfileName : input;
         error = "could not parse '" + parsedName + "': " + exception.what();
         return false;
     }

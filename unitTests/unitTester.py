@@ -600,6 +600,42 @@ def run_cli_checks(executable: Path) -> int:
         )
         scenarios += 1
 
+        precedence_directory = working_directory / "native-input-precedence"
+        precedence_directory.mkdir()
+        shutil.copy2(
+            TEST_DIRECTORY / "graphio_test",
+            precedence_directory / "input",
+        )
+        shutil.copy2(
+            TEST_DIRECTORY / "tridecane.mol",
+            precedence_directory / "input.mol",
+        )
+        completed = run_cli_command(
+            executable,
+            ["input", "--pathway=0", "--verbose=1"],
+            precedence_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "an exact native input with a .mol sibling should run successfully",
+            completed,
+        )
+        require_cli(
+            read_first_line_assembly_index(
+                precedence_directory / "inputOut"
+            )
+            == 5,
+            "an exact native input should take precedence over its .mol sibling",
+            completed,
+        )
+        require_cli(
+            "Input: input\n" in completed.stdout
+            and "Input: input.mol\n" not in completed.stdout,
+            "verbose output should identify the exact native input",
+            completed,
+        )
+        scenarios += 1
+
         completed = run_cli_command(
             executable,
             ["--pathway=0", "--verbose=1", input_path.name],
