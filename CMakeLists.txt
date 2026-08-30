@@ -379,6 +379,18 @@ function(assemblycpp_configure_target target)
   endif()
 endfunction()
 
+function(assemblycpp_configure_test_target target)
+  assemblycpp_configure_target(${target})
+
+  # Release-style configurations define NDEBUG globally. Keep standard assert
+  # checks active in test executables until they use an always-active helper.
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(${target} PRIVATE -UNDEBUG)
+  endif()
+endfunction()
+
 function(assemblycpp_configure_pgo_target target)
   if(ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
     set(
@@ -640,55 +652,55 @@ if(BUILD_TESTING)
     assemblycpp_active_word_mask_tests
     unitTests/activeWordMaskTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_active_word_mask_tests)
+  assemblycpp_configure_test_target(assemblycpp_active_word_mask_tests)
 
   add_executable(
     assemblycpp_transposition_table_tests
     unitTests/assemblyTranspositionTableTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_transposition_table_tests)
+  assemblycpp_configure_test_target(assemblycpp_transposition_table_tests)
 
   add_executable(
     assemblycpp_tree_canon_tests
     unitTests/treeCanonTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_tree_canon_tests)
+  assemblycpp_configure_test_target(assemblycpp_tree_canon_tests)
 
   add_executable(
     assemblycpp_cyclic_canon_tests
     unitTests/cyclicCanonTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_cyclic_canon_tests)
+  assemblycpp_configure_test_target(assemblycpp_cyclic_canon_tests)
 
   add_executable(
     assemblycpp_search_stop_poll_tests
     unitTests/searchStopPollTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_search_stop_poll_tests)
+  assemblycpp_configure_test_target(assemblycpp_search_stop_poll_tests)
 
   add_executable(
     assemblycpp_fragmentation_metadata_tests
     unitTests/fragmentationMetadataTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_fragmentation_metadata_tests)
+  assemblycpp_configure_test_target(assemblycpp_fragmentation_metadata_tests)
 
   add_executable(
     assemblycpp_molfile_parser_tests
     unitTests/molfileParserTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_molfile_parser_tests)
+  assemblycpp_configure_test_target(assemblycpp_molfile_parser_tests)
 
   add_executable(
     assemblycpp_graphio_tests
     unitTests/graphioTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_graphio_tests)
+  assemblycpp_configure_test_target(assemblycpp_graphio_tests)
 
   add_executable(
     assemblycpp_pathway_generator_tests
     unitTests/pathwayGeneratorTester.cpp
   )
-  assemblycpp_configure_target(assemblycpp_pathway_generator_tests)
+  assemblycpp_configure_test_target(assemblycpp_pathway_generator_tests)
 
   add_executable(
     assemblycpp_library_batch_tests
@@ -698,7 +710,7 @@ if(BUILD_TESTING)
     assemblycpp_library_batch_tests
     PRIVATE AssemblyCppLibrary
   )
-  assemblycpp_configure_target(assemblycpp_library_batch_tests)
+  assemblycpp_configure_test_target(assemblycpp_library_batch_tests)
 
   add_test(
     NAME unit.active-word-mask
