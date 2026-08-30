@@ -153,6 +153,30 @@ int main(int argc, char **argv)
     }
     assert(rejected);
 
+    string zeroOrderBond = validMolfile;
+    const size_t zeroOrderPosition = zeroOrderBond.find("  4  5  1");
+    assert(zeroOrderPosition != string::npos);
+    zeroOrderBond.replace(zeroOrderPosition, 9, "  4  5  0");
+    molGraph zeroOrderDestination;
+    string zeroOrderSentinel = "zero-order-sentinel";
+    zeroOrderDestination.addAtom(zeroOrderSentinel);
+    istringstream zeroOrderInput(zeroOrderBond);
+    rejected = false;
+    try
+    {
+        molfileParser(zeroOrderInput, zeroOrderDestination);
+    }
+    catch (const runtime_error &error)
+    {
+        rejected = string(error.what()).find(
+            "zero-order bonds are not supported"
+        ) != string::npos;
+    }
+    assert(rejected);
+    assert(zeroOrderDestination.mg.size() == 1);
+    assert(zeroOrderDestination.mg.front().type == zeroOrderSentinel);
+    assert(zeroOrderDestination.totalBonds == 0);
+
     string negativeBondOrder = validMolfile;
     const size_t negativeBondPosition = negativeBondOrder.find("  4  5  1");
     assert(negativeBondPosition != string::npos);

@@ -215,6 +215,12 @@ inline void graphio(std::istream &ifs, molGraph &mg)
                 std::to_string(std::numeric_limits<short>::max())
             );
         }
+        if (value == 0)
+        {
+            throw std::runtime_error(
+                "invalid native graph: zero-order bonds are not supported"
+            );
+        }
         bondLabels.push_back(static_cast<short>(value));
     }
 

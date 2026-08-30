@@ -158,6 +158,10 @@ void molfileParser(std::istream &molfile, molGraph &mg)
             throw std::runtime_error(
                 "invalid molfile: bond order must be nonnegative"
             );
+        if (bondOrder == 0)
+            throw std::runtime_error(
+                "invalid molfile: zero-order bonds are not supported"
+            );
         parsed.addBond(atomA - 1, atomB - 1, bondOrder);
     }
     if (removeHydrogens)

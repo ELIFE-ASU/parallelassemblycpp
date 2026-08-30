@@ -195,6 +195,10 @@ int main()
         "expected 1 bond label, found 2"
     );
     expectRejected(
+        "zero type\n2\n1 2\nC C\n0\n",
+        "zero-order bonds are not supported"
+    );
+    expectRejected(
         "negative type\n2\n1 2\nC C\n-1\n",
         "bond label must be between 0 and"
     );
