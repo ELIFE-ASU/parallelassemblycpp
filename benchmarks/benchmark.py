@@ -1251,6 +1251,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("expected exactly one branch scheduling description")
     lease_size: int | None = None
     scheduler_complete = True
+    uses_distributed_root_queue = False
+    uses_legacy_rank_partition = False
     if has_static_shards:
         shard_ownership = parallel["shard_ownership"]
         if not isinstance(shard_ownership, dict):
@@ -1269,17 +1271,33 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         if not isinstance(branch_scheduler, dict):
             invalid_parallel("missing branch scheduler")
         assert isinstance(branch_scheduler, dict)
+        strategy = branch_scheduler.get("strategy")
         lease_size = branch_scheduler.get("lease_size")
-        rank_partition_count = branch_scheduler.get("rank_partition_count")
         scheduler_complete = branch_scheduler.get("complete")
         adaptive_splitting = branch_scheduler.get("adaptive_splitting")
+        uses_distributed_root_queue = strategy == "distributed_global_root_queue"
+        uses_legacy_rank_partition = (
+            strategy == "dynamic_leases_with_static_mpi_rank_partition"
+        )
+        scheduling_metadata_valid = False
+        if uses_distributed_root_queue:
+            root_queue = branch_scheduler.get("root_queue")
+            scheduling_metadata_valid = (
+                isinstance(root_queue, dict)
+                and is_nonnegative_integer(root_queue.get("participant_count"))
+                and root_queue.get("participant_count") == rank_count
+            )
+        elif uses_legacy_rank_partition:
+            scheduling_metadata_valid = (
+                is_nonnegative_integer(
+                    branch_scheduler.get("rank_partition_count")
+                )
+                and branch_scheduler.get("rank_partition_count") == rank_count
+            )
         if (
-            branch_scheduler.get("strategy")
-            != "dynamic_leases_with_static_mpi_rank_partition"
+            not scheduling_metadata_valid
             or not is_nonnegative_integer(lease_size)
             or lease_size == 0
-            or not is_nonnegative_integer(rank_partition_count)
-            or rank_partition_count != rank_count
             or type(scheduler_complete) is not bool
             or not isinstance(adaptive_splitting, dict)
             or any(
@@ -1386,18 +1404,36 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 invalid_parallel(f"invalid worker shard at record {worker_index}")
             shard_ids.add(shard["index"])
         else:
-            rank_partition = worker.get("rank_partition")
             branch_leases = worker.get("branch_leases")
-            if (
-                not isinstance(rank_partition, dict)
-                or not is_nonnegative_integer(rank_partition.get("index"))
-                or rank_partition.get("index") != rank
-                or not is_nonnegative_integer(rank_partition.get("count"))
-                or rank_partition.get("count") != rank_count
-            ):
-                invalid_parallel(
-                    f"invalid worker rank partition at record {worker_index}"
-                )
+            if uses_distributed_root_queue:
+                root_queue = worker.get("root_queue")
+                if (
+                    not isinstance(root_queue, dict)
+                    or not is_nonnegative_integer(
+                        root_queue.get("participant_rank")
+                    )
+                    or root_queue.get("participant_rank") != rank
+                    or not is_nonnegative_integer(
+                        root_queue.get("participant_count")
+                    )
+                    or root_queue.get("participant_count") != rank_count
+                ):
+                    invalid_parallel(
+                        "invalid worker root queue participant at record "
+                        f"{worker_index}"
+                    )
+            else:
+                rank_partition = worker.get("rank_partition")
+                if (
+                    not isinstance(rank_partition, dict)
+                    or not is_nonnegative_integer(rank_partition.get("index"))
+                    or rank_partition.get("index") != rank
+                    or not is_nonnegative_integer(rank_partition.get("count"))
+                    or rank_partition.get("count") != rank_count
+                ):
+                    invalid_parallel(
+                        f"invalid worker rank partition at record {worker_index}"
+                    )
             if not is_nonnegative_integer(branch_leases):
                 invalid_parallel(f"invalid worker lease count at record {worker_index}")
 
@@ -1624,7 +1660,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         or total_branch_assignments != expected_branch_candidates
     ):
         invalid_parallel("complete branch scan has incomplete assignments")
-    if has_dynamic_leases and parallel["branch_scan_complete"]:
+    if uses_legacy_rank_partition and parallel["branch_scan_complete"]:
         assert expected_branch_candidates is not None
         for rank, assignments in enumerate(rank_branch_assignments):
             expected_assignments = (
@@ -1637,7 +1673,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 invalid_parallel(
                     f"rank {rank} branch assignments do not match partition"
                 )
-
     legacy_counters = {
         "retained_mask_attempts": counters["retained_mask_attempts"],
         "retained_masks": counters["retained_masks"],
@@ -1693,8 +1728,11 @@ def run_telemetry_once(
     executable: Path,
     prepared: PreparedCase,
     timeout: float,
+    *,
+    execution: ExecutionConfig | None = None,
 ) -> dict[str, object]:
     command = [
+        *(execution.launcher if execution is not None else ()),
         str(executable),
         "--pathway=0",
         "--memory-report=0",
@@ -1703,17 +1741,29 @@ def run_telemetry_once(
         "--",
         prepared.input_name,
     ]
+    environment = None
+    if execution is not None and execution.environment:
+        environment = os.environ.copy()
+        environment.update(execution.environment)
     prepared.output_path.unlink(missing_ok=True)
     prepared.telemetry_path.unlink(missing_ok=True)
     try:
-        completed = subprocess.run(
-            command,
-            cwd=prepared.working_directory,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        if execution is None:
+            completed = subprocess.run(
+                command,
+                cwd=prepared.working_directory,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        else:
+            completed = run_command(
+                command,
+                prepared.working_directory,
+                timeout,
+                environment,
+            )
     except subprocess.TimeoutExpired as error:
         raise BenchmarkError(
             f"{prepared.case.name} telemetry run timed out after "
@@ -1873,11 +1923,19 @@ def run_benchmarks(
                     f"Telemetry [{index}/{case_count}] {prepared.case.name}...",
                     flush=True,
                 )
-                telemetry[prepared.case.name] = run_telemetry_once(
-                    telemetry_executable,
-                    prepared,
-                    timeout,
-                )
+                if candidate_execution is None:
+                    telemetry[prepared.case.name] = run_telemetry_once(
+                        telemetry_executable,
+                        prepared,
+                        timeout,
+                    )
+                else:
+                    telemetry[prepared.case.name] = run_telemetry_once(
+                        telemetry_executable,
+                        prepared,
+                        timeout,
+                        execution=candidate_execution,
+                    )
 
     return [
         CaseResult(
@@ -2317,6 +2375,11 @@ def write_json_report(
                 None
                 if baseline_metadata is None
                 else execution_config_metadata(baseline_execution)
+            ),
+            "telemetry": (
+                None
+                if telemetry_metadata is None
+                else execution_config_metadata(candidate_execution)
             ),
         },
         "corpus": corpus_metadata,

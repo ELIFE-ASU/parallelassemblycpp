@@ -131,8 +131,8 @@ struct ParallelSearchWorkerTelemetry
     uint64_t mpiRank = 0;
     uint64_t localWorkerIndex = 0;
     uint64_t globalWorkerIndex = 0;
-    uint64_t rankPartitionIndex = 0;
-    uint64_t rankPartitionCount = 1;
+    uint64_t rootQueueParticipantRank = 0;
+    uint64_t rootQueueParticipantCount = 1;
     uint64_t branchCandidates = 0;
     uint64_t branchLeases = 0;
     uint64_t branchAssignments = 0;
@@ -554,8 +554,8 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     uint64_t mpiRank,
     uint64_t localWorkerIndex,
     uint64_t globalWorkerIndex,
-    uint64_t rankPartitionIndex,
-    uint64_t rankPartitionCount,
+    uint64_t rootQueueParticipantRank,
+    uint64_t rootQueueParticipantCount,
     uint64_t branchCandidates,
     uint64_t branchLeases,
     uint64_t branchAssignments,
@@ -581,8 +581,8 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     result.mpiRank = mpiRank;
     result.localWorkerIndex = localWorkerIndex;
     result.globalWorkerIndex = globalWorkerIndex;
-    result.rankPartitionIndex = rankPartitionIndex;
-    result.rankPartitionCount = rankPartitionCount;
+    result.rootQueueParticipantRank = rootQueueParticipantRank;
+    result.rootQueueParticipantCount = rootQueueParticipantCount;
     result.branchCandidates = branchCandidates;
     result.branchLeases = branchLeases;
     result.branchAssignments = branchAssignments;
@@ -662,7 +662,6 @@ inline void configureParallelSearchTelemetry(
     summary.branchCandidateCount = workers.front().branchCandidates;
 
     std::vector<bool> seenGlobalWorker(summary.workerCount, false);
-    std::vector<uint64_t> branchAssignmentsPerRank(summary.rankCount, 0);
     const ParallelSearchWorkerTelemetry &first = workers.front();
     SearchTelemetryState merged;
     merged.collectPhaseMemory = false;
@@ -676,8 +675,6 @@ inline void configureParallelSearchTelemetry(
         if (worker.mpiRank < summary.rankCount)
         {
             ++summary.localThreadsPerRank[worker.mpiRank];
-            branchAssignmentsPerRank[worker.mpiRank] +=
-                worker.branchAssignments;
         }
         else summary.branchSchedulerComplete = false;
 
@@ -688,8 +685,8 @@ inline void configureParallelSearchTelemetry(
         else seenGlobalWorker[worker.globalWorkerIndex] = true;
 
         if (
-            worker.rankPartitionIndex != worker.mpiRank ||
-            worker.rankPartitionCount != summary.rankCount
+            worker.rootQueueParticipantRank != worker.mpiRank ||
+            worker.rootQueueParticipantCount != summary.rankCount
         ) summary.branchSchedulerComplete = false;
 
         if (
@@ -751,20 +748,6 @@ inline void configureParallelSearchTelemetry(
     for (size_t i = 0; i < merged.phases.size(); ++i)
         merged.phases[i].clockTicks = first.phaseClockTicks[i];
 
-    if (summary.branchCandidateCountsAgree)
-    {
-        for (uint64_t rank = 0; rank < summary.rankCount; ++rank)
-        {
-            const uint64_t expectedAssignments =
-                summary.branchCandidateCount <= rank
-                ? 0
-                : 1 +
-                    (summary.branchCandidateCount - 1 - rank) /
-                    summary.rankCount;
-            if (branchAssignmentsPerRank[rank] != expectedAssignments)
-                summary.branchSchedulerComplete = false;
-        }
-    }
     const uint64_t transferredTaskExecutions =
         summary.depthTwoTaskExecutionCount +
         summary.deeperTaskExecutionCount;
@@ -899,11 +882,13 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
               "\"elapsed_minus_scheduler_idle_time\",\n"
            << "    \"branch_scheduler\": {\n"
            << "      \"strategy\": "
-              "\"dynamic_leases_with_static_mpi_rank_partition\",\n"
+              "\"distributed_global_root_queue\",\n"
            << "      \"lease_size\": "
            << parallel.branchLeaseSize << ",\n"
-           << "      \"rank_partition_count\": "
-           << parallel.rankCount << ",\n"
+           << "      \"root_queue\": {\n"
+           << "        \"participant_count\": "
+           << parallel.rankCount << "\n"
+           << "      },\n"
            << "      \"adaptive_splitting\": {\n"
            << "        \"minimum_queued_tasks_per_worker\": "
            << parallelMinimumQueuedTasksPerWorker << ",\n"
@@ -983,11 +968,11 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
                << worker.localWorkerIndex << ",\n"
                << "        \"global_worker_index\": "
                << worker.globalWorkerIndex << ",\n"
-               << "        \"rank_partition\": {\n"
-               << "          \"index\": "
-               << worker.rankPartitionIndex << ",\n"
-               << "          \"count\": "
-               << worker.rankPartitionCount << "\n"
+               << "        \"root_queue\": {\n"
+               << "          \"participant_rank\": "
+               << worker.rootQueueParticipantRank << ",\n"
+               << "          \"participant_count\": "
+               << worker.rootQueueParticipantCount << "\n"
                << "        },\n"
                << "        \"branch_candidates\": "
                << worker.branchCandidates << ",\n"

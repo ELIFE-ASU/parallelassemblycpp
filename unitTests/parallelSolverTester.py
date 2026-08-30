@@ -452,12 +452,6 @@ def validate_counter_sum(
         )
 
 
-def modulo_partition_size(total: int, index: int, count: int) -> int:
-    if total <= index:
-        return 0
-    return 1 + (total - 1 - index) // count
-
-
 def validate_root_enumeration_phases(
     document: Mapping[str, Any],
     workers: Sequence[Mapping[str, Any]],
@@ -570,7 +564,7 @@ def validate_parallel_telemetry(
     )
     require(
         branch_scheduler.get("strategy")
-        == "dynamic_leases_with_static_mpi_rank_partition",
+        == "distributed_global_root_queue",
         f"{prefix}: parallel.branch_scheduler.strategy is incorrect",
     )
     lease_size = require_nonnegative_integer(
@@ -584,10 +578,18 @@ def validate_parallel_telemetry(
             f"{prefix}: branch lease size {lease_size} does not match requested "
             f"size {expected_lease_size}",
         )
+    elif topology.mode in {"mpi", "hybrid"}:
+        require(
+            lease_size == 1,
+            f"{prefix}: adaptive distributed branch lease size must be 1",
+        )
+    root_queue = require_mapping(
+        branch_scheduler.get("root_queue"),
+        f"{prefix}: parallel.branch_scheduler.root_queue",
+    )
     require(
-        branch_scheduler.get("rank_partition_count") == topology.rank_count,
-        f"{prefix}: branch scheduler rank partition count must be "
-        f"{topology.rank_count}",
+        root_queue.get("participant_count") == topology.rank_count,
+        f"{prefix}: root queue participant count must be {topology.rank_count}",
     )
     require(
         branch_scheduler.get("complete") is True,
@@ -677,16 +679,21 @@ def validate_parallel_telemetry(
         rank_local_indices[rank].add(local_index)
         worker_ranks.append(rank)
         global_indices.append(global_index)
-        rank_partition = require_mapping(
-            worker.get("rank_partition"), f"{worker_path}.rank_partition"
+        require(
+            "rank_partition" not in worker,
+            f"{worker_path}: legacy static rank partition must be absent",
+        )
+        root_queue = require_mapping(
+            worker.get("root_queue"), f"{worker_path}.root_queue"
         )
         require(
-            rank_partition.get("index") == rank,
-            f"{worker_path}: rank partition index must equal rank",
+            root_queue.get("participant_rank") == rank,
+            f"{worker_path}: root queue participant rank must equal rank",
         )
         require(
-            rank_partition.get("count") == topology.rank_count,
-            f"{worker_path}.rank_partition.count must be {topology.rank_count}",
+            root_queue.get("participant_count") == topology.rank_count,
+            f"{worker_path}.root_queue.participant_count must be "
+            f"{topology.rank_count}",
         )
 
         processed = require_mapping(
@@ -733,7 +740,6 @@ def validate_parallel_telemetry(
     worker_branch_candidates: list[int] = []
     branch_leases = 0
     branch_assignments = 0
-    assignments_per_rank = [0 for _ in range(topology.rank_count)]
     scheduler_sums = {name: 0 for name in SCHEDULER_SUM_FIELDS}
     maximum_task_queue_high_watermark = 0
     maximum_task_depth_executed = 0
@@ -763,7 +769,6 @@ def validate_parallel_telemetry(
         worker_branch_candidates.append(candidates)
         branch_leases += leases
         branch_assignments += assignments
-        assignments_per_rank[worker_ranks[index]] += assignments
         scheduler_values = {
             name: require_nonnegative_integer(
                 worker.get(name), f"{worker_path}.{name}"
@@ -959,15 +964,6 @@ def validate_parallel_telemetry(
         require(
             not require_depth_two_tasks or aggregate_depth_two_spawned > 0,
             f"{prefix}: adaptive frontier did not expose depth-two work",
-        )
-    for rank, assignments in enumerate(assignments_per_rank):
-        expected_assignments = modulo_partition_size(
-            aggregate_candidates, rank, topology.rank_count
-        )
-        require(
-            assignments == expected_assignments,
-            f"{prefix}: rank {rank} assigned {assignments} branches, expected "
-            f"{expected_assignments} from its static rank partition",
         )
     aggregate_elapsed = require_nonnegative_integer(
         aggregate.get("elapsed_nanoseconds"),

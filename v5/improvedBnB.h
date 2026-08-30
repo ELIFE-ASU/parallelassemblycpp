@@ -905,6 +905,12 @@ void recordImprovedAssemblyIndex(
         AI = min(AI, observed);
         if (candidate > AI) return;
     }
+    if (activeDistributedSearch != nullptr)
+    {
+        activeDistributedSearch->publishIncumbent(candidate);
+        if (ownsDistributedSearchProgress)
+            distributedSearchProgressCountdown = 0;
+    }
     if constexpr (trackPath)
         searchStorage.pathway->best = searchStorage.pathway->current;
     const unsigned long long time = elapsedClockTicks();
@@ -2500,16 +2506,36 @@ void runParallelRootJobs(
     {
         size_t begin = 0;
         size_t end = 0;
-        if (scheduler.claimRootLease(begin, end))
+        distributedRootAvailability rootAvailability =
+            scheduler.claimRootLease(begin, end);
+        if (
+            rootAvailability == distributedRootAvailability::wait &&
+            activeDistributedSearch != nullptr
+        )
+        {
+            activeDistributedSearch->requestProgress();
+            if (ownsDistributedSearchProgress)
+                activeDistributedSearch->progress();
+            if (searchShouldStop()) return;
+            // Progress may have published a prefetched local chunk. Retry once
+            // before considering rank-local descendant tasks or sleeping.
+            rootAvailability = scheduler.claimRootLease(begin, end);
+        }
+        if (rootAvailability == distributedRootAvailability::lease)
         {
             worker.search.parallelTaskDepth = 1;
-            ++searchBranchLeaseCount;
-            for (size_t partitionOrdinal = begin;
-                 partitionOrdinal < end;
-                 ++partitionOrdinal)
+            bool leaseUsed = false;
+            for (size_t rootOrdinal = begin;
+                 rootOrdinal < end;
+                 ++rootOrdinal)
             {
-                const size_t jobIndex = searchRankPartitionIndex +
-                    partitionOrdinal * searchRankPartitionCount;
+                const size_t jobIndex = scheduler.rootJobIndex(rootOrdinal);
+                if (jobIndex >= context.rootJobs.size()) continue;
+                if (!leaseUsed)
+                {
+                    ++searchBranchLeaseCount;
+                    leaseUsed = true;
+                }
                 ++searchBranchAssignmentCount;
                 bool completed = false;
                 try
@@ -2522,13 +2548,13 @@ void runParallelRootJobs(
                 }
                 catch (...)
                 {
-                    scheduler.completeRootLease(partitionOrdinal - begin);
+                    scheduler.completeRootLease(rootOrdinal - begin);
                     throw;
                 }
                 if (!completed)
                 {
                     scheduler.completeRootLease(
-                        partitionOrdinal - begin + 1
+                        rootOrdinal - begin + 1
                     );
                     return;
                 }
@@ -2537,10 +2563,16 @@ void runParallelRootJobs(
             continue;
         }
 
-        if (!scheduler.transferableTasksEnabled()) return;
+        if (
+            rootAvailability == distributedRootAvailability::complete &&
+            activeDistributedSearch != nullptr &&
+            ownsDistributedSearchProgress
+        ) activeDistributedSearch->progress();
 
         // Root work remains the normal scheduling frontier. Depth-two tasks
-        // are consumed only after no root lease is immediately claimable.
+        // are consumed only after no root lease is immediately claimable. A
+        // distributed wait is not completion: another local chunk may still
+        // be in flight, even on an MPI-only rank with no descendant transfers.
         parallelSearchTaskDescriptor task;
         const ParallelTaskScheduler::WorkAvailability availability =
             scheduler.nextWork(worker.search.parallelWorkerIndex, task);

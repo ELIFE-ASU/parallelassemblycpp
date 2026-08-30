@@ -6,6 +6,7 @@
 #include <ctime>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -18,7 +19,85 @@ using vb = vector<bool>;
 using pii = pair<int, int>;
 
 #include "../v5/activeWordMask.h"
+#include "../v5/distributedRootMapping.h"
 #include "../v5/globalPrimitives.h"
+
+bool distributedRootMappingHasExactCoverage(
+    size_t rootJobCount,
+    size_t leaseSize,
+    size_t stripeCount
+)
+{
+    if (leaseSize == 0 || stripeCount == 0) return false;
+    if (stripeCount > numeric_limits<size_t>::max() / leaseSize) return false;
+    const size_t blockWidth = leaseSize * stripeCount;
+    const size_t remainder = rootJobCount % blockWidth;
+    const size_t padding = remainder == 0 ? 0 : blockWidth - remainder;
+    if (rootJobCount > numeric_limits<size_t>::max() - padding) return false;
+    const size_t paddedSlotCount = rootJobCount + padding;
+
+    vector<unsigned char> visits(rootJobCount, 0);
+    size_t paddingSlots = 0;
+    for (size_t ordinal = 0; ordinal < paddedSlotCount; ++ordinal)
+    {
+        const size_t rootJobIndex = distributedStripedRootJobIndex(
+            ordinal,
+            leaseSize,
+            stripeCount,
+            rootJobCount
+        );
+        if (rootJobIndex >= rootJobCount)
+        {
+            ++paddingSlots;
+            continue;
+        }
+        if (visits[rootJobIndex] != 0) return false;
+        visits[rootJobIndex] = 1;
+    }
+    return
+        paddingSlots == padding &&
+        accumulate(visits.begin(), visits.end(), size_t{0}) == rootJobCount;
+}
+
+bool distributedRootMappingsAreValid()
+{
+    // Exhaust the compact layouts most likely to expose partial final chunks.
+    for (size_t rootJobCount = 0; rootJobCount <= 65; ++rootJobCount)
+    {
+        for (size_t leaseSize = 1; leaseSize <= 9; ++leaseSize)
+        {
+            for (size_t stripeCount = 1; stripeCount <= 8; ++stripeCount)
+            {
+                if (!distributedRootMappingHasExactCoverage(
+                    rootJobCount,
+                    leaseSize,
+                    stripeCount
+                )) return false;
+            }
+        }
+    }
+
+    // Production-shaped odd and padded tails, including fixed leases > 1.
+    constexpr array<array<size_t, 3>, 8> cases{{
+        {{9, 7, 4}},
+        {{17, 3, 5}},
+        {{45, 2, 3}},
+        {{45, 7, 2}},
+        {{45, 7, 3}},
+        {{45, 7, 4}},
+        {{97, 8, 7}},
+        {{238, 7, 4}}
+    }};
+    for (const auto &[rootJobCount, leaseSize, stripeCount] : cases)
+    {
+        if (!distributedRootMappingHasExactCoverage(
+            rootJobCount,
+            leaseSize,
+            stripeCount
+        )) return false;
+    }
+    return true;
+}
 
 void setInterruptFlag(bool value)
 {
@@ -32,6 +111,8 @@ void setInterruptFlag(bool value)
 
 int main()
 {
+    if (!distributedRootMappingsAreValid()) return 1;
+
     runTimeMax = numeric_limits<unsigned long long>::max();
     searchStopPollCountdown = 0;
     searchStopInnerPollCountdown = 0;

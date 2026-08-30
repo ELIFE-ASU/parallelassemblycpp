@@ -143,23 +143,26 @@ intermediate output disabled, and an unlimited runtime. Telemetry is available
 from the `AssemblyCppOMPTelemetry`, `AssemblyCppMPITelemetry`, and
 `AssemblyCppHybridTelemetry` targets. Other workloads run serially. Set
 `ASSEMBLYCPP_PARALLEL_MIN_BONDS=0` only when testing smaller scaling inputs.
-OpenMP workers dynamically lease root branches as they become available; hybrid
-workers do the same within each MPI rank while ranks retain disjoint modulo
-partitions. Root enumeration and DAG construction run once per process;
-workers receive stable job indices and reconstruct masks in their own
-thread-local arenas. By default, compact frontiers use leases of four and
-larger frontiers use guided leases to keep roughly 8--32 claimable tasks per
-worker: the promising leading frontier uses groups of at most four, the cheap
-bulk uses larger leases, and the tail shrinks back toward single jobs.
-The largest initial duplicate is evaluated first to publish a valid one-step
-incumbent before the workers start searching.
+Workers dynamically lease root branches as they become available. MPI and
+hybrid ranks request disjoint chunks from a rank-zero global queue, so a rank
+with more local workers or faster progress naturally claims more work instead
+of being limited by a fixed rank partition. The adaptive MPI default uses
+single-root worker leases to prevent an expensive tail root from stranding a
+larger lease. A rank-level broker refill bundles one lease per local worker, and
+a fixed positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` can override the worker lease
+size for experiments. Root enumeration and DAG construction still run once per
+process, and workers reconstruct masks from stable job indices in their own
+thread-local arenas. The largest initial duplicate is evaluated first on each
+rank to publish a valid one-step incumbent before the workers start searching.
+During MPI searches, improved incumbents are propagated through a passive-target
+RMA minimum, so every rank can prune against the best bound observed globally.
+The same heartbeat propagates cancellation and stops the broker from assigning
+new chunks after an interrupt or rank-local search failure is observed.
 
-Root work remains the normal frontier. The existing shallow policy arms
-depth-two donation for an initially sparse rank partition (fewer than four
-roots per local worker), for observed idle pressure while root work remains,
-or near the tail of a substantial frontier. The proactive tail case requires
-at least sixty-four initial roots per worker and fewer than eight unclaimed
-roots per worker. On ranks with two through seven local workers, idle pressure
+Root work remains the normal frontier. Within OpenMP and hybrid processes,
+observed idle pressure can arm depth-two donation while root work remains.
+Static serial/OpenMP frontiers also retain the sparse-frontier and proactive
+tail triggers. On ranks with two through seven local workers, idle pressure
 means at least half the workers are waiting; from eight workers onward the
 threshold is roughly one quarter, with a minimum of two.
 
@@ -173,11 +176,12 @@ four requires outstanding depth-three work. Starvation refills are considered
 below an estimated eight tasks per worker, target sixteen, and have a rank-wide
 task-slot ceiling of thirty-two times the local worker count; transferred task
 depth is capped at four. MPI-only ranks have no local peer to receive such
-work, while hybrid ranks can transfer it between their OpenMP workers. The hot
-root-lease cursor, root/task outstanding counts, ready/slot/idle counts, and
-donation request occupy separate 64-byte-aligned storage, as does each worker
-deque. A positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` disables guided lease sizing
-and selects a fixed root lease size for experiments.
+work, while hybrid ranks can transfer it between their OpenMP workers. Within
+the process-local scheduler, root/task outstanding counts, ready/slot/idle
+counts, and the donation request occupy separate 64-byte-aligned storage, as
+does each worker deque. The serial/OpenMP root-lease cursor is isolated there
+too; distributed searches use the broker's separate cursor. A positive
+`ASSEMBLYCPP_BRANCH_LEASE_SIZE` selects a fixed root lease size for experiments.
 
 ## Tests
 

@@ -87,6 +87,41 @@ unsigned long long runTimeMax = std::numeric_limits<unsigned long long>::max();
 ASSEMBLYCPP_SEARCH_LOCAL bool runtimeLimitReached = false;
 ASSEMBLYCPP_SEARCH_LOCAL bool enumerationLimitReached = false;
 
+/** Result of a nonblocking claim against a process-local distributed chunk. */
+enum class distributedRootAvailability
+{
+    lease,
+    wait,
+    complete
+};
+
+/**
+ * Process-local facade for the MPI distributed-search service.
+ *
+ * Every worker may claim indices from the already-prefetched local chunk and
+ * request progress. Only the MPI main thread may call progress(); this keeps
+ * hybrid builds within their MPI_THREAD_FUNNELED contract.
+ */
+class distributedSearchController
+{
+public:
+    virtual ~distributedSearchController() = default;
+
+    virtual distributedRootAvailability claimRootLease(
+        size_t leaseSize,
+        size_t &begin,
+        size_t &end
+    ) noexcept = 0;
+    virtual void requestProgress() noexcept = 0;
+    virtual void publishIncumbent(int candidate) noexcept = 0;
+    virtual void progress() noexcept = 0;
+};
+
+ASSEMBLYCPP_SEARCH_LOCAL distributedSearchController
+    *activeDistributedSearch = nullptr;
+ASSEMBLYCPP_SEARCH_LOCAL bool ownsDistributedSearchProgress = false;
+ASSEMBLYCPP_SEARCH_LOCAL size_t distributedSearchProgressCountdown = 0;
+
 using edgeL = triple<short, short, short>;
 ASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
 ASSEMBLYCPP_SEARCH_LOCAL vector<edgeL> originalEdgeList, univEdgeList;
@@ -104,9 +139,9 @@ ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
 ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
 ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>> intermediateMAs;
 
-// MPI ranks retain a deterministic modulo partition of the immutable root-job
-// table, while workers inside a rank dynamically claim rank-local ranges from
-// one shared cursor. The remaining values are worker-local search controls.
+// These fields describe the worker's MPI topology for telemetry and retain the
+// serial/OpenMP fallback mapping. Multi-rank searches receive root indices from
+// the distributed request queue instead of using the modulo mapping.
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionIndex = 0;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionCount = 1;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchRootBranchOrdinal = 0;
@@ -124,6 +159,7 @@ constexpr size_t parallelMinimumQueuedTasksPerWorker = 8;
 constexpr size_t parallelTargetQueuedTasksPerWorker = 16;
 constexpr size_t parallelMaximumQueuedTasksPerWorker = 32;
 constexpr size_t parallelPromisingFrontierLeaseSize = 4;
+constexpr size_t parallelDistributedInitialLeasesPerWorker = 1;
 // Deeper transfers are armed one level at a time only after workers fail to
 // find stealable work.  The fixed ceiling bounds serialization and queueing
 // even when a search tree has a very long irregular tail.
@@ -173,12 +209,26 @@ unsigned long long elapsedClockTicks()
  */
 constexpr size_t searchStopPollInterval = 128;
 static_assert(std::has_single_bit(searchStopPollInterval));
+constexpr size_t distributedSearchProgressPollInterval = 1024;
+static_assert(std::has_single_bit(distributedSearchProgressPollInterval));
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchStopPollCountdown = 0;
 ASSEMBLYCPP_SEARCH_LOCAL size_t searchStopInnerPollCountdown = 0;
 
 bool searchShouldStop()
 {
     if (interruptionRequested()) return true;
+
+    if (activeDistributedSearch != nullptr && ownsDistributedSearchProgress)
+    {
+        if (distributedSearchProgressCountdown == 0)
+        {
+            distributedSearchProgressCountdown =
+                distributedSearchProgressPollInterval - 1;
+            activeDistributedSearch->progress();
+            if (interruptionRequested()) return true;
+        }
+        else --distributedSearchProgressCountdown;
+    }
     if (runTimeMax == std::numeric_limits<unsigned long long>::max()) return false;
 
     if (searchStopPollCountdown != 0)

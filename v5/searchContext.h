@@ -1,5 +1,7 @@
 #pragma once
 
+#include "distributedRootMapping.h"
+
 /** A root occurrence stored without an EdgeMask from the producer thread. */
 struct rootOccurrenceDescriptor
 {
@@ -397,14 +399,13 @@ struct alignas(schedulerCacheLineBytes) parallelWorkerTaskDeque
 };
 
 /**
- * Rank-local adaptive work controller.
+ * Process-local adaptive work controller.
  *
- * Root jobs retain their stable modulo MPI partition and are claimed in
- * leases. Shallow donation retains the existing sparse/proactive policy.
- * Deeper donation is armed one level at a time only after idle workers have
- * failed to find local or stealable work. Each worker owns a LIFO deque; other
- * workers steal older tasks from its opposite end. Queue size and task depth
- * are both bounded.
+ * A non-distributed search claims leases from its stable modulo MPI partition.
+ * A distributed search instead obtains disjoint global-index leases from the
+ * process's distributed-search controller. Descendant donation remains local
+ * to the process: each worker owns a LIFO deque and peers steal older tasks
+ * from its opposite end. Queue size and task depth are both bounded.
  */
 class ParallelTaskScheduler
 {
@@ -431,14 +432,21 @@ public:
         std::size_t rankPartitionCount,
         std::size_t localWorkerCount,
         std::size_t rootLeaseSize,
-        bool useAdaptiveRootLeases
+        bool useAdaptiveRootLeases,
+        bool useDistributedRootQueue,
+        std::size_t distributedWorkerCount
     ):
         globalRootJobCount(rootJobCount),
         rankIndex(rankPartitionIndex),
         rankCount(std::max<std::size_t>(1, rankPartitionCount)),
         leaseSize(std::max<std::size_t>(1, rootLeaseSize)),
+        distributedRootQueue(useDistributedRootQueue),
+        distributedRootStripeCount(std::max<std::size_t>(
+            1,
+            distributedWorkerCount
+        )),
         rankRootJobCount(
-            rootJobCount <= rankIndex
+            useDistributedRootQueue || rootJobCount <= rankIndex
                 ? 0
                 : 1 + (rootJobCount - 1 - rankIndex) / rankCount
         ),
@@ -448,6 +456,8 @@ public:
         )),
         rootLeaseCursor(0),
         rootJobsOutstanding(rankRootJobCount),
+        rootClaimsInProgress(0),
+        rootProgressGeneration(0),
         taskJobsOutstanding(0),
         readyTaskCount(0),
         taskSlotsInUse(0),
@@ -465,6 +475,7 @@ public:
             workerCount,
             maximumTasksPerWorker
         )),
+        distributedRootSourceExhausted(!useDistributedRootQueue),
         adaptiveRootLeases(useAdaptiveRootLeases),
         taskTransfersEnabled(localWorkerCount > 1),
         proactiveTailRefillEnabled(
@@ -491,7 +502,11 @@ public:
             1,
             lowWatermark / 2
         );
-        if (taskTransfersEnabled && rankRootJobCount < sparseThreshold)
+        if (
+            taskTransfersEnabled &&
+            !distributedRootQueue &&
+            rankRootJobCount < sparseThreshold
+        )
             requestedDonationDepth.value.store(2, std::memory_order_relaxed);
     }
 
@@ -502,13 +517,82 @@ public:
             : 0;
     }
 
-    /** Claim one stable range of rank-partition ordinals. */
-    bool claimRootLease(std::size_t &begin, std::size_t &end)
+    /** Claim one stable range of root ordinals or direct global job indices. */
+    distributedRootAvailability claimRootLease(
+        std::size_t &begin,
+        std::size_t &end
+    )
     {
+        if (distributedRootQueue)
+        {
+            if (distributedRootSourceExhausted.load(
+                std::memory_order_acquire
+            )) return distributedRootAvailability::complete;
+
+            rootClaimsInProgress.value.fetch_add(
+                1,
+                std::memory_order_acq_rel
+            );
+            distributedSearchController *controller = activeDistributedSearch;
+            if (controller == nullptr)
+            {
+                rootClaimsInProgress.value.fetch_sub(
+                    1,
+                    std::memory_order_acq_rel
+                );
+                throw std::logic_error(
+                    "distributed root queue has no active controller"
+                );
+            }
+
+            distributedRootAvailability availability =
+                controller->claimRootLease(leaseSize, begin, end);
+            if (availability == distributedRootAvailability::lease)
+            {
+                if (begin >= end)
+                {
+                    rootClaimsInProgress.value.fetch_sub(
+                        1,
+                        std::memory_order_acq_rel
+                    );
+                    throw std::logic_error(
+                        "distributed root controller returned an invalid lease"
+                    );
+                }
+                rootJobsOutstanding.value.fetch_add(
+                    end - begin,
+                    std::memory_order_acq_rel
+                );
+            }
+            else if (
+                availability == distributedRootAvailability::complete
+            )
+            {
+                distributedRootSourceExhausted.store(
+                    true,
+                    std::memory_order_release
+                );
+            }
+
+            const std::size_t previousClaims =
+                rootClaimsInProgress.value.fetch_sub(
+                    1,
+                    std::memory_order_acq_rel
+                );
+            if (previousClaims == 0) std::terminate();
+            if (previousClaims == 1) condition.notify_all();
+            if (
+                availability == distributedRootAvailability::wait &&
+                distributedRootSourceExhausted.load(std::memory_order_acquire)
+            ) return distributedRootAvailability::complete;
+            return availability;
+        }
+
         begin = rootLeaseCursor.value.load(std::memory_order_relaxed);
         do
         {
-            if (begin >= rankRootJobCount) return false;
+            if (begin >= rankRootJobCount)
+                return distributedRootAvailability::complete;
             const std::size_t claimSize = rootLeaseSize(
                 begin,
                 rankRootJobCount - begin
@@ -545,7 +629,22 @@ public:
                 notifyWaiters(true);
             }
         }
-        return true;
+        return distributedRootAvailability::lease;
+    }
+
+    /** Convert a claimed ordinal to the immutable root-job table index. */
+    [[nodiscard]] std::size_t rootJobIndex(
+        std::size_t ordinal
+    ) const noexcept
+    {
+        if (!distributedRootQueue)
+            return rankIndex + ordinal * rankCount;
+        return distributedStripedRootJobIndex(
+            ordinal,
+            leaseSize,
+            distributedRootStripeCount,
+            globalRootJobCount
+        );
     }
 
     [[nodiscard]] bool taskDonationRequested(
@@ -698,7 +797,7 @@ public:
                 (taskDeques[workerIndex].stealOffset + 1) % victimCount;
         }
         if (
-            rootJobsOutstanding.value.load(std::memory_order_acquire) == 0 &&
+            rootWorkComplete() &&
             taskJobsOutstanding.value.load(std::memory_order_acquire) == 0
         ) return WorkAvailability::complete;
         return WorkAvailability::wait;
@@ -706,7 +805,6 @@ public:
 
     void completeRootLease(std::size_t completedRootJobs)
     {
-        if (!taskTransfersEnabled) return;
         if (completedRootJobs != 0)
         {
             const std::size_t previous = rootJobsOutstanding.value.fetch_sub(
@@ -764,6 +862,8 @@ public:
     {
         if (workerIndex >= workerCount)
             throw std::out_of_range("parallel worker wait index");
+        const std::size_t observedRootProgress =
+            rootProgressGeneration.value.load(std::memory_order_acquire);
         std::unique_lock<std::mutex> lock(waitMutex);
         idleWorkers.value.fetch_add(1, std::memory_order_acq_rel);
         requestStarvationRefill();
@@ -781,11 +881,15 @@ public:
                 return
                     cancelled.load(std::memory_order_relaxed) ||
                     readyTaskCount.value.load(std::memory_order_acquire) != 0 ||
-                    rootLeaseCursor.value.load(std::memory_order_relaxed) <
-                        rankRootJobCount ||
-                    (rootJobsOutstanding.value.load(
+                    (
+                        !distributedRootQueue &&
+                        rootLeaseCursor.value.load(std::memory_order_relaxed) <
+                            rankRootJobCount
+                    ) ||
+                    rootProgressGeneration.value.load(
                         std::memory_order_acquire
-                    ) == 0 && taskJobsOutstanding.value.load(
+                    ) != observedRootProgress ||
+                    (rootWorkComplete() && taskJobsOutstanding.value.load(
                         std::memory_order_acquire
                     ) == 0);
             }
@@ -802,6 +906,16 @@ public:
         idleWorkers.value.fetch_sub(1, std::memory_order_acq_rel);
     }
 
+    /** Wake workers after distributed refill or cancellation progress. */
+    void notifyRootProgress() noexcept
+    {
+        rootProgressGeneration.value.fetch_add(
+            1,
+            std::memory_order_release
+        );
+        condition.notify_all();
+    }
+
     void cancel() noexcept
     {
         cancelled.store(true, std::memory_order_release);
@@ -809,6 +923,18 @@ public:
     }
 
 private:
+    [[nodiscard]] bool rootWorkComplete() const noexcept
+    {
+        if (!distributedRootSourceExhausted.load(std::memory_order_acquire))
+            return false;
+        // A successful distributed claim publishes its outstanding count
+        // before releasing the in-progress claim. Read in the opposite order
+        // so observing the release also makes that count visible.
+        if (rootClaimsInProgress.value.load(std::memory_order_acquire) != 0)
+            return false;
+        return rootJobsOutstanding.value.load(std::memory_order_acquire) == 0;
+    }
+
     static std::size_t saturatedProduct(
         std::size_t left,
         std::size_t right
@@ -843,6 +969,18 @@ private:
 
     [[nodiscard]] std::size_t queuedTaskEstimate() const noexcept
     {
+        if (distributedRootQueue)
+        {
+            const std::size_t roots = rootJobsOutstanding.value.load(
+                std::memory_order_relaxed
+            );
+            const std::size_t tasks = taskJobsOutstanding.value.load(
+                std::memory_order_relaxed
+            );
+            return tasks > std::numeric_limits<std::size_t>::max() - roots
+                ? std::numeric_limits<std::size_t>::max()
+                : roots + tasks;
+        }
         const std::size_t claimed = std::min(
             rootLeaseCursor.value.load(std::memory_order_relaxed),
             rankRootJobCount
@@ -1066,11 +1204,15 @@ private:
     const std::size_t rankIndex;
     const std::size_t rankCount;
     const std::size_t leaseSize;
+    const bool distributedRootQueue;
+    const std::size_t distributedRootStripeCount;
     const std::size_t rankRootJobCount;
     const std::size_t workerCount;
     std::unique_ptr<parallelWorkerTaskDeque[]> taskDeques;
     schedulerAtomicValue<std::size_t> rootLeaseCursor;
     schedulerAtomicValue<std::size_t> rootJobsOutstanding;
+    schedulerAtomicValue<std::size_t> rootClaimsInProgress;
+    schedulerAtomicValue<std::size_t> rootProgressGeneration;
     schedulerAtomicValue<std::size_t> taskJobsOutstanding;
     schedulerAtomicValue<std::size_t> readyTaskCount;
     schedulerAtomicValue<std::size_t> taskSlotsInUse;
@@ -1082,6 +1224,7 @@ private:
     const std::size_t lowWatermark;
     const std::size_t targetWatermark;
     const std::size_t maximumQueuedTasks;
+    std::atomic_bool distributedRootSourceExhausted;
     const bool adaptiveRootLeases;
     const bool taskTransfersEnabled;
     const bool proactiveTailRefillEnabled;

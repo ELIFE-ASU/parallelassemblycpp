@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -435,6 +436,455 @@ bool mpiGraphsAgree(const molGraph &graph)
     );
     return minimum == maximum;
 }
+
+/** Rank-zero incumbent and cancellation state exposed through an RMA window. */
+struct MpiDistributedSearchState
+{
+    int globalBest = std::numeric_limits<int>::max();
+    int cancellationRequested = 0;
+};
+
+static_assert(std::is_standard_layout_v<MpiDistributedSearchState>);
+
+/**
+ * MPI_THREAD_FUNNELED-compatible root-request broker and incumbent exchange.
+ *
+ * Every worker consumes an atomically published process-local range. The MPI
+ * main thread alone requests/refills that range, services rank-zero requests,
+ * and progresses the RMA global bound and cancellation heartbeat.
+ */
+class MpiDistributedSearchController final:
+    public distributedSearchController
+{
+    MPI_Win window = MPI_WIN_NULL;
+    MpiDistributedSearchState exposedState;
+    std::atomic<int> &processBest;
+    ParallelTaskScheduler *scheduler = nullptr;
+    const uint64_t rootJobCount;
+    const uint64_t rootQueueSlotCount;
+    const uint64_t refillJobCount;
+    uint64_t nextRootQueueSlot = 0;
+    std::atomic<uint64_t> localRootCursor;
+    std::atomic<uint64_t> localRootEnd;
+    std::atomic_bool rootsExhausted;
+    std::atomic_bool progressRequested{false};
+    std::atomic_bool incumbentDirty{false};
+    std::chrono::steady_clock::time_point nextGlobalExchange{};
+    bool searchFinished = false;
+
+    static constexpr auto globalExchangeInterval =
+        std::chrono::milliseconds(250);
+    static constexpr int rootRequestTag = 19001;
+    static constexpr int rootReplyTag = 19002;
+
+    static uint64_t saturatedProduct(uint64_t left, uint64_t right) noexcept
+    {
+        return right != 0 && left > std::numeric_limits<uint64_t>::max() / right
+            ? std::numeric_limits<uint64_t>::max()
+            : left * right;
+    }
+
+    static uint64_t paddedRootSlotCount(
+        uint64_t count,
+        uint64_t blockWidth
+    )
+    {
+        if (count == 0) return 0;
+        blockWidth = std::max<uint64_t>(1, blockWidth);
+        const uint64_t remainder = count % blockWidth;
+        if (remainder == 0) return count;
+        const uint64_t padding = blockWidth - remainder;
+        if (count > std::numeric_limits<uint64_t>::max() - padding)
+            throw std::length_error("distributed root queue exceeds capacity");
+        return count + padding;
+    }
+
+    static void atomicMin(std::atomic<int> &target, int candidate) noexcept
+    {
+        int observed = target.load(std::memory_order_relaxed);
+        while (
+            candidate < observed &&
+            !target.compare_exchange_weak(
+                observed,
+                candidate,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed
+            )
+        ) {}
+    }
+
+    void notifyScheduler() noexcept;
+
+    void exchangeGlobalState(bool includeCancellation) noexcept
+    {
+        const int localBest = processBest.load(std::memory_order_relaxed);
+        int previousBest = localBest;
+        MPI_Fetch_and_op(
+            &localBest,
+            &previousBest,
+            MPI_INT,
+            0,
+            static_cast<MPI_Aint>(
+                offsetof(MpiDistributedSearchState, globalBest)
+            ),
+            MPI_MIN,
+            window
+        );
+        const int localCancellation = interruptionRequested() ? 1 : 0;
+        int previousCancellation = localCancellation;
+        if (includeCancellation)
+        {
+            MPI_Fetch_and_op(
+                &localCancellation,
+                &previousCancellation,
+                MPI_INT,
+                0,
+                static_cast<MPI_Aint>(
+                    offsetof(
+                        MpiDistributedSearchState,
+                        cancellationRequested
+                    )
+                ),
+                MPI_MAX,
+                window
+            );
+        }
+        MPI_Win_flush(0, window);
+        atomicMin(processBest, previousBest);
+        if (
+            includeCancellation &&
+            (localCancellation != 0 || previousCancellation != 0)
+        )
+        {
+            searchCancellationFlag.store(true, std::memory_order_release);
+            notifyScheduler();
+        }
+    }
+
+    std::array<uint64_t, 2> reserveRootRange(uint64_t requested) noexcept
+    {
+        const uint64_t begin = nextRootQueueSlot;
+        if (interruptionRequested()) return {begin, begin};
+        const uint64_t count = begin >= rootQueueSlotCount
+            ? 0
+            : std::min(
+                std::max<uint64_t>(1, requested),
+                rootQueueSlotCount - begin
+            );
+        nextRootQueueSlot = begin + count;
+        return {begin, begin + count};
+    }
+
+    void serviceRootRequests() noexcept
+    {
+        if (assemblyCppMpiRank != 0) return;
+        int available = 0;
+        MPI_Status status;
+        do
+        {
+            MPI_Iprobe(
+                MPI_ANY_SOURCE,
+                rootRequestTag,
+                MPI_COMM_WORLD,
+                &available,
+                &status
+            );
+            if (available == 0) break;
+            uint64_t requested = 0;
+            MPI_Recv(
+                &requested,
+                1,
+                MPI_UINT64_T,
+                status.MPI_SOURCE,
+                rootRequestTag,
+                MPI_COMM_WORLD,
+                MPI_STATUS_IGNORE
+            );
+            const std::array<uint64_t, 2> reply = reserveRootRange(requested);
+            MPI_Send(
+                reply.data(),
+                static_cast<int>(reply.size()),
+                MPI_UINT64_T,
+                status.MPI_SOURCE,
+                rootReplyTag,
+                MPI_COMM_WORLD
+            );
+        }
+        while (available != 0);
+    }
+
+    void refillRootChunk() noexcept
+    {
+        if (
+            searchFinished ||
+            rootsExhausted.load(std::memory_order_acquire) ||
+            interruptionRequested() ||
+            localRootCursor.load(std::memory_order_acquire) <
+                localRootEnd.load(std::memory_order_acquire)
+        ) return;
+
+        std::array<uint64_t, 2> range{};
+        if (assemblyCppMpiRank == 0)
+        {
+            serviceRootRequests();
+            range = reserveRootRange(refillJobCount);
+        }
+        else
+        {
+            MPI_Send(
+                &refillJobCount,
+                1,
+                MPI_UINT64_T,
+                0,
+                rootRequestTag,
+                MPI_COMM_WORLD
+            );
+            MPI_Recv(
+                range.data(),
+                static_cast<int>(range.size()),
+                MPI_UINT64_T,
+                0,
+                rootReplyTag,
+                MPI_COMM_WORLD,
+                MPI_STATUS_IGNORE
+            );
+        }
+        if (range[0] < range[1])
+        {
+            localRootCursor.store(range[0], std::memory_order_relaxed);
+            localRootEnd.store(range[1], std::memory_order_release);
+        }
+        else rootsExhausted.store(true, std::memory_order_release);
+        notifyScheduler();
+    }
+
+public:
+    MpiDistributedSearchController(
+        size_t totalRootJobs,
+        size_t leaseSize,
+        int localWorkerCount,
+        int globalWorkerOffset,
+        int globalWorkerCount,
+        std::atomic<int> &best
+    ):
+        processBest(best),
+        rootJobCount(static_cast<uint64_t>(totalRootJobs)),
+        rootQueueSlotCount(paddedRootSlotCount(
+            rootJobCount,
+            saturatedProduct(
+                saturatedProduct(
+                    static_cast<uint64_t>(leaseSize),
+                    static_cast<uint64_t>(std::max(1, globalWorkerCount))
+                ),
+                parallelDistributedInitialLeasesPerWorker
+            )
+        )),
+        refillJobCount(std::max<uint64_t>(
+            1,
+            saturatedProduct(
+                static_cast<uint64_t>(leaseSize),
+                static_cast<uint64_t>(std::max(1, localWorkerCount))
+            )
+        )),
+        nextRootQueueSlot(std::min(
+            rootQueueSlotCount,
+            saturatedProduct(
+                static_cast<uint64_t>(std::max(1, globalWorkerCount)),
+                saturatedProduct(
+                    static_cast<uint64_t>(leaseSize),
+                    parallelDistributedInitialLeasesPerWorker
+                )
+            )
+        )),
+        localRootCursor(std::min(
+            rootQueueSlotCount,
+            saturatedProduct(
+                static_cast<uint64_t>(std::max(0, globalWorkerOffset)),
+                saturatedProduct(
+                    static_cast<uint64_t>(leaseSize),
+                    parallelDistributedInitialLeasesPerWorker
+                )
+            )
+        )),
+        localRootEnd(std::min(
+            rootQueueSlotCount,
+            saturatedProduct(
+                static_cast<uint64_t>(
+                    std::max(0, globalWorkerOffset) +
+                    std::max(1, localWorkerCount)
+                ),
+                saturatedProduct(
+                    static_cast<uint64_t>(leaseSize),
+                    parallelDistributedInitialLeasesPerWorker
+                )
+            )
+        )),
+        rootsExhausted(
+            saturatedProduct(
+                static_cast<uint64_t>(std::max(1, globalWorkerCount)),
+                saturatedProduct(
+                    static_cast<uint64_t>(leaseSize),
+                    parallelDistributedInitialLeasesPerWorker
+                )
+            ) >= rootQueueSlotCount
+        )
+    {
+        if (totalRootJobs > std::numeric_limits<uint64_t>::max())
+            throw std::length_error("distributed root queue exceeds capacity");
+
+        if (assemblyCppMpiRank == 0)
+        {
+            exposedState.globalBest = best.load(std::memory_order_relaxed);
+        }
+        MPI_Win_create(
+            assemblyCppMpiRank == 0 ? &exposedState : nullptr,
+            assemblyCppMpiRank == 0
+                ? static_cast<MPI_Aint>(sizeof(exposedState))
+                : 0,
+            1,
+            MPI_INFO_NULL,
+            MPI_COMM_WORLD,
+            &window
+        );
+        MPI_Win_lock_all(0, window);
+        if (assemblyCppMpiRank == 0) MPI_Win_sync(window);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    ~MpiDistributedSearchController() override
+    {
+        if (window == MPI_WIN_NULL) return;
+        MPI_Win_flush_all(window);
+        MPI_Win_unlock_all(window);
+        MPI_Win_free(&window);
+    }
+
+    MpiDistributedSearchController(
+        const MpiDistributedSearchController &
+    ) = delete;
+    MpiDistributedSearchController &operator=(
+        const MpiDistributedSearchController &
+    ) = delete;
+
+    void attachScheduler(ParallelTaskScheduler &value) noexcept
+    {
+        scheduler = &value;
+    }
+
+    distributedRootAvailability claimRootLease(
+        size_t requestedLeaseSize,
+        size_t &begin,
+        size_t &end
+    ) noexcept override
+    {
+        uint64_t cursor = localRootCursor.load(std::memory_order_relaxed);
+        while (true)
+        {
+            const uint64_t limit = localRootEnd.load(std::memory_order_acquire);
+            if (cursor >= limit)
+            {
+                progressRequested.store(true, std::memory_order_release);
+                if (rootsExhausted.load(std::memory_order_acquire))
+                {
+                    // The progress owner publishes cursor/end before marking
+                    // the final chunk exhausted. Re-read both after acquiring
+                    // that marker so a stale pre-publication limit cannot make
+                    // scheduler completion sticky and lose the tail chunk.
+                    cursor = localRootCursor.load(std::memory_order_acquire);
+                    if (
+                        cursor <
+                        localRootEnd.load(std::memory_order_acquire)
+                    ) continue;
+                    return distributedRootAvailability::complete;
+                }
+                return distributedRootAvailability::wait;
+            }
+            const uint64_t requested = std::max<uint64_t>(
+                1,
+                static_cast<uint64_t>(requestedLeaseSize)
+            );
+            const uint64_t claimedEnd = cursor + std::min(
+                requested,
+                limit - cursor
+            );
+            if (localRootCursor.compare_exchange_weak(
+                cursor,
+                claimedEnd,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed
+            ))
+            {
+                begin = static_cast<size_t>(cursor);
+                end = static_cast<size_t>(claimedEnd);
+                return distributedRootAvailability::lease;
+            }
+        }
+    }
+
+    void requestProgress() noexcept override
+    {
+        progressRequested.store(true, std::memory_order_release);
+    }
+
+    void publishIncumbent(int) noexcept override
+    {
+        incumbentDirty.store(true, std::memory_order_release);
+    }
+
+    void progress() noexcept override
+    {
+        const bool requested = progressRequested.exchange(
+            false,
+            std::memory_order_acq_rel
+        );
+        const bool dirty = incumbentDirty.exchange(
+            false,
+            std::memory_order_acq_rel
+        );
+        const auto now = std::chrono::steady_clock::now();
+        const bool heartbeatDue = now >= nextGlobalExchange;
+        if (dirty || heartbeatDue)
+        {
+            exchangeGlobalState(heartbeatDue);
+            if (heartbeatDue)
+                nextGlobalExchange = now + globalExchangeInterval;
+        }
+        serviceRootRequests();
+        if (
+            requested ||
+            localRootCursor.load(std::memory_order_acquire) >=
+                localRootEnd.load(std::memory_order_acquire)
+        ) refillRootChunk();
+    }
+
+    /** Keep the RMA window alive until every rank has finished local work. */
+    void waitForGlobalCompletion() noexcept
+    {
+        searchFinished = true;
+        exchangeGlobalState(true);
+        // Local quiescence is permanent because descendant tasks never cross
+        // rank boundaries. Keep an early rank outside a blocking collective so
+        // its MPI progress calls can still service passive-target operations
+        // from ranks that are finishing long roots.
+        MPI_Request rendezvous = MPI_REQUEST_NULL;
+        MPI_Ibarrier(MPI_COMM_WORLD, &rendezvous);
+        int complete = 0;
+        while (complete == 0)
+        {
+            progress();
+            MPI_Test(&rendezvous, &complete, MPI_STATUS_IGNORE);
+            if (complete == 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+};
+
+void MpiDistributedSearchController::notifyScheduler() noexcept
+{
+    if (scheduler == nullptr) return;
+    if (interruptionRequested()) scheduler->cancel();
+    else scheduler->notifyRootProgress();
+}
 #endif
 
 bool runParallelSearch(molGraph &graph, ofstream &output)
@@ -514,18 +964,47 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         return false;
     }
 
+#if defined(ASSEMBLYCPP_USE_MPI)
+    const bool distributedRootQueue = assemblyCppMpiSize > 1;
+#else
+    constexpr bool distributedRootQueue = false;
+#endif
     const bool adaptiveBranchLeases = branchLeaseSize == 0;
     if (adaptiveBranchLeases)
     {
-        branchLeaseSize = adaptiveParallelBranchLeaseSize(
-            searchContext.rootJobs.size(),
-            static_cast<size_t>(max(1, globalWorkerCount))
+        branchLeaseSize = distributedRootQueue
+            ? 1
+            : adaptiveParallelBranchLeaseSize(
+                searchContext.rootJobs.size(),
+                static_cast<size_t>(max(1, globalWorkerCount))
+            );
+    }
+    if (distributedRootQueue)
+    {
+        // A lease larger than the complete frontier cannot expose additional
+        // work. Capping it also keeps the padded, striped queue arithmetic
+        // bounded for deliberately extreme experimental overrides.
+        branchLeaseSize = std::min(
+            branchLeaseSize,
+            std::max<size_t>(1, searchContext.rootJobs.size())
         );
     }
 
     std::atomic<int> processBest(searchContext.rootAssemblyIndex);
     std::atomic_bool warmStartReady(false);
 #if defined(ASSEMBLYCPP_USE_MPI)
+    std::optional<MpiDistributedSearchController> distributedSearchStorage;
+    if (distributedRootQueue)
+    {
+        distributedSearchStorage.emplace(
+            searchContext.rootJobs.size(),
+            branchLeaseSize,
+            localThreads,
+            globalWorkerOffset,
+            globalWorkerCount,
+            processBest
+        );
+    }
     const size_t rankPartitionIndex = static_cast<size_t>(assemblyCppMpiRank);
     const size_t rankPartitionCount = static_cast<size_t>(assemblyCppMpiSize);
 #else
@@ -543,7 +1022,10 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
             rankPartitionCount,
             static_cast<size_t>(localThreads),
             branchLeaseSize,
-            adaptiveBranchLeases
+            adaptiveBranchLeases,
+            distributedRootQueue,
+            static_cast<size_t>(max(1, globalWorkerCount)) *
+                parallelDistributedInitialLeasesPerWorker
         );
         replicas.resize(static_cast<size_t>(localThreads));
     }
@@ -582,6 +1064,10 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         return false;
     }
     ParallelTaskScheduler &taskScheduler = *taskSchedulerStorage;
+#if defined(ASSEMBLYCPP_USE_MPI)
+    if (distributedSearchStorage.has_value())
+        distributedSearchStorage->attachScheduler(taskScheduler);
+#endif
 
     auto runReplica = [&](int threadIndex)
     {
@@ -595,6 +1081,17 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         searchRankPartitionCount = 1;
 #endif
         searchBranchLeaseSize = branchLeaseSize;
+#if defined(ASSEMBLYCPP_USE_MPI)
+        activeDistributedSearch = distributedSearchStorage.has_value()
+            ? std::addressof(*distributedSearchStorage)
+            : nullptr;
+        ownsDistributedSearchProgress =
+            activeDistributedSearch != nullptr && threadIndex == 0;
+#else
+        activeDistributedSearch = nullptr;
+        ownsDistributedSearchProgress = false;
+#endif
+        distributedSearchProgressCountdown = 0;
         parallelTaskScheduler = taskScheduler.transferableTasksEnabled()
             ? &taskScheduler
             : nullptr;
@@ -660,6 +1157,8 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                         taskScheduler.warmStartRootJob(),
                         worker
                     );
+                    if (activeDistributedSearch != nullptr)
+                        activeDistributedSearch->progress();
                     warmStartReady.store(true, std::memory_order_release);
                     warmStartReady.notify_all();
                 }
@@ -755,6 +1254,9 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
 #endif
         parallelTaskScheduler = nullptr;
         sharedAssemblyIndex = nullptr;
+        activeDistributedSearch = nullptr;
+        ownsDistributedSearchProgress = false;
+        distributedSearchProgressCountdown = 0;
         suppressSearchOutput = false;
         searchRankPartitionIndex = 0;
         searchRankPartitionCount = 1;
@@ -787,6 +1289,11 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     }
 #else
     runReplica(0);
+#endif
+
+#if defined(ASSEMBLYCPP_USE_MPI)
+    if (distributedSearchStorage.has_value())
+        distributedSearchStorage->waitForGlobalCompletion();
 #endif
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY

@@ -348,9 +348,11 @@ class BenchmarkTests(unittest.TestCase):
         assert isinstance(parallel, dict)
         del parallel["shard_ownership"]
         parallel["branch_scheduler"] = {
-            "strategy": "dynamic_leases_with_static_mpi_rank_partition",
+            "strategy": "distributed_global_root_queue",
             "lease_size": 2,
-            "rank_partition_count": 1 if mode == "openmp" else 2,
+            "root_queue": {
+                "participant_count": 1 if mode == "openmp" else 2,
+            },
             "adaptive_splitting": dict(benchmark.ADAPTIVE_SPLITTING_POLICY),
             "complete": True,
         }
@@ -384,7 +386,10 @@ class BenchmarkTests(unittest.TestCase):
             del worker["shard"]
             worker["rank"] = rank
             worker["local_worker_index"] = local_worker_index
-            worker["rank_partition"] = {"index": rank, "count": rank_count}
+            worker["root_queue"] = {
+                "participant_rank": rank,
+                "participant_count": rank_count,
+            }
             worker["branch_leases"] = 1
 
         first_worker = workers[0]
@@ -649,6 +654,100 @@ class BenchmarkTests(unittest.TestCase):
                 all(len(result.baseline_measurements) == 3 for result in results)
             )
 
+    def test_telemetry_run_reuses_candidate_launcher_and_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            case = benchmark.BenchmarkCase(
+                "sample", source, 7, "reviewed", ("quick",), "telemetry"
+            )
+            execution = benchmark.ExecutionConfig(
+                launcher=("mpiexec", "-n", "2"),
+                environment=(("OMP_NUM_THREADS", "3"),),
+            )
+            telemetry_document = {"schema_version": 1}
+
+            with (
+                mock.patch.object(
+                    benchmark,
+                    "run_once",
+                    return_value=benchmark.Measurement(1.0, 100, 7),
+                ),
+                mock.patch.object(
+                    benchmark,
+                    "run_telemetry_once",
+                    return_value=telemetry_document,
+                ) as telemetry_run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                results = benchmark.run_benchmarks(
+                    executable=Path("candidate"),
+                    baseline_executable=None,
+                    telemetry_executable=Path("candidate-telemetry"),
+                    candidate_execution=execution,
+                    cases=[case],
+                    runs=1,
+                    warmup=0,
+                    timeout=1.0,
+                )
+
+            self.assertEqual(results[0].telemetry, telemetry_document)
+            telemetry_run.assert_called_once()
+            self.assertEqual(
+                telemetry_run.call_args.kwargs.get("execution"), execution
+            )
+
+    def test_configured_telemetry_command_applies_launcher_and_environment(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            working_directory = directory / "work"
+            working_directory.mkdir()
+            prepared = benchmark.PreparedCase(
+                case=benchmark.BenchmarkCase(
+                    "sample", source, 7, "reviewed", ("quick",), "telemetry"
+                ),
+                input_name=source.name,
+                output_path=working_directory / "inputOut",
+                telemetry_path=working_directory / "inputTelemetry.json",
+                working_directory=working_directory,
+            )
+            execution = benchmark.ExecutionConfig(
+                launcher=("mpiexec", "-n", "2"),
+                environment=(("OMP_NUM_THREADS", "3"),),
+            )
+            telemetry_document = {"schema_version": 1}
+
+            with (
+                mock.patch.object(benchmark, "run_command") as run_command,
+                mock.patch.object(benchmark, "parse_measurement"),
+                mock.patch.object(
+                    benchmark,
+                    "parse_search_telemetry",
+                    return_value=telemetry_document,
+                ),
+            ):
+                result = benchmark.run_telemetry_once(
+                    Path("candidate-telemetry"),
+                    prepared,
+                    1.0,
+                    execution=execution,
+                )
+
+            self.assertEqual(result, telemetry_document)
+            command, command_directory, timeout, environment = (
+                run_command.call_args.args
+            )
+            self.assertEqual(
+                command[:4],
+                ["mpiexec", "-n", "2", "candidate-telemetry"],
+            )
+            self.assertEqual(command_directory, working_directory)
+            self.assertEqual(timeout, 1.0)
+            self.assertEqual(environment["OMP_NUM_THREADS"], "3")
+
     def test_role_execution_configs_launch_with_environment_and_reach_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
@@ -658,6 +757,9 @@ class BenchmarkTests(unittest.TestCase):
             )
             baseline = self.create_fake_executable(
                 directory, "baseline", assembly_index=7, clock_ticks=200
+            )
+            telemetry = self.create_fake_executable(
+                directory, "telemetry", assembly_index=7, clock_ticks=100
             )
             launcher = self.create_forwarding_launcher(directory)
             report_path = directory / "report.json"
@@ -685,6 +787,9 @@ class BenchmarkTests(unittest.TestCase):
                         str(candidate),
                         "--baseline-executable",
                         str(baseline),
+                        "--telemetry",
+                        "--telemetry-executable",
+                        str(telemetry),
                         "--candidate-launcher",
                         shlex.join(candidate_launcher),
                         "--baseline-launcher",
@@ -717,6 +822,10 @@ class BenchmarkTests(unittest.TestCase):
                     "launcher": baseline_launcher,
                     "environment": {"BASELINE_MODE": "baseline enabled"},
                 },
+            )
+            self.assertEqual(
+                report["execution"]["telemetry"],
+                report["execution"]["candidate"],
             )
             self.assertEqual(len(report["cases"][0]["candidate"]["measurements"]), 2)
             self.assertEqual(len(report["cases"][0]["baseline"]["measurements"]), 2)
@@ -1536,11 +1645,63 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(parsed["parallel"]["rank_count"], 2)
             self.assertEqual(
                 [
-                    worker["rank_partition"]["index"]
+                    worker["root_queue"]["participant_rank"]
                     for worker in parsed["parallel"]["workers"]
                 ],
                 [0, 1],
             )
+
+            legacy_mpi_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
+            legacy_scheduler = legacy_mpi_dynamic["parallel"]["branch_scheduler"]
+            legacy_scheduler["strategy"] = (
+                "dynamic_leases_with_static_mpi_rank_partition"
+            )
+            del legacy_scheduler["root_queue"]
+            legacy_scheduler["rank_partition_count"] = 2
+            for worker in legacy_mpi_dynamic["parallel"]["workers"]:
+                rank = worker["rank"]
+                del worker["root_queue"]
+                worker["rank_partition"] = {"index": rank, "count": 2}
+            legacy_mpi_path = directory / "parallel-dynamic-legacy-v1-mpi.json"
+            legacy_mpi_path.write_text(
+                json.dumps(legacy_mpi_dynamic),
+                encoding="utf-8",
+            )
+            parsed_legacy = benchmark.parse_search_telemetry(legacy_mpi_path)
+            self.assertEqual(parsed_legacy["schema_version"], 1)
+            self.assertEqual(
+                parsed_legacy["parallel"]["branch_scheduler"]["strategy"],
+                "dynamic_leases_with_static_mpi_rank_partition",
+            )
+            self.assertEqual(
+                [
+                    worker["rank_partition"]["index"]
+                    for worker in parsed_legacy["parallel"]["workers"]
+                ],
+                [0, 1],
+            )
+
+            malformed_legacy = json.loads(json.dumps(legacy_mpi_dynamic))
+            malformed_legacy["parallel"]["workers"][0][
+                "branch_assignments"
+            ] = 2
+            malformed_legacy["parallel"]["workers"][1][
+                "branch_assignments"
+            ] = 0
+            malformed_legacy["parallel"]["workers"][1]["branch_leases"] = 0
+            malformed_legacy["parallel"]["aggregate"]["branch_leases"] = 1
+            malformed_legacy_path = (
+                directory / "parallel-dynamic-legacy-rank-redistribution.json"
+            )
+            malformed_legacy_path.write_text(
+                json.dumps(malformed_legacy),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError,
+                "rank 0 branch assignments do not match partition",
+            ):
+                benchmark.parse_search_telemetry(malformed_legacy_path)
 
             redistributed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
             redistributed_dynamic["parallel"]["workers"][0][
@@ -1556,11 +1717,14 @@ class BenchmarkTests(unittest.TestCase):
                 json.dumps(redistributed_dynamic),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(
-                benchmark.BenchmarkError,
-                "rank 0 branch assignments do not match partition",
-            ):
-                benchmark.parse_search_telemetry(redistributed_path)
+            redistributed = benchmark.parse_search_telemetry(redistributed_path)
+            self.assertEqual(
+                [
+                    worker["branch_assignments"]
+                    for worker in redistributed["parallel"]["workers"]
+                ],
+                [2, 0],
+            )
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["branch_scheduler"]["lease_size"] = 0
@@ -1576,17 +1740,17 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
-            malformed_dynamic["parallel"]["workers"][1]["rank_partition"][
-                "index"
+            malformed_dynamic["parallel"]["workers"][1]["root_queue"][
+                "participant_rank"
             ] = 0
-            malformed_path = directory / "parallel-dynamic-rank-partition.json"
+            malformed_path = directory / "parallel-dynamic-root-queue.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
-                "invalid worker rank partition",
+                "invalid worker root queue participant",
             ):
                 benchmark.parse_search_telemetry(malformed_path)
 

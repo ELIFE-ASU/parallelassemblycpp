@@ -78,11 +78,11 @@ python benchmarks/benchmark.py \
 Telemetry is excluded from timing aggregates. It records graph size, retained
 masks, matching and canonicalisation activity, cache rates, phase clock ticks,
 and phase memory. Parallel telemetry additionally records rank/thread topology,
-dynamic branch leases, MPI rank partitions, root-branch coverage, depth-two
-and deeper task transfers, local executions and steals, scheduler idle waits,
-deep-refill activations, task-queue high-water marks, maximum executed task
-depth, incumbent warm starts, steady-clock worker timing, and all 31 raw search
-counters per worker plus their exact aggregate.
+distributed root-queue participation, dynamic branch leases, global root-branch
+coverage, depth-two and deeper task transfers, local executions and steals,
+scheduler idle waits, deep-refill activations, task-queue high-water marks,
+maximum executed task depth, incumbent warm starts, steady-clock worker timing,
+and all 31 raw search counters per worker plus their exact aggregate.
 Parallel phase memory is disabled because `/proc` peak resets are process-wide.
 A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
 critical parallel-region wall time; worker elapsed and busy values are sums,
@@ -191,24 +191,21 @@ mpirun --map-by slot --bind-to core -n 4 \
 
 These placement flags use Open MPI syntax. Each process enumerates the root
 once, then shares an immutable processed graph, runtime DAG, and serialized
-root-job table. Workers own their fragmentation scratch and search caches and
-dynamically lease rank-local job indices; MPI ranks retain deterministic modulo
-partitions so no job is duplicated across processes. Wide masks are rebuilt
-inside the receiving worker from serialized words.
+root-job table. Workers own their fragmentation scratch and search caches. MPI
+and hybrid ranks request disjoint chunks from a rank-zero global queue, so work
+follows each rank's actual local capacity while every root job is executed
+exactly once. Wide masks are rebuilt inside the receiving worker from
+serialized words.
 
-The default root scheduler uses fixed leases of four for compact frontiers and
-guided leases for larger ones. It assigns the promising leading frontier in
-groups of at most four, keeps about sixteen claimable root tasks per worker
-through the bulk, and shrinks toward single jobs at the tail. Root jobs take
-priority over transferred work. The existing shallow policy lets a root search
-expose immediate children as depth-two tasks when its rank starts with fewer
-than four roots per local worker or workers demonstrate idle pressure behind
-active root work. Frontiers that begin with at least sixty-four roots per
-worker also arm depth-two donation when their unclaimed tail drops below eight
-per worker, so a final root can hand off its first child before idleness is
-observed. The idle trigger is at least half the workers on ranks with fewer
-than eight local workers, and roughly one quarter (with a minimum of two) on
-larger ranks.
+The adaptive MPI default uses one-root worker leases, with each rank-level
+broker refill bundling one lease per local worker. This bounds tail imbalance
+when a single root is much more expensive than its neighbours; faster ranks
+simply issue more requests. Serial/OpenMP scheduling retains guided leases for
+larger frontiers. Root jobs take priority over transferred work.
+Within hybrid ranks, observed idle pressure can make a root search expose
+immediate children as depth-two tasks. The idle trigger is at least half the
+workers on ranks with fewer than eight local workers, and roughly one quarter
+(with a minimum of two) on larger ranks.
 
 Each rank has one lazily populated deque per local worker. Producers push to
 their own deque and execute its newest task (owner LIFO); idle peers take the
@@ -220,18 +217,23 @@ one level at a time while work at the preceding depth remains outstanding.
 The estimated rank frontier must be below eight tasks per worker to request a
 starvation refill. Donation stops around a target of sixteen tasks per worker,
 with a hard rank-wide task-slot cap of thirty-two times the local worker count
-and an absolute transferred-task depth cap of four. The hot root-lease cursor,
-root/task outstanding counts, ready/slot/idle counts, and donation request
-occupy separate 64-byte-aligned storage; worker deque state is aligned
-separately too.
+and an absolute transferred-task depth cap of four. Within the process-local
+scheduler, root/task outstanding counts, ready/slot/idle counts, and the
+donation request occupy separate 64-byte-aligned storage; worker deque state is
+aligned separately too. Its serial/OpenMP root-lease cursor is isolated there;
+distributed searches use the broker's separate cursor.
 
-The largest initial duplicate is evaluated first to publish a valid first-step
-incumbent before concurrent searching begins. Task transfer is disabled in an
-MPI-only rank with one local worker, but remains available within hybrid ranks.
+The largest initial duplicate is evaluated first on each rank to publish a
+valid first-step incumbent before concurrent searching begins. Improved bounds
+are propagated periodically with a passive-target RMA minimum, allowing remote
+progress to tighten local pruning before the final result reduction. Root work
+uses the FUNNELED request broker, and the RMA heartbeat also propagates
+cancellation so it stops issuing new chunks after an observed interrupt or
+search failure. Task transfer is disabled in an MPI-only rank with one local
+worker, but remains available within hybrid ranks.
 
 Set the positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
-fixed root lease size instead of guided sizing. Only MPI rank zero writes
-output.
+fixed root lease size. Only MPI rank zero writes output.
 
 The runner accepts separate launchers and environment variables for each role:
 
@@ -246,8 +248,10 @@ python benchmarks/benchmark.py \
   --json-output build/parallel-omp-4.json
 ```
 
-Set `OMP_NUM_THREADS` explicitly for every OpenMP or hybrid report. On POSIX, a
-timeout or interrupt terminates the launcher's process group.
+Set `OMP_NUM_THREADS` explicitly for every OpenMP or hybrid report. The separate
+telemetry executable inherits the candidate launcher and candidate environment,
+so MPI rank counts and hybrid thread placement match the timed candidate. On
+POSIX, a timeout or interrupt terminates the launcher's process group.
 
 Compare topology reports with:
 
