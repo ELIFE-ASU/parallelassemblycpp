@@ -321,8 +321,255 @@ void testWideResidualCacheCanonicalIdWriteback()
     assert(splitHit.fragments[1].canonicalId == splitIds[1]);
 }
 
+void testFragmentPairMatchingTraversal()
+{
+    dagDuplicateSet duplicates(2, 3);
+    duplicates.insert(potentialDuplicate(makeMask({0, 1}), 0, 0));
+    duplicates.insert(potentialDuplicate(makeMask({2, 3}), 0, 2));
+    duplicates.insert(potentialDuplicate(makeMask({1, 4}), 0, 5));
+    duplicates.insert(potentialDuplicate(makeMask({8, 9}), 1, 1));
+    duplicates.insert(potentialDuplicate(makeMask({10, 11}), 1, 4));
+    duplicates.insert(potentialDuplicate(makeMask({16, 17}), 2, 3));
+    duplicates.insert(potentialDuplicate(makeMask({18, 19}), 2, 6));
+    duplicates.insert(potentialDuplicate(makeMask({20, 21}), 2, 7));
+    assert(duplicates.isValid());
+    vector<int> fragmentsByOccurrence;
+    for (const potentialDuplicate &occurrence : duplicates.list)
+        fragmentsByOccurrence.push_back(occurrence.fragment);
+
+    vector<pair<size_t, size_t>> expectedPairs;
+    assert(duplicates.visitMatchingsInReverse(
+        [&](validMatchings &matching, size_t first, size_t second)
+        {
+            assert(first < second);
+            assert(matching.frag1 == fragmentsByOccurrence[first]);
+            assert(matching.frag2 == fragmentsByOccurrence[second]);
+            expectedPairs.emplace_back(
+                matching.first.findFirst(),
+                matching.second.findFirst()
+            );
+            return false;
+        },
+        [](validMatchings &) {return true;}
+    ));
+    assert(expectedPairs.size() == 27);
+    sort(expectedPairs.begin(), expectedPairs.end());
+
+    vector<pair<int, int>> visitedBlocks;
+    vector<pair<size_t, size_t>> actualPairs;
+    assert(!duplicates.hasDenseFragmentRuns());
+    assert(duplicates.visitMatchingsByFragmentPairInReverse(
+        [&](int firstFragment, int secondFragment, int selectedSize)
+        {
+            assert(firstFragment <= secondFragment);
+            assert(selectedSize == duplicates.size);
+            visitedBlocks.emplace_back(
+                firstFragment,
+                secondFragment
+            );
+            return false;
+        },
+        [&](validMatchings &matching)
+        {
+            actualPairs.emplace_back(
+                matching.first.findFirst(),
+                matching.second.findFirst()
+            );
+            return true;
+        }
+    ));
+    sort(actualPairs.begin(), actualPairs.end());
+    assert(actualPairs == expectedPairs);
+    sort(visitedBlocks.begin(), visitedBlocks.end());
+    const vector<pair<int, int>> expectedBlocks = {
+        {0, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}, {2, 2}
+    };
+    assert(visitedBlocks == expectedBlocks);
+
+    size_t blockFilterCalls = 0;
+    size_t matchingVisits = 0;
+    assert(duplicates.visitMatchingsByFragmentPairInReverse(
+        [&](int firstFragment, int secondFragment, int selectedSize)
+        {
+            ++blockFilterCalls;
+            assert(selectedSize == duplicates.size);
+            return firstFragment == 0 && secondFragment == 2;
+        },
+        [&](validMatchings &)
+        {
+            ++matchingVisits;
+            return true;
+        }
+    ));
+    assert(blockFilterCalls == 6);
+    assert(matchingVisits == expectedPairs.size() - 9);
+
+    size_t stoppedVisits = 0;
+    assert(!duplicates.visitMatchingsByFragmentPairInReverse(
+        [](int, int, int) {return false;},
+        [&](validMatchings &)
+        {
+            ++stoppedVisits;
+            return stoppedVisits < 3;
+        }
+    ));
+    assert(stoppedVisits == 3);
+
+    // Empty diagonal blocks do not evaluate a fragment-pair filter.
+    dagDuplicateSet singletonRun(2, 2);
+    for (size_t occurrence = 0; occurrence < 8; occurrence++)
+    {
+        singletonRun.insert(potentialDuplicate(
+            makeMask({2 * occurrence, 2 * occurrence + 1}),
+            occurrence == 0 ? 0 : 1,
+            static_cast<int>(occurrence)
+        ));
+    }
+    assert(!singletonRun.hasDenseFragmentRuns());
+    vector<pair<int, int>> singletonBlocks;
+    size_t singletonVisits = 0;
+    assert(singletonRun.visitMatchingsByFragmentPairInReverse(
+        [&](int firstFragment, int secondFragment, int)
+        {
+            singletonBlocks.emplace_back(firstFragment, secondFragment);
+            return false;
+        },
+        [&](validMatchings &)
+        {
+            ++singletonVisits;
+            return true;
+        }
+    ));
+    sort(singletonBlocks.begin(), singletonBlocks.end());
+    const vector<pair<int, int>> expectedSingletonBlocks = {
+        {0, 1}, {1, 1}
+    };
+    assert(singletonBlocks == expectedSingletonBlocks);
+    assert(singletonVisits == 28);
+
+    // Resume a diagonal after overlapping pairs precede its first match.
+    dagDuplicateSet delayedDiagonal(2, 1);
+    delayedDiagonal.insert(potentialDuplicate(makeMask({0, 1}), 0, 0));
+    delayedDiagonal.insert(potentialDuplicate(makeMask({2, 3}), 0, 1));
+    delayedDiagonal.insert(potentialDuplicate(makeMask({0, 4}), 0, 2));
+    delayedDiagonal.insert(potentialDuplicate(makeMask({0, 5}), 0, 3));
+    vector<pair<size_t, size_t>> expectedDelayedPairs;
+    assert(delayedDiagonal.visitMatchingsInReverse(
+        [&](validMatchings &matching, size_t, size_t)
+        {
+            expectedDelayedPairs.emplace_back(
+                matching.first.findFirst(),
+                matching.second.findFirst()
+            );
+            return false;
+        },
+        [](validMatchings &) {return true;}
+    ));
+    vector<pair<size_t, size_t>> actualDelayedPairs;
+    size_t delayedFilterCalls = 0;
+    assert(delayedDiagonal.visitMatchingsByFragmentPairInReverse(
+        [&](int, int, int)
+        {
+            ++delayedFilterCalls;
+            return false;
+        },
+        [&](validMatchings &matching)
+        {
+            actualDelayedPairs.emplace_back(
+                matching.first.findFirst(),
+                matching.second.findFirst()
+            );
+            return true;
+        }
+    ));
+    sort(expectedDelayedPairs.begin(), expectedDelayedPairs.end());
+    sort(actualDelayedPairs.begin(), actualDelayedPairs.end());
+    assert(expectedDelayedPairs.size() == 3);
+    assert(actualDelayedPairs == expectedDelayedPairs);
+    assert(delayedFilterCalls == 1);
+
+    dagDuplicateSet denseSmall(2, 1);
+    for (size_t occurrence = 0; occurrence < 8; occurrence++)
+    {
+        denseSmall.insert(potentialDuplicate(
+            makeMask({2 * occurrence, 2 * occurrence + 1}),
+            0,
+            static_cast<int>(occurrence)
+        ));
+    }
+    assert(denseSmall.hasDenseFragmentRuns());
+
+    // Sorted but sparse runs also retain the legacy traversal.
+    dagDuplicateSet sparseDuplicates(2, 8);
+    for (size_t occurrence = 0; occurrence < 16; occurrence++)
+    {
+        sparseDuplicates.insert(potentialDuplicate(
+            makeMask({2 * occurrence, 2 * occurrence + 1}),
+            static_cast<int>(occurrence / 2),
+            static_cast<int>(occurrence)
+        ));
+    }
+    assert(!sparseDuplicates.hasDenseFragmentRuns());
+
+    // Unexpected interleaving retains the legacy occurrence traversal. Keep
+    // this case wide and sparse to cover that correctness fallback.
+    const array<int, 16> interleavedFragments = {
+        7, 0, 3, 7, 0, 3, 7, 3, 0, 7, 0, 3, 7, 0, 3, 7
+    };
+    dagDuplicateSet interleavedDuplicates(2, 8);
+    for (size_t occurrence = 0;
+         occurrence < interleavedFragments.size();
+         occurrence++)
+    {
+        EdgeMask mask;
+        mask.set(occurrence == 15 ? 0 : occurrence * 2);
+        mask.set(occurrence * 2 + 1);
+        interleavedDuplicates.insert(potentialDuplicate(
+            std::move(mask),
+            interleavedFragments[occurrence],
+            static_cast<int>(occurrence)
+        ));
+    }
+    assert(interleavedDuplicates.isValid());
+
+    size_t expectedFallbackPairs = 0;
+    assert(interleavedDuplicates.visitMatchingsInReverse(
+        [&](validMatchings &matching, size_t first, size_t second)
+        {
+            assert(first < second);
+            assert(matching.frag1 == interleavedFragments[first]);
+            assert(matching.frag2 == interleavedFragments[second]);
+            ++expectedFallbackPairs;
+            return false;
+        },
+        [](validMatchings &) {return true;}
+    ));
+    assert(expectedFallbackPairs == 119);
+
+    assert(!interleavedDuplicates.hasDenseFragmentRuns());
+    size_t fallbackVisits = 0;
+    assert(interleavedDuplicates.visitMatchingsInReverse(
+        [&](validMatchings &matching, size_t first, size_t second)
+        {
+            assert(first < second);
+            assert(matching.frag1 == interleavedFragments[first]);
+            assert(matching.frag2 == interleavedFragments[second]);
+            return false;
+        },
+        [&](validMatchings &)
+        {
+            ++fallbackVisits;
+            return true;
+        }
+    ));
+    assert(fallbackVisits == expectedFallbackPairs);
+}
+
 int main()
 {
+    // Exercise grouped runs and their fallback with a multiword mask domain.
+    configurePathGraph(96);
+    testFragmentPairMatchingTraversal();
     configurePathGraph(32);
     testMaskTrimmingMetadata();
     testFragmentMetadataAndSelectiveCanonisation();

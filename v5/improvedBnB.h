@@ -490,6 +490,120 @@ int pairSpecificGenericBound(
     return result;
 }
 
+[[gnu::noinline]] int pairSpecificGenericBound(
+    const assemblyState &target,
+    int selectedSize,
+    int firstFragment,
+    int secondFragment,
+    const vi &parentTotals
+)
+{
+    // Evaluate the generic bound on a virtual child whose selected copies have
+    // been removed but whose residual parents remain unsplit. Since
+    // n - ceil(n / k) is superadditive, later component splitting can only
+    // lower this duplicate-bond estimate, so it is safe before union-find.
+    int total = parentTotals[0] + selectedSize / 2;
+    if (firstFragment == secondFragment)
+    {
+        const int parentEdges =
+            target.fragments[firstFragment].edgeCount;
+        total += (parentEdges - 2 * selectedSize) / 2 - parentEdges / 2;
+    }
+    else
+    {
+        const int firstParentEdges =
+            target.fragments[firstFragment].edgeCount;
+        const int secondParentEdges =
+            target.fragments[secondFragment].edgeCount;
+        total += (firstParentEdges - selectedSize) / 2 - firstParentEdges / 2;
+        total += (secondParentEdges - selectedSize) / 2 - secondParentEdges / 2;
+    }
+    int result = total - 1;
+
+    for (int duplicateSize = 3;
+         duplicateSize < selectedSize;
+         duplicateSize++)
+    {
+        total = parentTotals[duplicateSize - 2] +
+            assemblyState::unrestrictedDupBondsForFragment(
+                selectedSize,
+                duplicateSize
+            );
+        if (firstFragment == secondFragment)
+        {
+            const int parentEdges =
+                target.fragments[firstFragment].edgeCount;
+            total += assemblyState::unrestrictedDupBondsForFragment(
+                parentEdges - 2 * selectedSize,
+                duplicateSize
+            ) - assemblyState::unrestrictedDupBondsForFragment(
+                parentEdges,
+                duplicateSize
+            );
+        }
+        else
+        {
+            const int firstParentEdges =
+                target.fragments[firstFragment].edgeCount;
+            const int secondParentEdges =
+                target.fragments[secondFragment].edgeCount;
+            total += assemblyState::unrestrictedDupBondsForFragment(
+                firstParentEdges - selectedSize,
+                duplicateSize
+            ) - assemblyState::unrestrictedDupBondsForFragment(
+                firstParentEdges,
+                duplicateSize
+            );
+            total += assemblyState::unrestrictedDupBondsForFragment(
+                secondParentEdges - selectedSize,
+                duplicateSize
+            ) - assemblyState::unrestrictedDupBondsForFragment(
+                secondParentEdges,
+                duplicateSize
+            );
+        }
+        result = max(result, total - ceilLog2(duplicateSize));
+    }
+    return result;
+}
+
+[[gnu::noinline]] bool shouldVisitFragmentPairBlocks(
+    assemblyState &target,
+    const dagDuplicateSet &duplicates,
+    int targetedBound,
+    int pairBoundLimit,
+    int &matchingClassBound
+)
+{
+    // In small classes only a single fragment run has enough reuse to cover
+    // the block-dispatch cost. The size-three generic bound has no inner
+    // duplicate-size loop, so keep that rule for the minimum 16-occurrence
+    // block as well. The endpoint check rejects these common multi-run cases
+    // before the full sortedness scan.
+    if (
+        (
+            duplicates.list.size() < 16 ||
+            (
+                duplicates.list.size() == 16 &&
+                duplicates.size == 3
+            )
+        ) &&
+        duplicates.list.front().fragment !=
+            duplicates.list.back().fragment
+    ) return false;
+
+    if (targetedBound - 1 > pairBoundLimit) return false;
+    if (targetedBound > pairBoundLimit)
+    {
+        matchingClassBound = target.maxDupBonds(
+            duplicates.size,
+            duplicates.maskList
+        );
+        if (matchingClassBound > pairBoundLimit) return false;
+    }
+    return duplicates.hasDenseFragmentRuns();
+}
+
 struct homogeneousPathResidualKey
 {
     // At most two removed parents and four residual path components.
@@ -731,11 +845,23 @@ enum class matchingEquivalenceMode
     homogeneousPath
 };
 
+enum class fragmentPairBlockMode
+{
+    automatic,
+    disabled,
+    enabled
+};
+
+// Pair pruning pays for itself once residual splitting is no longer dominated
+// by the fixed cost of the bound lookup.
+constexpr size_t pairBoundMinimumMoleculeEdges = 27;
+
 template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
     bool allowDepthTwoDonation = false,
-    bool useSharedStates = false
+    bool useSharedStates = false,
+    bool enableFragmentPairBlocks = false
 >
 void dagRecursiveAssemblyWithWorkspaceImpl(
     const vector<dagLevel> &dag,
@@ -790,7 +916,8 @@ template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
     bool allowDepthTwoDonation = false,
-    bool useSharedStates = false
+    bool useSharedStates = false,
+    fragmentPairBlockMode pairBlockMode = fragmentPairBlockMode::automatic
 >
 bool continueCanonicalAssemblySearchWithWorkspace(
     const vector<dagLevel> &dag,
@@ -851,18 +978,95 @@ bool continueCanonicalAssemblySearchWithWorkspace(
             assemblyPathStep{matching->first, matching->second}
         );
     }
-    dagRecursiveAssemblyWithWorkspaceImpl<
-        equivalenceMode,
-        trackPath,
-        allowDepthTwoDonation,
-        useSharedStates
-    >(
-        dag,
-        candidate,
-        AI,
-        fragmentationWorkspace,
-        searchStorage
-    );
+    if constexpr (
+        equivalenceMode == matchingEquivalenceMode::none && !trackPath
+    )
+    {
+        if constexpr (pairBlockMode == fragmentPairBlockMode::enabled)
+        {
+            dagRecursiveAssemblyWithWorkspaceImpl<
+                equivalenceMode,
+                trackPath,
+                allowDepthTwoDonation,
+                useSharedStates,
+                true
+            >(
+                dag,
+                candidate,
+                AI,
+                fragmentationWorkspace,
+                searchStorage
+            );
+        }
+        else if constexpr (pairBlockMode == fragmentPairBlockMode::disabled)
+        {
+            dagRecursiveAssemblyWithWorkspaceImpl<
+                equivalenceMode,
+                trackPath,
+                allowDepthTwoDonation,
+                useSharedStates,
+                false
+            >(
+                dag,
+                candidate,
+                AI,
+                fragmentationWorkspace,
+                searchStorage
+            );
+        }
+        else if (
+            fragmentationWorkspace.edgeCount >=
+                pairBoundMinimumMoleculeEdges &&
+            fragmentationWorkspace.edgeCount <= EdgeMask::wordBits
+        )
+        {
+            dagRecursiveAssemblyWithWorkspaceImpl<
+                equivalenceMode,
+                trackPath,
+                allowDepthTwoDonation,
+                useSharedStates,
+                true
+            >(
+                dag,
+                candidate,
+                AI,
+                fragmentationWorkspace,
+                searchStorage
+            );
+        }
+        else
+        {
+            dagRecursiveAssemblyWithWorkspaceImpl<
+                equivalenceMode,
+                trackPath,
+                allowDepthTwoDonation,
+                useSharedStates,
+                false
+            >(
+                dag,
+                candidate,
+                AI,
+                fragmentationWorkspace,
+                searchStorage
+            );
+        }
+    }
+    else
+    {
+        dagRecursiveAssemblyWithWorkspaceImpl<
+            equivalenceMode,
+            trackPath,
+            allowDepthTwoDonation,
+            useSharedStates,
+            false
+        >(
+            dag,
+            candidate,
+            AI,
+            fragmentationWorkspace,
+            searchStorage
+        );
+    }
     if constexpr (trackPath) searchStorage.pathway->current.pop_back();
     return !searchShouldStop();
 }
@@ -871,7 +1075,8 @@ template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
     bool allowDepthTwoDonation = false,
-    bool useSharedStates = false
+    bool useSharedStates = false,
+    fragmentPairBlockMode pairBlockMode = fragmentPairBlockMode::automatic
 >
 bool continueAssemblySearchWithWorkspace(
     const vector<dagLevel> &dag,
@@ -888,7 +1093,8 @@ bool continueAssemblySearchWithWorkspace(
         equivalenceMode,
         trackPath,
         allowDepthTwoDonation,
-        useSharedStates
+        useSharedStates,
+        pairBlockMode
     >(
         dag,
         candidate,
@@ -913,7 +1119,8 @@ template<
     matchingEquivalenceMode equivalenceMode,
     bool trackPath,
     bool allowDepthTwoDonation,
-    bool useSharedStates
+    bool useSharedStates,
+    bool enableFragmentPairBlocks
 >
 void dagRecursiveAssemblyWithWorkspaceImpl(
     const vector<dagLevel> &dag,
@@ -923,9 +1130,6 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     assemblySearchStorage &searchStorage
 )
 {
-    // Count-only pair pruning pays for itself once residual splitting is no
-    // longer dominated by the fixed cost of the bound lookup.
-    constexpr size_t pairBoundMinimumMoleculeEdges = 27;
     const bool usePairBound =
         fragmentationWorkspace.edgeCount >= pairBoundMinimumMoleculeEdges;
     recordImprovedAssemblyIndex<trackPath>(input, AI, searchStorage);
@@ -1173,7 +1377,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             equivalenceMode,
                             trackPath,
                             false,
-                            useSharedStates
+                            useSharedStates,
+                            enableFragmentPairBlocks
+                                ? fragmentPairBlockMode::enabled
+                                : fragmentPairBlockMode::disabled
                         >(
                             dag,
                             candidate,
@@ -1223,13 +1430,181 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                 }
                 else
                 {
-                    completed = ss.visitMatchingsInReverse(
-                        [&](validMatchings &matching, size_t, size_t)
+                    if constexpr (enableFragmentPairBlocks)
+                    {
+                        constexpr size_t minimumGroupedOccurrences = 8;
+                        const int pairBoundLimit =
+                            static_cast<int>(totalBonds) -
+                            input.sumDupBonds - 1 - AI;
+                        // Pathway output retains the legacy reverse-occurrence
+                        // order. Larger one-word count-only classes can visit
+                        // their existing fragment-contiguous runs as Cartesian
+                        // blocks.
+                        if (
+                            usePairBound &&
+                            ss.size > 2 &&
+                            ss.list.size() >= minimumGroupedOccurrences &&
+                            shouldVisitFragmentPairBlocks(
+                                input,
+                                ss,
+                                dupBondsMaxFrag,
+                                pairBoundLimit,
+                                matchingClassBound
+                            )
+                        )
                         {
-                            return pairBoundFiltersMatching(matching);
-                        },
-                        matchingVisitor
-                    );
+                            // This callback is deliberately separate from the
+                            // occurrence-based legacy filter above. Keeping
+                            // the fragment-only path inside grouped traversal
+                            // avoids adding an adapter call to every legacy
+                            // occurrence pair.
+                            auto pairBoundFiltersFragmentPair = [&]
+                            (
+                                int firstFragment,
+                                int secondFragment,
+                                int selectedSize
+                            )
+                            {
+                                if (usePairBound)
+                                {
+                                    const int pairBoundLimit =
+                                        static_cast<int>(totalBonds) -
+                                        input.sumDupBonds - 1 - AI;
+                                    if (
+                                        dupBondsMaxFrag - 1 <= pairBoundLimit
+                                    )
+                                    {
+                                        bool targetedBoundsFit =
+                                            dupBondsMaxFrag <= pairBoundLimit;
+                                        if (!targetedBoundsFit)
+                                        {
+                                            if (
+                                                matchingClassBound ==
+                                                numeric_limits<int>::min()
+                                            )
+                                            {
+                                                matchingClassBound =
+                                                    input.maxDupBonds(
+                                                        ss.size,
+                                                        ss.maskList
+                                                    );
+                                            }
+                                            targetedBoundsFit =
+                                                matchingClassBound <=
+                                                pairBoundLimit;
+                                        }
+
+                                        if (targetedBoundsFit)
+                                        {
+                                            bool genericBoundFits =
+                                                selectedSize == 2;
+                                            if (!genericBoundFits)
+                                            {
+                                                if (
+                                                    unrestrictedParentTotals
+                                                        .empty()
+                                                )
+                                                {
+                                                    buildUnrestrictedDupBondTotals(
+                                                        input,
+                                                        selectedSize - 1,
+                                                        unrestrictedParentTotals
+                                                    );
+                                                    pairGenericBoundCache.assign(
+                                                        input.fragments.size() *
+                                                            input.fragments.size(),
+                                                        numeric_limits<int>::min()
+                                                    );
+                                                }
+                                                const size_t cacheFirstFragment =
+                                                    min(
+                                                        firstFragment,
+                                                        secondFragment
+                                                    );
+                                                const size_t cacheSecondFragment =
+                                                    max(
+                                                        firstFragment,
+                                                        secondFragment
+                                                    );
+                                                int &genericRouteBound =
+                                                    pairGenericBoundCache[
+                                                        cacheFirstFragment *
+                                                            input.fragments.size() +
+                                                        cacheSecondFragment
+                                                    ];
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                                if (
+                                                    searchTelemetryEnabled
+                                                ) [[unlikely]]
+                                                {
+                                                    ++searchTelemetry.counters
+                                                        .pairBoundCacheLookups;
+                                                    if (
+                                                        genericRouteBound ==
+                                                        numeric_limits<int>::min()
+                                                    )
+                                                    {
+                                                        ++searchTelemetry.counters
+                                                            .pairBoundCacheMisses;
+                                                    }
+                                                    else
+                                                    {
+                                                        ++searchTelemetry.counters
+                                                            .pairBoundCacheHits;
+                                                    }
+                                                }
+#endif
+                                                if (
+                                                    genericRouteBound ==
+                                                    numeric_limits<int>::min()
+                                                )
+                                                {
+                                                    genericRouteBound =
+                                                        selectedSize - 1 +
+                                                        pairSpecificGenericBound(
+                                                            input,
+                                                            selectedSize,
+                                                            firstFragment,
+                                                            secondFragment,
+                                                            unrestrictedParentTotals
+                                                        );
+                                                }
+                                                genericBoundFits =
+                                                    genericRouteBound <=
+                                                    pairBoundLimit;
+                                            }
+                                            if (genericBoundFits) return true;
+                                        }
+                                    }
+                                }
+                                return false;
+                            };
+                            completed = ss.visitMatchingsByFragmentPairInReverse(
+                                pairBoundFiltersFragmentPair,
+                                matchingVisitor
+                            );
+                        }
+                        else
+                        {
+                            completed = ss.visitMatchingsInReverse(
+                                [&](validMatchings &matching, size_t, size_t)
+                                {
+                                    return pairBoundFiltersMatching(matching);
+                                },
+                                matchingVisitor
+                            );
+                        }
+                    }
+                    else
+                    {
+                        completed = ss.visitMatchingsInReverse(
+                            [&](validMatchings &matching, size_t, size_t)
+                            {
+                                return pairBoundFiltersMatching(matching);
+                            },
+                            matchingVisitor
+                        );
+                    }
                 }
                 if (!completed) return;
             }

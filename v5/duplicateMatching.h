@@ -521,6 +521,164 @@ struct duplicateSet
     }
 
     /**
+     * @brief Check whether fragment runs are dense enough for block traversal
+     *
+     * DAG enumeration is fragment-major and preserves occurrence order while
+     * extending duplicate classes, so production lists are already grouped.
+     * Unexpected interleaving, or a block layout too sparse to amortise the
+     * extra dispatch, should retain legacy occurrence-pair traversal.
+     */
+    [[gnu::noinline]] bool hasDenseFragmentRuns() const
+    {
+        if (list.size() < 2) return false;
+
+        int previousFragment = list.front().fragment;
+        size_t fragmentRunCount = 1;
+        for (size_t occurrence = 1; occurrence < list.size(); ++occurrence)
+        {
+            if (searchShouldStopPeriodically()) return false;
+            const int fragment = list[occurrence].fragment;
+            if (fragment < previousFragment) return false;
+            fragmentRunCount += fragment != previousFragment;
+            previousFragment = fragment;
+        }
+
+        // Below 16 occurrences, only a single run has enough measured reuse
+        // to offset the block dispatch.
+        if (list.size() < 16) return fragmentRunCount == 1;
+
+        // For larger classes, C(n, 2) >= 4 * C(g + 1, 2)
+        // simplifies to g <= (n - 2) / 2.
+        return fragmentRunCount <= (list.size() - 2) / 2;
+    }
+
+    /**
+     * @brief Visit Cartesian blocks formed by fragment-contiguous runs
+     *
+     * @pre list is grouped into nondecreasing fragment runs
+     *
+     * fragmentPairFilter is called exactly once per block containing a valid
+     * occurrence pair and receives only the block's fragment ids and duplicate
+     * size; true skips the entire block. The callback therefore cannot
+     * accidentally depend on a representative occurrence's masks.
+    */
+    template<typename FragmentPairFilter, typename Visitor>
+    [[gnu::noinline]] bool visitMatchingsByFragmentPairInReverse(
+        FragmentPairFilter &&fragmentPairFilter,
+        Visitor &&visitor
+    )
+    {
+        if (list.size() < 2) return true;
+
+        size_t firstEnd = list.size();
+        while (firstEnd > 0)
+        {
+            if (searchShouldStop()) return false;
+            const int firstFragment = list[firstEnd - 1].fragment;
+            size_t firstBegin = firstEnd - 1;
+            while (
+                firstBegin > 0 &&
+                list[firstBegin - 1].fragment == firstFragment
+            )
+            {
+                if (searchShouldStopPeriodically()) return false;
+                --firstBegin;
+            }
+
+            size_t secondEnd = list.size();
+            while (secondEnd > firstBegin)
+            {
+                if (searchShouldStopPeriodically()) return false;
+                const int secondFragment = list[secondEnd - 1].fragment;
+                size_t secondBegin = secondEnd - 1;
+                while (
+                    secondBegin > firstBegin &&
+                    list[secondBegin - 1].fragment == secondFragment
+                )
+                {
+                    if (searchShouldStopPeriodically()) return false;
+                    --secondBegin;
+                }
+                const bool sameFragmentBlock = secondBegin == firstBegin;
+                size_t firstPositionEnd = firstEnd;
+                size_t nextSecondPositionEnd = secondEnd;
+                if (sameFragmentBlock)
+                {
+                    bool matchingExists = false;
+                    for (size_t firstPosition = firstEnd - 1;
+                         firstPosition > firstBegin;)
+                    {
+                        --firstPosition;
+                        for (size_t secondPosition = firstEnd;
+                             secondPosition > firstPosition + 1;)
+                        {
+                            --secondPosition;
+                            if (searchShouldStopPeriodically()) return false;
+                            if (list[firstPosition].mask.disjoint(
+                                list[secondPosition].mask
+                            ))
+                            {
+                                firstPositionEnd = firstPosition + 1;
+                                nextSecondPositionEnd = secondPosition + 1;
+                                matchingExists = true;
+                                break;
+                            }
+                        }
+                        if (matchingExists) break;
+                    }
+                    // This diagonal is the last block for the current run.
+                    if (!matchingExists) break;
+                }
+                if (!fragmentPairFilter(
+                    firstFragment,
+                    secondFragment,
+                    size
+                ))
+                {
+                    for (size_t firstPosition = firstPositionEnd;
+                         firstPosition > firstBegin;)
+                    {
+                        --firstPosition;
+                        const size_t secondPositionBegin =
+                            sameFragmentBlock
+                                ? firstPosition + 1
+                                : secondBegin;
+                        for (size_t secondPosition = nextSecondPositionEnd;
+                             secondPosition > secondPositionBegin;)
+                        {
+                            --secondPosition;
+                            if (searchShouldStopPeriodically()) return false;
+                            if (
+                                sameFragmentBlock &&
+                                !list[firstPosition].mask.disjoint(
+                                    list[secondPosition].mask
+                                )
+                            ) continue;
+                            validMatchings matching(
+                                list[firstPosition].mask,
+                                list[secondPosition].mask,
+                                firstFragment,
+                                secondFragment,
+                                size
+                            );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                            if (searchTelemetryEnabled) [[unlikely]]
+                                ++searchTelemetry.counters.matchingVisits;
+#endif
+                            if (!visitor(matching)) return false;
+                        }
+                        nextSecondPositionEnd = secondEnd;
+                    }
+                }
+                if (secondBegin == firstBegin) break;
+                secondEnd = secondBegin;
+            }
+            firstEnd = firstBegin;
+        }
+        return true;
+    }
+
+    /**
      * @brief Check whether occurrences belong to more than one fragment
      */
     bool occurrencesSpanMultipleFragments()
