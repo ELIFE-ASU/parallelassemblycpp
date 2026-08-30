@@ -97,8 +97,9 @@ struct initialIncidentEdgeIndex
 
     initialIncidentEdgeIndex(): offsets(AtomMask::size() + 1, 0)
     {
+        const vector<edgeL> &edgeList = searchUniverseEdgeList();
         if (
-            univEdgeList.size() >
+            edgeList.size() >
             static_cast<size_t>(numeric_limits<int>::max())
         )
         {
@@ -112,10 +113,10 @@ struct initialIncidentEdgeIndex
         {
             singleWordMasks.resize(AtomMask::size());
             for (size_t edgeIndex = 0;
-                 edgeIndex < univEdgeList.size();
+                 edgeIndex < edgeList.size();
                  edgeIndex++)
             {
-                const edgeL &edge = univEdgeList[edgeIndex];
+                const edgeL &edge = edgeList[edgeIndex];
                 validateEndpoint(edge.a);
                 validateEndpoint(edge.b);
                 singleWordMasks[edge.a].set(edgeIndex);
@@ -125,7 +126,7 @@ struct initialIncidentEdgeIndex
             return;
         }
 
-        for (const edgeL &edge : univEdgeList)
+        for (const edgeL &edge : edgeList)
         {
             validateEndpoint(edge.a);
             validateEndpoint(edge.b);
@@ -138,9 +139,9 @@ struct initialIncidentEdgeIndex
 
         edgeIndices.resize(offsets.back());
         vector<size_t> next = offsets;
-        for (size_t edgeIndex = 0; edgeIndex < univEdgeList.size(); edgeIndex++)
+        for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
         {
-            const edgeL &edge = univEdgeList[edgeIndex];
+            const edgeL &edge = edgeList[edgeIndex];
             const size_t atomA = static_cast<size_t>(edge.a);
             const size_t atomB = static_cast<size_t>(edge.b);
             edgeIndices[next[atomA]++] = static_cast<uint32_t>(edgeIndex);
@@ -229,8 +230,9 @@ struct initialPotentialDuplicate : potentialDuplicate
         fragment = static_cast<int>(_fragment);
         idx = _idx;
         mask.set(x);
-        const size_t atomA = univEdgeList[x].a;
-        const size_t atomB = univEdgeList[x].b;
+        const vector<edgeL> &edgeList = searchUniverseEdgeList();
+        const size_t atomA = edgeList[x].a;
+        const size_t atomB = edgeList[x].b;
         incidentEdges.addEligibleEdges(
             atomA,
             atomB,
@@ -269,6 +271,7 @@ struct initialPotentialDuplicate : potentialDuplicate
         const initialIncidentEdgeIndex &incidentEdges
     )
     {
+        const vector<edgeL> &edgeList = searchUniverseEdgeList();
         const size_t childLevelIndex = mask.count();
         initialDagLevel &childLevel = tempDag[childLevelIndex];
         initialDagLevel &parentLevel = tempDag[childLevelIndex - 1];
@@ -286,8 +289,8 @@ struct initialPotentialDuplicate : potentialDuplicate
                     static_cast<size_t>(std::countr_zero(frontierWord));
                 frontierWord &= frontierWord - 1;
                 if (searchShouldStopPeriodically()) return false;
-                const size_t atomA = univEdgeList[i].a;
-                const size_t atomB = univEdgeList[i].b;
+                const size_t atomA = edgeList[i].a;
+                const size_t atomB = edgeList[i].b;
                 EdgeMask tempMask = mask.withBitSet(i);
                 const initialDagInsertion insertion =
                     tryRetainInitialDagMask(

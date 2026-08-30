@@ -152,8 +152,10 @@ larger lease. A rank-level broker refill bundles one lease per local worker, and
 a fixed positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` can override the worker lease
 size for experiments. Root enumeration and DAG construction still run once per
 process, and workers reconstruct masks from stable job indices in their own
-thread-local arenas. The largest initial duplicate is evaluated first on each
-rank to publish a valid one-step incumbent before the workers start searching.
+thread-local arenas. The processed graph and root canonicalisation seed are
+shared read-only; workers retain only post-seed canonical deltas and mutable
+search scratch. The largest initial duplicate is evaluated first on each rank
+to publish a valid one-step incumbent before the workers start searching.
 During MPI searches, improved incumbents are propagated through a passive-target
 RMA minimum, so every rank can prune against the best bound observed globally.
 The same heartbeat propagates cancellation and stops the broker from assigning

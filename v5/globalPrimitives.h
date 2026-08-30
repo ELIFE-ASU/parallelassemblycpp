@@ -126,6 +126,18 @@ using edgeL = triple<short, short, short>;
 ASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
 ASSEMBLYCPP_SEARCH_LOCAL vector<edgeL> originalEdgeList, univEdgeList;
 
+// Parallel workers borrow the process-owned edge universe instead of copying
+// it into their otherwise thread-local search globals. Serial searches and
+// the one parallel producer continue to use univEdgeList directly.
+inline ASSEMBLYCPP_SEARCH_LOCAL const vector<edgeL>
+    *sharedUniverseEdgeList = nullptr;
+
+[[nodiscard]] inline const vector<edgeL> &searchUniverseEdgeList() noexcept
+{
+    return sharedUniverseEdgeList == nullptr
+        ? univEdgeList : *sharedUniverseEdgeList;
+}
+
 /// Hash table for edgelists for pathway algorithm
 ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, pii> bitsetHashTable;
 

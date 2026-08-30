@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -147,27 +148,122 @@ inline std::unordered_map<
     treeCanonNodeId,
     treeCanonSignatureHash
 > ASSEMBLYCPP_SEARCH_LOCAL treeCanonInterner;
+// Parallel workers layer small mutable interners over the producer's frozen
+// generation. The seed pointers are borrowed from SearchContext for exactly
+// the lifetime of the parallel region.
+inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonAtomInterner)
+    *sharedTreeCanonAtomInterner = nullptr;
+inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonLeafInterner)
+    *sharedTreeCanonLeafInterner = nullptr;
+inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonInterner)
+    *sharedTreeCanonInterner = nullptr;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+    treeCanonAtomId,
+    treeCanonNodeId
+> treeCanonLeafInternerDelta;
 inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t treeCanonInternerGeneration = 1;
+
+void advanceTreeCanonInternerGeneration() noexcept
+{
+    if (++treeCanonInternerGeneration == 0) treeCanonInternerGeneration = 1;
+}
 
 void clearTreeCanonInterner()
 {
     treeCanonInterner.clear();
     treeCanonAtomInterner.clear();
     treeCanonLeafInterner.clear();
-    if (++treeCanonInternerGeneration == 0) treeCanonInternerGeneration = 1;
+    treeCanonLeafInternerDelta.clear();
+    sharedTreeCanonAtomInterner = nullptr;
+    sharedTreeCanonLeafInterner = nullptr;
+    sharedTreeCanonInterner = nullptr;
+    advanceTreeCanonInternerGeneration();
+}
+
+/** Borrow one immutable producer generation and retain only local misses. */
+void bindTreeCanonInternerSeed(
+    const decltype(treeCanonAtomInterner) &atomInterner,
+    const decltype(treeCanonLeafInterner) &leafInterner,
+    const decltype(treeCanonInterner) &treeInterner
+)
+{
+    if (
+        !treeCanonAtomInterner.empty() ||
+        !treeCanonLeafInterner.empty() ||
+        !treeCanonInterner.empty() ||
+        !treeCanonLeafInternerDelta.empty()
+    )
+    {
+        throw std::logic_error(
+            "tree canonical seed requires empty worker deltas"
+        );
+    }
+    sharedTreeCanonAtomInterner = &atomInterner;
+    sharedTreeCanonLeafInterner = &leafInterner;
+    sharedTreeCanonInterner = &treeInterner;
+    advanceTreeCanonInternerGeneration();
 }
 
 treeCanonAtomId internTreeCanonAtom(const std::string &atomType)
 {
+    if (sharedTreeCanonAtomInterner == nullptr)
+    {
+        const treeCanonAtomId nextId =
+            static_cast<treeCanonAtomId>(treeCanonAtomInterner.size()) + 1;
+        return treeCanonAtomInterner.try_emplace(
+            atomType,
+            nextId
+        ).first->second;
+    }
+    const auto seeded = sharedTreeCanonAtomInterner->find(atomType);
+    if (seeded != sharedTreeCanonAtomInterner->end()) return seeded->second;
     const treeCanonAtomId nextId =
-        static_cast<treeCanonAtomId>(treeCanonAtomInterner.size()) + 1;
+        static_cast<treeCanonAtomId>(
+            sharedTreeCanonAtomInterner->size() +
+                treeCanonAtomInterner.size()
+        ) + 1;
     return treeCanonAtomInterner.try_emplace(atomType, nextId).first->second;
 }
 
 treeCanonNodeId internTreeCanonSignature(treeCanonSignature signature)
 {
+    if (sharedTreeCanonInterner == nullptr)
+    {
+        const treeCanonNodeId nextId =
+            static_cast<treeCanonNodeId>(treeCanonInterner.size()) + 1;
+        return treeCanonInterner.try_emplace(
+            std::move(signature),
+            nextId
+        ).first->second;
+    }
+    // Seed IDs are dense and every worker-local ID starts above the seed
+    // range. A signature containing any local atom or subtree therefore
+    // cannot occur in the immutable seed; avoid a shared random lookup for
+    // those overwhelmingly post-seed forms.
+    bool canMatchSeed =
+        signature.atomType <= sharedTreeCanonAtomInterner->size();
+    if (canMatchSeed)
+    {
+        const treeCanonNodeId seededNodeCount =
+            static_cast<treeCanonNodeId>(sharedTreeCanonInterner->size());
+        for (const treeCanonChild &child : signature.children)
+        {
+            if (child.subtree > seededNodeCount)
+            {
+                canMatchSeed = false;
+                break;
+            }
+        }
+    }
+    if (canMatchSeed)
+    {
+        const auto seeded = sharedTreeCanonInterner->find(signature);
+        if (seeded != sharedTreeCanonInterner->end()) return seeded->second;
+    }
     const treeCanonNodeId nextId =
-        static_cast<treeCanonNodeId>(treeCanonInterner.size()) + 1;
+        static_cast<treeCanonNodeId>(
+            sharedTreeCanonInterner->size() + treeCanonInterner.size()
+        ) + 1;
     return treeCanonInterner.try_emplace(
         std::move(signature),
         nextId
@@ -191,6 +287,25 @@ treeCanonNodeId internTreeCanonNode(
     );
     if (children.empty())
     {
+        if (sharedTreeCanonLeafInterner != nullptr)
+        {
+            if (
+                atomType < sharedTreeCanonLeafInterner->size() &&
+                (*sharedTreeCanonLeafInterner)[atomType] != 0
+            )
+            {
+                return (*sharedTreeCanonLeafInterner)[atomType];
+            }
+            const auto localLeaf = treeCanonLeafInternerDelta.find(atomType);
+            if (localLeaf != treeCanonLeafInternerDelta.end())
+                return localLeaf->second;
+            const treeCanonNodeId leaf =
+                internTreeCanonSignature({atomType, {}});
+            return treeCanonLeafInternerDelta.try_emplace(
+                atomType,
+                leaf
+            ).first->second;
+        }
         if (treeCanonLeafInterner.size() <= atomType)
             treeCanonLeafInterner.resize(atomType + 1, 0);
         treeCanonNodeId &leaf = treeCanonLeafInterner[atomType];

@@ -190,12 +190,12 @@ mpirun --map-by slot --bind-to core -n 4 \
 ```
 
 These placement flags use Open MPI syntax. Each process enumerates the root
-once, then shares an immutable processed graph, runtime DAG, and serialized
-root-job table. Workers own their fragmentation scratch and search caches. MPI
-and hybrid ranks request disjoint chunks from a rank-zero global queue, so work
-follows each rank's actual local capacity while every root job is executed
-exactly once. Wide masks are rebuilt inside the receiving worker from
-serialized words.
+once, then shares an immutable processed graph, canonical seed, runtime DAG,
+and serialized root-job table. Workers own their post-seed canonical deltas,
+fragmentation scratch, and search caches. MPI and hybrid ranks request disjoint
+chunks from a rank-zero global queue, so work follows each rank's actual local
+capacity while every root job is executed exactly once. Wide masks are rebuilt
+inside the receiving worker from serialized words.
 
 The adaptive MPI default uses one-root worker leases, with each rank-level
 broker refill bundling one lease per local worker. This bounds tail imbalance

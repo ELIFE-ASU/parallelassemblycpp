@@ -18,14 +18,15 @@ struct assemblyPathStep
  */
 void printMaskAsEdgeList(EdgeMask mask, ofstream &ofs)
 {
+    const vector<edgeL> &edgeList = searchUniverseEdgeList();
     ofs << "[";
     bool first = true;
-    for (size_t i = 0; i < univEdgeList.size(); i++)
+    for (size_t i = 0; i < edgeList.size(); i++)
     {
         if (mask[i])
         {
             if (!first) ofs << ',';
-            ofs << "[" << univEdgeList[i].a << "," << univEdgeList[i].b << "]";
+            ofs << "[" << edgeList[i].a << "," << edgeList[i].b << "]";
             first = false;
         }
     }
@@ -165,19 +166,21 @@ void printOriginalGraph(ofstream &ofs)
  */
 void printRemnantGraph(EdgeMask mask, ofstream &ofs)
 {
+    const vector<edgeL> &edgeList = searchUniverseEdgeList();
+    const molGraph &molecule = searchTargetMolecule();
     EdgeMask dual = allEdges ^ mask;
     AtomMask remnantAtoms = 0;
-    for (size_t i = 0; i < univEdgeList.size(); i++)
+    for (size_t i = 0; i < edgeList.size(); i++)
     {
         if (dual[i])
         {
-            remnantAtoms.set(univEdgeList[i].a);
-            remnantAtoms.set(univEdgeList[i].b);
+            remnantAtoms.set(edgeList[i].a);
+            remnantAtoms.set(edgeList[i].b);
         }
     }
     ofs << "\"Vertices\": [";
     bool first = true;
-    for (size_t i = 0; i < targetMolecule.mg.size(); i++)
+    for (size_t i = 0; i < molecule.mg.size(); i++)
     {
         if (remnantAtoms[i])
         {
@@ -192,25 +195,25 @@ void printRemnantGraph(EdgeMask mask, ofstream &ofs)
     ofs << ",\n";
     ofs << "\"VertexColours\": [";
     first = true;
-    for (size_t i = 0; i < targetMolecule.mg.size(); i++)
+    for (size_t i = 0; i < molecule.mg.size(); i++)
     {
         if (remnantAtoms[i])
         {
             if (!first) ofs << ',';
-            printJsonString(targetMolecule.mg[i].type, ofs);
+            printJsonString(molecule.mg[i].type, ofs);
             first = false;
         }
     }
     ofs << "],\n";
     ofs << "\"EdgeColours\": [";
     first = true;
-    for (size_t i = 0; i < univEdgeList.size(); i++)
+    for (size_t i = 0; i < edgeList.size(); i++)
     {
         if (dual[i])
         {
             if (!first) ofs << ',';
             printBondColour(
-                targetMolecule.btypeS(univEdgeList[i].a, univEdgeList[i].c),
+                molecule.btypeS(edgeList[i].a, edgeList[i].c),
                 ofs
             );
             first = false;

@@ -13,20 +13,21 @@ bool initialRecursiveEnumeration(
     vector<dagLevel> &dag
 )
 {
+    const vector<edgeL> &edgeList = searchUniverseEdgeList();
     vector<initialDagLevel> tempDag(2);
     vector<assemblyFragment> &fragments = _target.fragments;
     const initialIncidentEdgeIndex incidentEdges;
     bool alive = 0;
     size_t currSize = 1;
     vector<initialPotentialDuplicate> prevML;
-    vector<int> rootNodeIndices(univEdgeList.size(), -1);
+    vector<int> rootNodeIndices(edgeList.size(), -1);
     size_t retainedStateCount = 0;
 
     // Retain the one-edge DAG states first so they count toward ENUM_MAX too.
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return false;
-        for (size_t j = 0; j < univEdgeList.size(); j++)
+        for (size_t j = 0; j < edgeList.size(); j++)
         {
             if (searchShouldStopPeriodically()) return false;
             if (fragments[i].mask[j] != 0)
@@ -49,7 +50,7 @@ bool initialRecursiveEnumeration(
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return false;
-        for (size_t j = 0; j < univEdgeList.size(); j++)
+        for (size_t j = 0; j < edgeList.size(); j++)
         {
             if (searchShouldStopPeriodically()) return false;
             if (fragments[i].mask[j] == 0) continue;
@@ -147,7 +148,8 @@ int dagRecursiveEnumeration(
     const vector<dagLevel> &dag,
     assemblyState &_target,
     dagAssemblySearchFrame &frame,
-    duplicateClassIndexWorkspace &classIndex
+    duplicateClassIndexWorkspace &classIndex,
+    size_t edgeCount
 )
 {
     if (searchShouldStop()) return 0;
@@ -163,7 +165,7 @@ int dagRecursiveEnumeration(
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return 0;
-        for (size_t j = 0; j < univEdgeList.size(); j++)
+        for (size_t j = 0; j < edgeCount; j++)
         {
             if (searchShouldStopPeriodically()) return 0;
             if (fragments[i].mask[j] != 0)
@@ -244,12 +246,14 @@ int dagRecursiveEnumeration(
 void configureHomogeneousPathEdgePositions(vector<int> &edgePositions)
 {
     edgePositions.clear();
-    const size_t atomCount = targetMolecule.mg.size();
-    const size_t edgeCount = univEdgeList.size();
+    const molGraph &molecule = searchTargetMolecule();
+    const vector<edgeL> &edgeList = searchUniverseEdgeList();
+    const size_t atomCount = molecule.mg.size();
+    const size_t edgeCount = edgeList.size();
     if (edgeCount < 2 || atomCount != edgeCount + 1) return;
 
-    const string &atomType = targetMolecule.mg.front().type;
-    for (const atom &candidate : targetMolecule.mg)
+    const string &atomType = molecule.mg.front().type;
+    for (const atom &candidate : molecule.mg)
     {
         if (candidate.type != atomType) return;
     }
@@ -259,8 +263,8 @@ void configureHomogeneousPathEdgePositions(vector<int> &edgePositions)
     bool foundBondType = false;
     for (size_t edge = 0; edge < edgeCount; edge++)
     {
-        const edgeL &entry = univEdgeList[edge];
-        const short candidateBondType = targetMolecule.btypeS(entry.a, entry.c);
+        const edgeL &entry = edgeList[edge];
+        const short candidateBondType = molecule.btypeS(entry.a, entry.c);
         if (!foundBondType)
         {
             bondType = candidateBondType;
@@ -652,7 +656,7 @@ struct homogeneousPathEquivalentMatchings
 {
     const assemblyState &input;
     const DuplicateSet &duplicates;
-    const vector<int> &edgePositions;
+    span<const int> edgePositions;
     bool enabled = false;
     vector<int> fragmentStarts;
     vector<int> occurrenceStarts;
@@ -664,7 +668,7 @@ struct homogeneousPathEquivalentMatchings
     homogeneousPathEquivalentMatchings(
         const assemblyState &_input,
         const DuplicateSet &_duplicates,
-        const vector<int> &_edgePositions
+        span<const int> _edgePositions
     ):
         input(_input),
         duplicates(_duplicates),
@@ -1157,7 +1161,8 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
         dag,
         input,
         frame,
-        searchStorage.duplicateClassIndex
+        searchStorage.duplicateClassIndex,
+        fragmentationWorkspace.edgeCount
     );
 
     if (searchShouldStop()) return;
@@ -2075,6 +2080,8 @@ void prepareParallelSearchContext(
     std::size_t localWorkerCount
 )
 {
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
     context.startedAt = clock();
     startTime = context.startedAt;
     searchStopPollCountdown = 0;
@@ -2087,7 +2094,7 @@ void prepareParallelSearchContext(
     context.canonicalRegistry.reset();
     context.sharedStates.reset();
     bitsetHashTable.clear();
-    graphHashMap.clear();
+    clearGraphHashDelta();
     clearTreeCanonInterner();
     intermediateMAs.clear();
 
@@ -2110,10 +2117,12 @@ void prepareParallelSearchContext(
     );
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     configureSearchTelemetryGraph(
-        targetMolecule.mg.size(),
-        univEdgeList.size(),
+        searchTargetMolecule().mg.size(),
+        searchUniverseEdgeList().size(),
         EdgeMask::activeWordCount(),
-        ufdsMaskWorkspace::decompositionCacheEligible(univEdgeList.size())
+        ufdsMaskWorkspace::decompositionCacheEligible(
+            searchUniverseEdgeList().size()
+        )
     );
     setSearchTelemetryPhase(SearchTelemetryPhase::initialEnumeration);
 #endif
@@ -2170,8 +2179,14 @@ void prepareParallelSearchContext(
     context.componentCount = disjointFragments;
     context.enumerationLimit = enumerationLimitReached;
 
-    // These caches contain no active-word masks and can seed worker-local
-    // canonical IDs. Move them only after DAG conversion and job serialization.
+    // Equality on cyclic graph keys normally materialises an exact code
+    // lazily. Publish fully materialised keys so concurrent const lookup is
+    // genuinely read-only.
+    freezeGraphHashSeed(graphHashMap);
+
+    // These caches contain no active-word masks. Move their one immutable
+    // generation only after DAG conversion and job serialization; workers
+    // borrow it and retain only post-seed deltas.
     context.canonicalSeed.graphHashes = std::move(graphHashMap);
     context.canonicalSeed.atomInterner = std::move(treeCanonAtomInterner);
     context.canonicalSeed.leafInterner = std::move(treeCanonLeafInterner);
@@ -2196,6 +2211,17 @@ void configureParallelWorker(
     std::size_t workerIndex
 )
 {
+    // Establish a safe empty state first so cleanup is unconditional even if
+    // a later allocation or graph configuration throws.
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
+    clearGraphHashDelta();
+    clearTreeCanonInterner();
+    targetMolecule = molGraph();
+    univEdgeList = vector<edgeL>();
+    sharedCanonicalRegistry = nullptr;
+    sharedAssemblyStates = nullptr;
+    sharedAssemblyWorkerIndex = 0;
     if (context.sharedStates != nullptr)
     {
         sharedCanonicalRegistry = context.canonicalRegistry.get();
@@ -2203,8 +2229,6 @@ void configureParallelWorker(
         sharedAssemblyWorkerIndex = workerIndex;
     }
     bitsetHashTable.clear();
-    graphHashMap.clear();
-    clearTreeCanonInterner();
     std::destroy_at(std::addressof(allEdges));
     EdgeMask::configure(context.universeEdges.size());
     std::construct_at(std::addressof(allEdges));
@@ -2217,20 +2241,48 @@ void configureParallelWorker(
     enumerationLimitReached = context.enumerationLimit;
     totalBonds = context.bondCount;
     disjointFragments = context.componentCount;
-    targetMolecule = context.processedMolecule;
-    univEdgeList = context.universeEdges;
-
-    treeCanonAtomInterner = context.canonicalSeed.atomInterner;
-    treeCanonLeafInterner = context.canonicalSeed.leafInterner;
-    treeCanonInterner = context.canonicalSeed.treeInterner;
-    graphHashMap = context.canonicalSeed.graphHashes;
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    sharedTargetMolecule = std::addressof(context.processedMolecule);
+    sharedUniverseEdgeList = std::addressof(context.universeEdges);
+    bindTreeCanonInternerSeed(
+        context.canonicalSeed.atomInterner,
+        context.canonicalSeed.leafInterner,
+        context.canonicalSeed.treeInterner
+    );
+    bindGraphHashSeed(context.canonicalSeed.graphHashes);
+    prepareCanonicalisationGraph(
+        searchTargetMolecule(),
+        searchUniverseEdgeList()
+    );
+    if (
+        std::addressof(searchTargetMolecule()) !=
+            std::addressof(context.processedMolecule) ||
+        std::addressof(searchUniverseEdgeList()) !=
+            std::addressof(context.universeEdges) ||
+        !targetMolecule.mg.empty() || !univEdgeList.empty() ||
+        sharedTreeCanonAtomInterner !=
+            std::addressof(context.canonicalSeed.atomInterner) ||
+        sharedTreeCanonLeafInterner !=
+            std::addressof(context.canonicalSeed.leafInterner) ||
+        sharedTreeCanonInterner !=
+            std::addressof(context.canonicalSeed.treeInterner) ||
+        sharedGraphHashSeed !=
+            std::addressof(context.canonicalSeed.graphHashes) ||
+        !treeCanonAtomInterner.empty() ||
+        !treeCanonLeafInterner.empty() ||
+        !treeCanonLeafInternerDelta.empty() ||
+        !treeCanonInterner.empty() || !graphHashMap.empty()
+    )
+    {
+        throw logic_error("parallel worker copied immutable search state");
+    }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     configureSearchTelemetryGraph(
-        targetMolecule.mg.size(),
-        univEdgeList.size(),
+        searchTargetMolecule().mg.size(),
+        searchUniverseEdgeList().size(),
         EdgeMask::activeWordCount(),
-        ufdsMaskWorkspace::decompositionCacheEligible(univEdgeList.size())
+        ufdsMaskWorkspace::decompositionCacheEligible(
+            searchUniverseEdgeList().size()
+        )
     );
 #endif
 }
@@ -2240,12 +2292,13 @@ void clearParallelWorkerMasks()
 {
     bitsetHashTable.clear();
     allEdges.reset();
-    if (sharedAssemblyStates != nullptr)
-    {
-        sharedCanonicalRegistry = nullptr;
-        sharedAssemblyStates = nullptr;
-        sharedAssemblyWorkerIndex = 0;
-    }
+    clearGraphHashDelta();
+    clearTreeCanonInterner();
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
+    sharedCanonicalRegistry = nullptr;
+    sharedAssemblyStates = nullptr;
+    sharedAssemblyWorkerIndex = 0;
 }
 
 EdgeMask reconstructRootOccurrence(
@@ -2624,6 +2677,8 @@ void runParallelRootJobs(
  */
 bool improvedBnB(molGraph &mg, ofstream &ofs)
 {
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
     startTime = clock();
     searchStopPollCountdown = 0;
     searchStopInnerPollCountdown = 0;
@@ -2633,7 +2688,7 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     sharedAssemblyStates = nullptr;
     sharedAssemblyWorkerIndex = 0;
     bitsetHashTable.clear();
-    graphHashMap.clear();
+    clearGraphHashDelta();
     clearTreeCanonInterner();
     intermediateMAs.clear();
     searchRootBranchOrdinal = 0;
@@ -2656,11 +2711,14 @@ bool improvedBnB(molGraph &mg, ofstream &ofs)
     AtomMask::configure(targetMolecule.mg.size());
     ufdsMaskWorkspace fragmentationWorkspace(
         targetMolecule.mg.size(),
-        univEdgeList.size()
+        univEdgeList.size(),
+        univEdgeList
     );
     configureHomogeneousPathEdgePositions(
-        fragmentationWorkspace.homogeneousPathEdgePositions
+        fragmentationWorkspace.homogeneousPathEdgePositionStorage
     );
+    fragmentationWorkspace.homogeneousPathEdgePositions =
+        fragmentationWorkspace.homogeneousPathEdgePositionStorage;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     configureSearchTelemetryGraph(
         targetMolecule.mg.size(),

@@ -1,3 +1,5 @@
+#include <span>
+
 /**
  * @brief Bond struct for molGraph
  */
@@ -352,6 +354,17 @@ molGraph preprocessWriteback(const molGraph &mg, vector<edgeL> &writeback)
 /// Global variable for the molGraph before and after preprocessing
 ASSEMBLYCPP_SEARCH_LOCAL molGraph originalMolecule, targetMolecule;
 
+// A parallel worker reads the producer-owned processed molecule through this
+// view. Keeping the owning TLS object for serial calculations avoids changing
+// the public/library calculation lifetime.
+inline ASSEMBLYCPP_SEARCH_LOCAL const molGraph *sharedTargetMolecule = nullptr;
+
+[[nodiscard]] inline const molGraph &searchTargetMolecule() noexcept
+{
+    return sharedTargetMolecule == nullptr
+        ? targetMolecule : *sharedTargetMolecule;
+}
+
 struct cachedResidualDecomposition
 {
     bool isIdentity = false;
@@ -462,6 +475,7 @@ struct ufdsMaskWorkspace
     unique_ptr<uint64_t[]> wideDecompositionSeenFingerprints;
     vector<uint64_t> wideDecompositionSeenOccupied;
     vector<residualCanonicalIdBinding> residualCanonicalIdBindings;
+    const vector<edgeL> *universeEdges;
     size_t edgeCount;
     size_t decompositionCacheKeyWordCount;
     bool reuseResidualDecompositions;
@@ -485,9 +499,17 @@ struct ufdsMaskWorkspace
 #endif
     // Non-empty only when the processed molecule is one uniformly labelled
     // path. Values map universe edge indices to positions along that path.
-    vector<int> homogeneousPathEdgePositions;
+    // Serial searches populate the owned storage; parallel workers bind the
+    // span directly to SearchContext's immutable vector.
+    vector<int> homogeneousPathEdgePositionStorage;
+    span<const int> homogeneousPathEdgePositions;
 
-    ufdsMaskWorkspace(size_t atomCount, size_t _edgeCount):
+    ufdsMaskWorkspace(
+        size_t atomCount,
+        size_t _edgeCount,
+        const vector<edgeL> &_universeEdges = searchUniverseEdgeList()
+    ):
+        universeEdges(std::addressof(_universeEdges)),
         edgeCount(_edgeCount),
         decompositionCacheKeyWordCount(
             (_edgeCount + numeric_limits<uint64_t>::digits - 1) /
@@ -495,6 +517,8 @@ struct ufdsMaskWorkspace
         ),
         reuseResidualDecompositions(decompositionCacheEligible(_edgeCount))
     {
+        if (_universeEdges.size() != _edgeCount)
+            throw logic_error("fragmentation edge universe size mismatch");
         sets.elements.resize(atomCount);
         sets.extraVals.reserve(_edgeCount);
         components.reserve(atomCount);
@@ -834,7 +858,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
     uint64_t lowMaskWord
 )
 {
-    vector<edgeL> &edgeList = univEdgeList;
+    const vector<edgeL> &edgeList = *workspace.universeEdges;
     ufdsSplit &u = workspace.sets;
     auto processEdge = [&](size_t i) {
         int a = edgeList[i].a, b = edgeList[i].b;

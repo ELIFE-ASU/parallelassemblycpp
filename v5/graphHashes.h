@@ -61,6 +61,12 @@ struct graphHash
         if (treeHash.empty()) return cyclicHash == g2.cyclicHash;
         return treeHash == g2.treeHash;
     }
+
+    /** Materialise the only lazily mutable field before sharing this key. */
+    void prepareForSharing() const
+    {
+        if (treeHash.empty()) static_cast<void>(cyclicHash.exactCode());
+    }
 };
 
 /**
@@ -414,7 +420,7 @@ struct canonicalisationGraphWorkspace
  * reconstructs and canonicalises it in its own interner generation after
  * releasing the lock, and returns only after exact graphHash equality. If no
  * representative matches, insertion is checked again under the lock. Every
- * worker first checks the identical producer-seeded graphHashMap, so this
+ * worker first checks the same immutable producer graph-hash seed, so this
  * registry needs representatives only for post-seed classes learned by
  * workers, and its global ID sequence begins after that dense seed.
  */
@@ -545,6 +551,46 @@ ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
 ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, pii> graphHashMap;
 #endif
 
+// The producer's canonical classes are immutable after DAG construction.
+// Workers consult this shared base and insert only post-seed classes into the
+// thread-local graphHashMap delta above.
+inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(graphHashMap)
+    *sharedGraphHashSeed = nullptr;
+
+/** Complete lazy key state once, before any worker can observe the seed. */
+void freezeGraphHashSeed(const decltype(graphHashMap) &seed)
+{
+    for (const auto &entry : seed) entry.first.prepareForSharing();
+}
+
+void bindGraphHashSeed(const decltype(graphHashMap) &seed)
+{
+    if (!graphHashMap.empty())
+    {
+        throw std::logic_error(
+            "graph hash seed requires an empty worker delta"
+        );
+    }
+    sharedGraphHashSeed = &seed;
+}
+
+void clearGraphHashDelta() noexcept
+{
+    graphHashMap.clear();
+    sharedGraphHashSeed = nullptr;
+}
+
+[[nodiscard]] std::size_t graphHashClassCount()
+{
+    const std::size_t seedSize = sharedGraphHashSeed == nullptr
+        ? 0 : sharedGraphHashSeed->size();
+    if (
+        seedSize >
+            std::numeric_limits<std::size_t>::max() - graphHashMap.size()
+    ) throw std::length_error("canonical class count exceeds capacity");
+    return seedSize + graphHashMap.size();
+}
+
 std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
 {
     std::vector<std::uint64_t> words(EdgeMask::activeWordCount());
@@ -562,62 +608,112 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
 #endif
 
     bool isCyclic = false;
+    const molGraph &molecule = searchTargetMolecule();
+    const vector<edgeL> &edgeList = searchUniverseEdgeList();
     const flatCanonGraph &graph = canonicalisationGraphScratch.build(
-        targetMolecule,
-        univEdgeList,
+        molecule,
+        edgeList,
         mask,
         isCyclic
     );
     graphHash candidate(graph, isCyclic);
 
-    auto graphEntry = graphHashMap.find(candidate);
-    bool inserted = graphEntry == graphHashMap.end();
-    if (inserted)
+    const pii *canonicalEntry = nullptr;
+    if (sharedGraphHashSeed != nullptr)
     {
-        int canonicalId;
-        if (sharedCanonicalRegistry == nullptr)
+        bool canMatchSeed = true;
+        if (
+            sharedTreeCanonInterner != nullptr &&
+            !candidate.treeHash.empty()
+        )
         {
-            if (
-                graphHashMap.size() >
-                static_cast<std::size_t>(std::numeric_limits<int>::max())
-            ) throw std::length_error("canonical ID space is exhausted");
-            canonicalId = static_cast<int>(graphHashMap.size());
+            const treeCanonNodeId seededNodeCount =
+                static_cast<treeCanonNodeId>(
+                    sharedTreeCanonInterner->size()
+                );
+            canMatchSeed =
+                candidate.treeHash.first <= seededNodeCount &&
+                candidate.treeHash.second <= seededNodeCount;
         }
-        else
+        if (canMatchSeed)
         {
-            const std::size_t invariantHash =
-                sharedCanonicalInvariantHash(graph);
-            canonicalId = sharedCanonicalRegistry->findOrInsert(
-                invariantHash,
-                serializeCanonicalMask(mask),
-                [&](const std::vector<std::uint64_t> &representativeWords)
-                {
-                    EdgeMask representative = EdgeMask::fromActiveWords(
-                        representativeWords.data()
-                    );
-                    bool representativeIsCyclic = false;
-                    const flatCanonGraph &representativeGraph =
-                        canonicalisationGraphScratch.build(
-                            targetMolecule,
-                            univEdgeList,
-                            representative,
-                            representativeIsCyclic
-                        );
-                    graphHash representativeHash(
-                        representativeGraph,
-                        representativeIsCyclic
-                    );
-                    return candidate == representativeHash;
-                }
-            );
+            const auto seeded = sharedGraphHashSeed->find(candidate);
+            if (seeded != sharedGraphHashSeed->end())
+                canonicalEntry = std::addressof(seeded->second);
         }
+    }
+    auto localEntry = graphHashMap.end();
+    bool inserted = false;
+    if (canonicalEntry == nullptr)
+    {
         auto localInsertion = graphHashMap.try_emplace(
             std::move(candidate),
-            pii{canonicalId, 1}
+            pii{unknownCanonicalId, 0}
         );
-        graphEntry = localInsertion.first;
-        if (!localInsertion.second)
-            throw std::logic_error("worker canonical insertion raced locally");
+        localEntry = localInsertion.first;
+        inserted = localInsertion.second;
+        if (inserted)
+        {
+            try
+            {
+                int canonicalId;
+                if (sharedCanonicalRegistry == nullptr)
+                {
+                    const std::size_t classCount = graphHashClassCount();
+                    const std::size_t canonicalIndex = classCount - 1;
+                    if (
+                        canonicalIndex > static_cast<std::size_t>(
+                            std::numeric_limits<int>::max()
+                        )
+                    )
+                    {
+                        throw std::length_error(
+                            "canonical ID space is exhausted"
+                        );
+                    }
+                    canonicalId = static_cast<int>(canonicalIndex);
+                }
+                else
+                {
+                    const std::size_t invariantHash =
+                        sharedCanonicalInvariantHash(graph);
+                    const graphHash &localCandidate = localEntry->first;
+                    canonicalId = sharedCanonicalRegistry->findOrInsert(
+                        invariantHash,
+                        serializeCanonicalMask(mask),
+                        [&localCandidate, &molecule, &edgeList](
+                            const std::vector<std::uint64_t>
+                                &representativeWords
+                        )
+                        {
+                            EdgeMask representative = EdgeMask::fromActiveWords(
+                                representativeWords.data()
+                            );
+                            bool representativeIsCyclic = false;
+                            const flatCanonGraph &representativeGraph =
+                                canonicalisationGraphScratch.build(
+                                    molecule,
+                                    edgeList,
+                                    representative,
+                                    representativeIsCyclic
+                                );
+                            graphHash representativeHash(
+                                representativeGraph,
+                                representativeIsCyclic
+                            );
+                            return localCandidate == representativeHash;
+                        }
+                    );
+                }
+                localEntry->second = pii{canonicalId, 1};
+            }
+            catch (...)
+            {
+                graphHashMap.erase(localEntry);
+                throw;
+            }
+        }
+        canonicalEntry = std::addressof(localEntry->second);
     }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]
@@ -626,11 +722,14 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
         else ++searchTelemetry.counters.canonicalClassReuses;
     }
 #endif
-    if (!inserted) graphEntry->second.second++;
+    // Seed hit counts were used only while constructing the DAG. Keep the
+    // published seed immutable; post-seed reuse counts remain worker-local.
+    if (!inserted && localEntry != graphHashMap.end())
+        ++localEntry->second.second;
 
-    const pii canonicalEntry = graphEntry->second;
-    bitsetHashTable.emplace(mask, canonicalEntry);
-    return canonicalEntry.first;
+    const pii canonical = *canonicalEntry;
+    bitsetHashTable.emplace(mask, canonical);
+    return canonical.first;
 }
 
 /**

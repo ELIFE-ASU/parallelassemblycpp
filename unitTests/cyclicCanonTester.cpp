@@ -166,14 +166,17 @@ molGraph makeSharedRegistryCollisionGraph()
 
 /**
  * Two copies each of non-isomorphic trees with the same degree sequence,
- * followed by two triangles carrying the same three-edge pendant chain and
- * one labelled edge used as a producer-only seed class.
+ * followed by two triangles carrying the same three-edge pendant chain, one
+ * labelled seed edge, and one cyclic producer-only seed class.
  */
 molGraph makeSharedRegistryTreeInternerGraph()
 {
-    vector<string> labels(38, "C");
+    vector<string> labels(41, "C");
     labels[36] = "N";
     labels[37] = "O";
+    labels[38] = "P";
+    labels[39] = "P";
+    labels[40] = "P";
     vector<edgeSpec> edges;
     edges.reserve(33);
     const auto addForkedTree = [&](int base)
@@ -209,6 +212,9 @@ molGraph makeSharedRegistryTreeInternerGraph()
     addCycleWithPendantChain(24);
     addCycleWithPendantChain(30);
     edges.emplace_back(36, 37, 2);
+    edges.emplace_back(38, 39, 3);
+    edges.emplace_back(39, 40, 3);
+    edges.emplace_back(40, 38, 3);
     return makeGraph(labels, edges);
 }
 
@@ -789,6 +795,15 @@ void testCachedGraphHashIsSelfContained()
     const graphHash secondHash(second, true);
     const graphHash labelledHash(labelled, true);
     const size_t storedHash = std::hash<graphHash>{}(firstHash);
+    require(
+        firstHash.cyclicHash.canonicalCode.empty(),
+        "cyclic graph hash did not begin with a lazy exact code"
+    );
+    firstHash.prepareForSharing();
+    require(
+        !firstHash.cyclicHash.canonicalCode.empty(),
+        "shared cyclic graph hash did not materialise its exact code"
+    );
 
     first = molGraph{};
     second = molGraph{};
@@ -827,13 +842,14 @@ EdgeMask componentMask(int firstVertex, int vertexCount)
 {
     EdgeMask result;
     const int lastVertex = firstVertex + vertexCount;
-    for (size_t edge = 0; edge < univEdgeList.size(); edge++)
+    const vector<edgeL> &edgeList = searchUniverseEdgeList();
+    for (size_t edge = 0; edge < edgeList.size(); edge++)
     {
         if (
-            univEdgeList[edge].a >= firstVertex &&
-            univEdgeList[edge].a < lastVertex &&
-            univEdgeList[edge].b >= firstVertex &&
-            univEdgeList[edge].b < lastVertex
+            edgeList[edge].a >= firstVertex &&
+            edgeList[edge].a < lastVertex &&
+            edgeList[edge].b >= firstVertex &&
+            edgeList[edge].b < lastVertex
         ) result.set(edge);
     }
     return result;
@@ -973,15 +989,34 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         producerSeedId == 0,
         "producer labelled-edge seed did not receive the first ID"
     );
+    EdgeMask cyclicProducerSeed = componentMask(38, 3);
+    const int cyclicProducerSeedId = canonise(cyclicProducerSeed);
     require(
-        graphHashMap.size() == 1,
-        "producer did not create exactly one canonical seed class"
+        cyclicProducerSeedId == 1,
+        "producer cyclic seed did not receive the second ID"
+    );
+    require(
+        graphHashMap.size() == 2,
+        "producer did not create exactly two canonical seed classes"
     );
 
+    freezeGraphHashSeed(graphHashMap);
     const auto seedGraphHashes = graphHashMap;
     const auto seedAtomInterner = treeCanonAtomInterner;
     const auto seedLeafInterner = treeCanonLeafInterner;
     const auto seedTreeInterner = treeCanonInterner;
+    const molGraph sharedMolecule = std::move(targetMolecule);
+    const vector<edgeL> sharedEdgeList = std::move(univEdgeList);
+    vector<uint64_t> frozenCyclicSeedCode;
+    for (const auto &entry : seedGraphHashes)
+    {
+        if (entry.second.first == cyclicProducerSeedId)
+            frozenCyclicSeedCode = entry.first.cyclicHash.canonicalCode;
+    }
+    require(
+        !frozenCyclicSeedCode.empty(),
+        "cyclic graph-hash seed was not frozen before publication"
+    );
     sharedCanonicalIdRegistry registry(graphHashMap.size());
 
     constexpr int workerCount = 8;
@@ -990,7 +1025,11 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     std::array<int, workerCount> bentArmTreeIds{};
     std::array<int, workerCount> pendantCycleIds{};
     std::array<int, workerCount> producerSeedIds{};
+    std::array<int, workerCount> cyclicProducerSeedIds{};
     std::array<treeCanonNodeId, workerCount> singleBondSignatureIds{};
+    std::array<size_t, workerCount> graphDeltaSizes{};
+    std::array<size_t, workerCount> treeDeltaSizes{};
+    std::array<size_t, workerCount> leafDeltaSizes{};
     std::atomic<int> invariantFailures{0};
     std::vector<std::thread> workers;
     workers.reserve(workerCount);
@@ -1000,16 +1039,35 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         workers.emplace_back([&, worker]
         {
             bitsetHashTable.clear();
-            graphHashMap.clear();
+            clearGraphHashDelta();
             clearTreeCanonInterner();
-            targetMolecule = makeSharedRegistryTreeInternerGraph();
-            univEdgeList = targetMolecule.writeEdgeList();
-            configureCanoniseMaskDomain(univEdgeList.size());
-            treeCanonAtomInterner = seedAtomInterner;
-            treeCanonLeafInterner = seedLeafInterner;
-            treeCanonInterner = seedTreeInterner;
-            graphHashMap = seedGraphHashes;
-            prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+            sharedTargetMolecule = &sharedMolecule;
+            sharedUniverseEdgeList = &sharedEdgeList;
+            configureCanoniseMaskDomain(sharedEdgeList.size());
+            bindTreeCanonInternerSeed(
+                seedAtomInterner,
+                seedLeafInterner,
+                seedTreeInterner
+            );
+            bindGraphHashSeed(seedGraphHashes);
+            prepareCanonicalisationGraph(
+                searchTargetMolecule(),
+                searchUniverseEdgeList()
+            );
+            if (
+                std::addressof(searchTargetMolecule()) !=
+                    std::addressof(sharedMolecule) ||
+                searchUniverseEdgeList().data() != sharedEdgeList.data() ||
+                sharedTreeCanonAtomInterner != &seedAtomInterner ||
+                sharedTreeCanonLeafInterner != &seedLeafInterner ||
+                sharedTreeCanonInterner != &seedTreeInterner ||
+                sharedGraphHashSeed != &seedGraphHashes ||
+                !graphHashMap.empty() || !treeCanonInterner.empty() ||
+                !treeCanonLeafInternerDelta.empty()
+            )
+            {
+                invariantFailures.fetch_add(1, std::memory_order_relaxed);
+            }
 
             // Allocate two exact rooted-tree signatures in opposite orders.
             // The single-bond form is used by both tree fixtures and by the
@@ -1052,12 +1110,13 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
                     6
                 );
                 EdgeMask seededClass = componentMask(36, 2);
+                EdgeMask cyclicSeededClass = componentMask(38, 3);
 
                 bool forkedIsCyclic = false;
                 const flatCanonGraph &forkedGraph =
                     canonicalisationGraphScratch.build(
-                        targetMolecule,
-                        univEdgeList,
+                        searchTargetMolecule(),
+                        searchUniverseEdgeList(),
                         forkedTree,
                         forkedIsCyclic
                     );
@@ -1066,8 +1125,8 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
                 bool bentArmIsCyclic = false;
                 const flatCanonGraph &bentArmGraph =
                     canonicalisationGraphScratch.build(
-                        targetMolecule,
-                        univEdgeList,
+                        searchTargetMolecule(),
+                        searchUniverseEdgeList(),
                         bentArmTree,
                         bentArmIsCyclic
                     );
@@ -1097,12 +1156,19 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
                 }
                 pendantCycleIds[worker] = canonise(pendantCycle);
                 producerSeedIds[worker] = canonise(seededClass);
+                cyclicProducerSeedIds[worker] = canonise(cyclicSeededClass);
             }
+
+            graphDeltaSizes[worker] = graphHashMap.size();
+            treeDeltaSizes[worker] = treeCanonInterner.size();
+            leafDeltaSizes[worker] = treeCanonLeafInternerDelta.size();
 
             sharedCanonicalRegistry = nullptr;
             bitsetHashTable.clear();
-            graphHashMap.clear();
+            clearGraphHashDelta();
             clearTreeCanonInterner();
+            sharedTargetMolecule = nullptr;
+            sharedUniverseEdgeList = nullptr;
         });
     }
     for (std::thread &worker : workers) worker.join();
@@ -1122,7 +1188,31 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     }
     require(
         invariantFailures.load(std::memory_order_relaxed) == 0,
-        "non-isomorphic tree fixtures did not share one invariant bucket"
+        "shared seed binding or invariant bucket was inconsistent"
+    );
+    require(
+        std::all_of(
+            graphDeltaSizes.begin(),
+            graphDeltaSizes.end(),
+            [](size_t size) {return size != 0;}
+        ),
+        "workers did not retain graph hashes in local deltas"
+    );
+    require(
+        std::all_of(
+            treeDeltaSizes.begin(),
+            treeDeltaSizes.end(),
+            [](size_t size) {return size != 0;}
+        ),
+        "workers did not retain tree signatures in local deltas"
+    );
+    require(
+        std::all_of(
+            leafDeltaSizes.begin(),
+            leafDeltaSizes.end(),
+            [](size_t size) {return size != 0;}
+        ),
+        "workers did not retain leaves in local deltas"
     );
     require(
         std::all_of(
@@ -1146,8 +1236,8 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         "non-isomorphic dynamic tree class aliased a producer seed"
     );
     require(
-        forkedTreeIds.front() >= 1 && bentArmTreeIds.front() >= 1 &&
-            pendantCycleIds.front() >= 1,
+        forkedTreeIds.front() >= 2 && bentArmTreeIds.front() >= 2 &&
+            pendantCycleIds.front() >= 2,
         "dynamic class reused the producer's canonical ID range"
     );
     require(
@@ -1172,11 +1262,114 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         ),
         "producer-seeded class changed after dynamic ID allocation"
     );
+    require(
+        std::all_of(
+            cyclicProducerSeedIds.begin(),
+            cyclicProducerSeedIds.end(),
+            [&](int id) {return id == cyclicProducerSeedId;}
+        ),
+        "frozen cyclic seed changed during concurrent lookup"
+    );
+    bool cyclicSeedUnchanged = false;
+    bool treeSeedUnchanged = false;
+    for (const auto &entry : seedGraphHashes)
+    {
+        if (entry.second == pii{producerSeedId, 1})
+            treeSeedUnchanged = true;
+        if (
+            entry.second == pii{cyclicProducerSeedId, 1} &&
+            entry.first.cyclicHash.canonicalCode == frozenCyclicSeedCode
+        ) cyclicSeedUnchanged = true;
+    }
+    require(
+        seedGraphHashes.size() == 2 && treeSeedUnchanged &&
+            cyclicSeedUnchanged && seedAtomInterner.size() == 4 &&
+            !seedLeafInterner.empty() &&
+            !seedTreeInterner.empty(),
+        "workers mutated the shared producer seed"
+    );
 
     sharedCanonicalRegistry = nullptr;
     bitsetHashTable.clear();
-    graphHashMap.clear();
+    clearGraphHashDelta();
     clearTreeCanonInterner();
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
+}
+
+void testCanonicalSeedOverlayWithoutRegistry()
+{
+    sharedCanonicalRegistry = nullptr;
+    bitsetHashTable.clear();
+    clearGraphHashDelta();
+    clearTreeCanonInterner();
+    targetMolecule = makeSharedRegistryTreeInternerGraph();
+    univEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(univEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+
+    int producerSeedId;
+    {
+        EdgeMask producerSeed = componentMask(36, 2);
+        producerSeedId = canonise(producerSeed);
+    }
+    require(producerSeedId == 0, "overlay seed did not receive ID zero");
+    freezeGraphHashSeed(graphHashMap);
+
+    const auto seedGraphHashes = graphHashMap;
+    const auto seedAtomInterner = treeCanonAtomInterner;
+    const auto seedLeafInterner = treeCanonLeafInterner;
+    const auto seedTreeInterner = treeCanonInterner;
+    const molGraph sharedMolecule = std::move(targetMolecule);
+    const vector<edgeL> sharedEdgeList = std::move(univEdgeList);
+
+    bitsetHashTable.clear();
+    clearGraphHashDelta();
+    clearTreeCanonInterner();
+    sharedTargetMolecule = &sharedMolecule;
+    sharedUniverseEdgeList = &sharedEdgeList;
+    bindTreeCanonInternerSeed(
+        seedAtomInterner,
+        seedLeafInterner,
+        seedTreeInterner
+    );
+    bindGraphHashSeed(seedGraphHashes);
+    prepareCanonicalisationGraph(
+        searchTargetMolecule(),
+        searchUniverseEdgeList()
+    );
+
+    {
+        EdgeMask producerSeed = componentMask(36, 2);
+        EdgeMask firstFork = componentMask(0, 6);
+        EdgeMask secondFork = componentMask(6, 6);
+        EdgeMask bentArm = componentMask(12, 6);
+        require(
+            canonise(producerSeed) == producerSeedId,
+            "overlay lookup changed a producer canonical ID"
+        );
+        const int forkId = canonise(firstFork);
+        require(
+            forkId == 1 && canonise(secondFork) == forkId,
+            "overlay did not allocate/reuse the first local canonical ID"
+        );
+        require(
+            canonise(bentArm) == 2,
+            "overlay local canonical IDs overlapped the seed range"
+        );
+    }
+    require(
+        graphHashMap.size() == 2 && graphHashClassCount() == 3 &&
+            seedGraphHashes.size() == 1 &&
+            seedGraphHashes.begin()->second == pii{producerSeedId, 1},
+        "no-registry overlay mutated or miscounted its shared seed"
+    );
+
+    bitsetHashTable.clear();
+    clearGraphHashDelta();
+    clearTreeCanonInterner();
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
 }
 
 void testFlatCanoniseMaskPath()
@@ -1366,6 +1559,7 @@ int main()
     testLargeAttachedTrees();
     testSharedCanonicalRegistryAdversarialOrdering();
     testSharedCanonicalRegistryWithDivergentTreeInterners();
+    testCanonicalSeedOverlayWithoutRegistry();
     testFlatCanoniseMaskPath();
     testCachedGraphHashIsSelfContained();
     graphHashMap.clear();

@@ -80,6 +80,7 @@ void convertDag(
     vector<dagLevel> &output
 )
 {
+    const size_t universeEdgeCount = searchUniverseEdgeList().size();
     output.clear();
     output.resize(tempDag.size());
     if (tempDag.size() < 2) return;
@@ -102,7 +103,7 @@ void convertDag(
         return {node.transitionOffset, node.transitionCount};
     };
 
-    auto validateTransitions = [](
+    auto validateTransitions = [universeEdgeCount](
         const initialDagLevel &level,
         const initialDagNode &node,
         size_t childLevelSize
@@ -124,7 +125,7 @@ void convertDag(
             {
                 throw logic_error("DAG transition target is missing");
             }
-            if (transition.addedEdge >= univEdgeList.size())
+            if (transition.addedEdge >= universeEdgeCount)
             {
                 throw logic_error("DAG transition edge is out of range");
             }
@@ -133,7 +134,7 @@ void convertDag(
 
     initialDagLevel &rootLevel = tempDag[0];
     if (
-        rootLevel.maskIndices.size() != univEdgeList.size() ||
+        rootLevel.maskIndices.size() != universeEdgeCount ||
         rootLevel.nodes.size() != rootLevel.maskIndices.size()
     )
     {

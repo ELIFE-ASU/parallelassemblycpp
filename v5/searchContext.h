@@ -24,8 +24,9 @@ static_assert(std::is_trivially_copyable_v<rootJobDescriptor>);
 /**
  * Mask-free canonical state captured after the one root enumeration.
  *
- * Workers copy this seed into their local canonical caches. The tree interner
- * must travel with graphHashes because tree graph keys contain interner IDs.
+ * Workers borrow this immutable seed and retain post-seed classes in local
+ * deltas. The tree interner must travel with graphHashes because tree graph
+ * keys contain interner IDs.
  */
 struct canonicalisationSeed
 {
@@ -191,11 +192,11 @@ struct assemblySearchStorage
     {
         // One search-wide scratch key is safe because every table operation
         // finishes before the synchronous recursive call can reuse it.
-        candidateKey.reserve(univEdgeList.size() + 1);
+        candidateKey.reserve(searchUniverseEdgeList().size() + 1);
         if (pathway != nullptr)
         {
-            pathway->current.reserve(univEdgeList.size());
-            pathway->best.reserve(univEdgeList.size());
+            pathway->current.reserve(searchUniverseEdgeList().size());
+            pathway->best.reserve(searchUniverseEdgeList().size());
         }
     }
 
@@ -291,13 +292,14 @@ struct WorkerContext
     ):
         fragmentation(
             context.processedMolecule.mg.size(),
-            context.universeEdges.size()
+            context.universeEdges.size(),
+            context.universeEdges
         ),
         assemblyIndex(context.rootAssemblyIndex)
     {
         search.parallelWorkerIndex = workerIndex;
         fragmentation.homogeneousPathEdgePositions =
-            context.homogeneousPathEdgePositions;
+            span<const int>(context.homogeneousPathEdgePositions);
 
         EdgeMask rootMask;
         rootMask.set();
