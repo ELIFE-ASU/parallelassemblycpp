@@ -11,6 +11,16 @@ of Assembly Chemical Space of Molecular Graphs*](https://arxiv.org/abs/2410.0910
 
 Requirements: CMake 3.25 or newer, Ninja, and a C++20 compiler.
 
+Install these tools directly, or create and activate the supplied Conda
+environment:
+
+```bash
+conda env create --file environment.yml
+conda activate assemblycpp-v5
+```
+
+Then configure, build, and run the release executable:
+
 ```bash
 cmake --preset release
 cmake --build --preset release
@@ -20,12 +30,41 @@ cmake --build --preset release
 The command writes `unitTests/alanineOut` and, by default,
 `unitTests/alaninePathway`.
 
-To use the supplied Conda environment:
+This runs AssemblyCpp directly from the build directory; installation is
+optional.
+
+## Installation
+
+Install AssemblyCpp when you want a standalone command, reusable library, and
+CMake package outside the build directory. After the requirements above are
+available, run these commands from the repository root:
 
 ```bash
-conda env create --file environment.yml
-conda activate assemblycpp-v5
+cmake --preset release
+cmake --build --preset release
+cmake --install build/release --prefix build/install
 ```
+
+The first two commands can be skipped after completing the quick start.
+`build/install` is a user-writable installation prefix, so administrator access
+is not required. Verify the installed command with:
+
+```bash
+./build/install/bin/AssemblyCpp --help
+```
+
+The installation contains:
+
+- The command-line tool in `<prefix>/bin`.
+- The public header in `<prefix>/include/assemblycpp`.
+- The static library and CMake package files in the platform's library
+  directory, typically `<prefix>/lib`.
+
+`--prefix` selects where the files are copied; it does not update `PATH`.
+Replace `build/install` with another destination if needed, and add
+`<prefix>/bin` to `PATH` to invoke `AssemblyCpp` from any directory. Installing
+to a system location may require administrator privileges. On Windows, the
+installed command is `build\install\bin\AssemblyCpp.exe`.
 
 ## Command line
 
@@ -73,7 +112,16 @@ For a molfile, `INPUT` below excludes the `.mol` suffix.
 
 ## C++ library
 
-Installed packages export `AssemblyCpp::Library`:
+Installed packages export `AssemblyCpp::Library`. If AssemblyCpp is installed
+to a non-system prefix, pass that prefix when configuring the consuming
+project:
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_PREFIX_PATH=/absolute/path/to/assemblycpp-v5/build/install
+```
+
+Then link the imported target in the consuming project's `CMakeLists.txt`:
 
 ```cmake
 find_package(AssemblyCpp 5 CONFIG REQUIRED)
@@ -139,12 +187,14 @@ The `performance` preset targets x86-64-v3. See
 [benchmarks/README.md](benchmarks/README.md) for the benchmark corpus, paired
 comparisons, parallel builds, telemetry, LTO, PGO, and scaling guidance.
 
-## Install and package
+### Packaging
+
+These commands create binary and source archives for release distribution;
+they are not required for a normal installation:
 
 ```bash
-cmake --install build/release --prefix build/install
 cpack --preset release
-cmake --build build/release --target package_source
+cmake --build --preset release --target package_source
 ```
 
 Use CMake 4.3 or newer to normalize archive ownership. Create source archives
