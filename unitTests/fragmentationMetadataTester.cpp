@@ -78,6 +78,62 @@ void configurePathGraph(size_t edgeCount)
     totalBonds = edgeCount;
 }
 
+/** Own one production duplicate level and keep its sealed spans alive. */
+struct dagDuplicateLevelFixture
+{
+    dagDuplicateClassLevel level;
+    duplicateClassIndexWorkspace classIndex;
+    size_t duplicateSize;
+    size_t fragmentCount;
+
+    dagDuplicateLevelFixture(size_t _duplicateSize, size_t _fragmentCount):
+        duplicateSize(_duplicateSize), fragmentCount(_fragmentCount)
+    {
+        rebuild();
+    }
+
+    void rebuild()
+    {
+        level.reset(fragmentCount);
+        classIndex.beginLevel();
+    }
+
+    void insert(int canonicalId, potentialDuplicate occurrence)
+    {
+        classIndex.getOrCreate(
+            level,
+            canonicalId,
+            duplicateSize,
+            fragmentCount
+        ).insert(std::move(occurrence));
+    }
+
+    void seal()
+    {
+        level.seal();
+    }
+
+    duplicateClassEntry<dagDuplicateSet> &classEntry(int canonicalId)
+    {
+        const auto entry = find_if(
+            level.classes.begin(),
+            level.classes.end(),
+            [&](const auto &candidate)
+            {
+                return candidate.canonicalId == canonicalId;
+            }
+        );
+        assert(entry != level.classes.end());
+        return *entry;
+    }
+
+    dagDuplicateSet &singleClass()
+    {
+        assert(level.classes.size() == 1);
+        return level.classes.front().duplicates;
+    }
+};
+
 vector<int> resolveFirstCacheReplay(
     const EdgeMask &mask,
     ufdsMaskWorkspace &workspace
@@ -323,15 +379,41 @@ void testWideResidualCacheCanonicalIdWriteback()
 
 void testFragmentPairMatchingTraversal()
 {
-    dagDuplicateSet duplicates(2, 3);
-    duplicates.insert(potentialDuplicate(makeMask({0, 1}), 0, 0));
-    duplicates.insert(potentialDuplicate(makeMask({2, 3}), 0, 2));
-    duplicates.insert(potentialDuplicate(makeMask({1, 4}), 0, 5));
-    duplicates.insert(potentialDuplicate(makeMask({8, 9}), 1, 1));
-    duplicates.insert(potentialDuplicate(makeMask({10, 11}), 1, 4));
-    duplicates.insert(potentialDuplicate(makeMask({16, 17}), 2, 3));
-    duplicates.insert(potentialDuplicate(makeMask({18, 19}), 2, 6));
-    duplicates.insert(potentialDuplicate(makeMask({20, 21}), 2, 7));
+    dagDuplicateLevelFixture duplicatesStorage(2, 3);
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({0, 1}), 0, 0)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({2, 3}), 0, 2)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({1, 4}), 0, 5)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({8, 9}), 1, 1)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({10, 11}), 1, 4)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({16, 17}), 2, 3)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({18, 19}), 2, 6)
+    );
+    duplicatesStorage.insert(
+        10,
+        potentialDuplicate(makeMask({20, 21}), 2, 7)
+    );
+    duplicatesStorage.seal();
+    dagDuplicateSet &duplicates = duplicatesStorage.singleClass();
     assert(duplicates.isValid());
     vector<int> fragmentsByOccurrence;
     for (const potentialDuplicate &occurrence : duplicates.list)
@@ -362,7 +444,7 @@ void testFragmentPairMatchingTraversal()
         [&](int firstFragment, int secondFragment, int selectedSize)
         {
             assert(firstFragment <= secondFragment);
-            assert(selectedSize == duplicates.size);
+            assert(static_cast<size_t>(selectedSize) == duplicates.size);
             visitedBlocks.emplace_back(
                 firstFragment,
                 secondFragment
@@ -392,7 +474,7 @@ void testFragmentPairMatchingTraversal()
         [&](int firstFragment, int secondFragment, int selectedSize)
         {
             ++blockFilterCalls;
-            assert(selectedSize == duplicates.size);
+            assert(static_cast<size_t>(selectedSize) == duplicates.size);
             return firstFragment == 0 && secondFragment == 2;
         },
         [&](validMatchings &)
@@ -416,15 +498,20 @@ void testFragmentPairMatchingTraversal()
     assert(stoppedVisits == 3);
 
     // Empty diagonal blocks do not evaluate a fragment-pair filter.
-    dagDuplicateSet singletonRun(2, 2);
+    dagDuplicateLevelFixture singletonRunStorage(2, 2);
     for (size_t occurrence = 0; occurrence < 8; occurrence++)
     {
-        singletonRun.insert(potentialDuplicate(
-            makeMask({2 * occurrence, 2 * occurrence + 1}),
-            occurrence == 0 ? 0 : 1,
-            static_cast<int>(occurrence)
-        ));
+        singletonRunStorage.insert(
+            20,
+            potentialDuplicate(
+                makeMask({2 * occurrence, 2 * occurrence + 1}),
+                occurrence == 0 ? 0 : 1,
+                static_cast<int>(occurrence)
+            )
+        );
     }
+    singletonRunStorage.seal();
+    dagDuplicateSet &singletonRun = singletonRunStorage.singleClass();
     assert(!singletonRun.hasDenseFragmentRuns());
     vector<pair<int, int>> singletonBlocks;
     size_t singletonVisits = 0;
@@ -448,11 +535,25 @@ void testFragmentPairMatchingTraversal()
     assert(singletonVisits == 28);
 
     // Resume a diagonal after overlapping pairs precede its first match.
-    dagDuplicateSet delayedDiagonal(2, 1);
-    delayedDiagonal.insert(potentialDuplicate(makeMask({0, 1}), 0, 0));
-    delayedDiagonal.insert(potentialDuplicate(makeMask({2, 3}), 0, 1));
-    delayedDiagonal.insert(potentialDuplicate(makeMask({0, 4}), 0, 2));
-    delayedDiagonal.insert(potentialDuplicate(makeMask({0, 5}), 0, 3));
+    dagDuplicateLevelFixture delayedDiagonalStorage(2, 1);
+    delayedDiagonalStorage.insert(
+        30,
+        potentialDuplicate(makeMask({0, 1}), 0, 0)
+    );
+    delayedDiagonalStorage.insert(
+        30,
+        potentialDuplicate(makeMask({2, 3}), 0, 1)
+    );
+    delayedDiagonalStorage.insert(
+        30,
+        potentialDuplicate(makeMask({0, 4}), 0, 2)
+    );
+    delayedDiagonalStorage.insert(
+        30,
+        potentialDuplicate(makeMask({0, 5}), 0, 3)
+    );
+    delayedDiagonalStorage.seal();
+    dagDuplicateSet &delayedDiagonal = delayedDiagonalStorage.singleClass();
     vector<pair<size_t, size_t>> expectedDelayedPairs;
     assert(delayedDiagonal.visitMatchingsInReverse(
         [&](validMatchings &matching, size_t, size_t)
@@ -488,27 +589,38 @@ void testFragmentPairMatchingTraversal()
     assert(actualDelayedPairs == expectedDelayedPairs);
     assert(delayedFilterCalls == 1);
 
-    dagDuplicateSet denseSmall(2, 1);
+    dagDuplicateLevelFixture denseSmallStorage(2, 1);
     for (size_t occurrence = 0; occurrence < 8; occurrence++)
     {
-        denseSmall.insert(potentialDuplicate(
-            makeMask({2 * occurrence, 2 * occurrence + 1}),
-            0,
-            static_cast<int>(occurrence)
-        ));
+        denseSmallStorage.insert(
+            40,
+            potentialDuplicate(
+                makeMask({2 * occurrence, 2 * occurrence + 1}),
+                0,
+                static_cast<int>(occurrence)
+            )
+        );
     }
+    denseSmallStorage.seal();
+    dagDuplicateSet &denseSmall = denseSmallStorage.singleClass();
     assert(denseSmall.hasDenseFragmentRuns());
 
     // Sorted but sparse runs also retain the legacy traversal.
-    dagDuplicateSet sparseDuplicates(2, 8);
+    dagDuplicateLevelFixture sparseDuplicatesStorage(2, 8);
     for (size_t occurrence = 0; occurrence < 16; occurrence++)
     {
-        sparseDuplicates.insert(potentialDuplicate(
-            makeMask({2 * occurrence, 2 * occurrence + 1}),
-            static_cast<int>(occurrence / 2),
-            static_cast<int>(occurrence)
-        ));
+        sparseDuplicatesStorage.insert(
+            50,
+            potentialDuplicate(
+                makeMask({2 * occurrence, 2 * occurrence + 1}),
+                static_cast<int>(occurrence / 2),
+                static_cast<int>(occurrence)
+            )
+        );
     }
+    sparseDuplicatesStorage.seal();
+    dagDuplicateSet &sparseDuplicates =
+        sparseDuplicatesStorage.singleClass();
     assert(!sparseDuplicates.hasDenseFragmentRuns());
 
     // Unexpected interleaving retains the legacy occurrence traversal. Keep
@@ -516,7 +628,7 @@ void testFragmentPairMatchingTraversal()
     const array<int, 16> interleavedFragments = {
         7, 0, 3, 7, 0, 3, 7, 3, 0, 7, 0, 3, 7, 0, 3, 7
     };
-    dagDuplicateSet interleavedDuplicates(2, 8);
+    dagDuplicateLevelFixture interleavedDuplicatesStorage(2, 8);
     for (size_t occurrence = 0;
          occurrence < interleavedFragments.size();
          occurrence++)
@@ -524,12 +636,18 @@ void testFragmentPairMatchingTraversal()
         EdgeMask mask;
         mask.set(occurrence == 15 ? 0 : occurrence * 2);
         mask.set(occurrence * 2 + 1);
-        interleavedDuplicates.insert(potentialDuplicate(
-            std::move(mask),
-            interleavedFragments[occurrence],
-            static_cast<int>(occurrence)
-        ));
+        interleavedDuplicatesStorage.insert(
+            60,
+            potentialDuplicate(
+                std::move(mask),
+                interleavedFragments[occurrence],
+                static_cast<int>(occurrence)
+            )
+        );
     }
+    interleavedDuplicatesStorage.seal();
+    dagDuplicateSet &interleavedDuplicates =
+        interleavedDuplicatesStorage.singleClass();
     assert(interleavedDuplicates.isValid());
 
     size_t expectedFallbackPairs = 0;
@@ -565,10 +683,93 @@ void testFragmentPairMatchingTraversal()
     assert(fallbackVisits == expectedFallbackPairs);
 }
 
+void testDuplicateClassCsrStorage()
+{
+    // Canonical-class packing is sorted by ID, but each class retains its
+    // original insertion order when insertions are interleaved.
+    dagDuplicateLevelFixture interleaved(2, 6);
+    interleaved.insert(200, potentialDuplicate(makeMask({0, 1}), 0, 0));
+    interleaved.insert(100, potentialDuplicate(makeMask({2, 3}), 1, 1));
+    interleaved.insert(200, potentialDuplicate(makeMask({4, 5}), 2, 2));
+    interleaved.insert(100, potentialDuplicate(makeMask({6, 7}), 3, 3));
+    interleaved.insert(200, potentialDuplicate(makeMask({8, 9}), 4, 4));
+    interleaved.insert(100, potentialDuplicate(makeMask({10, 11}), 5, 5));
+    interleaved.seal();
+
+    assert(interleaved.level.classes.size() == 2);
+    assert(interleaved.level.classes[0].canonicalId == 100);
+    assert(interleaved.level.classes[1].canonicalId == 200);
+    const auto &firstClass = interleaved.level.classes[0].duplicates;
+    const auto &secondClass = interleaved.level.classes[1].duplicates;
+    assert(firstClass.list.size() == 3);
+    assert(secondClass.list.size() == 3);
+    assert(firstClass.list[0].idx == 1);
+    assert(firstClass.list[1].idx == 3);
+    assert(firstClass.list[2].idx == 5);
+    assert(secondClass.list[0].idx == 0);
+    assert(secondClass.list[1].idx == 2);
+    assert(secondClass.list[2].idx == 4);
+
+    // Sparse rows retain the complete fragment domain while storing only
+    // non-empty fragment unions.
+    dagDuplicateLevelFixture sparse(2, 12);
+    sparse.insert(300, potentialDuplicate(makeMask({0, 1}), 1, 0));
+    sparse.insert(300, potentialDuplicate(makeMask({64, 65}), 9, 1));
+    sparse.insert(300, potentialDuplicate(makeMask({65, 66}), 9, 2));
+    sparse.seal();
+    auto &sparseEntry = sparse.classEntry(300);
+    const duplicateFragmentMaskList sparseMasks =
+        sparse.level.fragmentMasks(sparseEntry);
+    assert(sparse.level.fragmentCount() == 12);
+    assert(sparseEntry.duplicates.fragmentCount == 12);
+    assert(sparseMasks.fragmentCount == 12);
+    assert(sparseMasks.size() == 2);
+    assert(sparseMasks[0].fragment == 1);
+    assert(sparseMasks[1].fragment == 9);
+    assert(sparseMasks.maskCount(0) == 0);
+    assert(sparseMasks.maskCount(1) == 2);
+    assert(sparseMasks.maskCount(8) == 0);
+    assert(sparseMasks.maskCount(9) == 3);
+    assert(sparseMasks.maskCount(11) == 0);
+
+    // The same owned storage can be rebuilt after both sealed and unsealed
+    // populations without retaining old classes, occurrences, or mask rows.
+    dagDuplicateLevelFixture reusable(2, 5);
+    reusable.insert(400, potentialDuplicate(makeMask({12, 13}), 0, 0));
+    reusable.insert(400, potentialDuplicate(makeMask({14, 15}), 1, 1));
+    reusable.seal();
+    assert(reusable.level.classes.size() == 1);
+    assert(reusable.singleClass().list.size() == 2);
+
+    reusable.rebuild();
+    assert(reusable.level.empty());
+    assert(reusable.level.fragmentCount() == 5);
+    reusable.insert(500, potentialDuplicate(makeMask({16, 17}), 2, 2));
+    reusable.insert(500, potentialDuplicate(makeMask({18, 19}), 3, 3));
+
+    // Reset the populated but unsealed staging representation as well.
+    reusable.rebuild();
+    assert(reusable.level.empty());
+    assert(reusable.level.fragmentCount() == 5);
+    reusable.insert(600, potentialDuplicate(makeMask({20, 21}), 4, 4));
+    reusable.insert(600, potentialDuplicate(makeMask({22, 23}), 4, 5));
+    reusable.seal();
+    assert(reusable.level.classes.size() == 1);
+    assert(reusable.level.classes.front().canonicalId == 600);
+    assert(reusable.singleClass().list.size() == 2);
+    const duplicateFragmentMaskList rebuiltMasks =
+        reusable.level.fragmentMasks(reusable.level.classes.front());
+    assert(rebuiltMasks.fragmentCount == 5);
+    assert(rebuiltMasks.size() == 1);
+    assert(rebuiltMasks[0].fragment == 4);
+    assert(rebuiltMasks.maskCount(4) == 4);
+}
+
 int main()
 {
     // Exercise grouped runs and their fallback with a multiword mask domain.
     configurePathGraph(96);
+    testDuplicateClassCsrStorage();
     testFragmentPairMatchingTraversal();
     configurePathGraph(32);
     testMaskTrimmingMetadata();

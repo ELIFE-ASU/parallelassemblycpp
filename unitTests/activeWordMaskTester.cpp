@@ -282,6 +282,128 @@ void testCopyMoveAndContainers(std::size_t width)
     }
 }
 
+void testAccumulatorWidth(std::size_t width)
+{
+    EdgeMask::configure(width);
+    const std::size_t wordCount = EdgeMask::activeWordCount();
+
+    EdgeMask first;
+    EdgeMask second;
+    EdgeMask probe;
+    EdgeMask endProbe;
+    first.set(0).set(width - 1);
+    second.set(width / 2).set(width - 1);
+    probe.set(width - 1);
+    endProbe.set(0).set(width - 1);
+    if (width > 64) probe.set(64);
+    const EdgeMask expected = first | second;
+
+    EdgeMaskAccumulatorBuffer buffer(3);
+    assert(buffer.size() == 3);
+    assert(buffer.span().size() == 3);
+    assert(buffer[0].activeWordCount() == wordCount);
+    for (const EdgeMaskAccumulator &accumulator : buffer)
+        assert(accumulator.none());
+
+    buffer[0].add(first);
+    buffer[1] |= second;
+    buffer[2].add(buffer[0]).add(buffer[1]);
+    assert(buffer[0].toEdgeMask() == first);
+    assert(buffer[1].toEdgeMask() == second);
+    assert(buffer[2].toEdgeMask() == expected);
+    assert(buffer[2].any());
+    assert(buffer[2].count() == expected.count());
+    assert(
+        buffer[2].intersectionCount(probe) ==
+        expected.intersectionCount(probe)
+    );
+    assert(
+        buffer[2].intersectionCount(endProbe) ==
+        expected.intersectionCount(endProbe)
+    );
+    EdgeMask retained = expected;
+    retained.intersectWords(buffer[0]);
+    assert(retained == first);
+    assert(expected == (first | second));
+    for (std::size_t word = 0; word < wordCount; ++word)
+        assert(buffer[2].activeWord(word) == expected.activeWord(word));
+
+    const EdgeMaskAccumulatorBuffer &constBuffer = buffer;
+    assert(constBuffer.span().size() == buffer.size());
+    assert(constBuffer.span().data() == buffer.data());
+
+    // Growing preserves the existing flat rows and clears only the new suffix.
+    buffer.resize(7);
+    assert(buffer[0].toEdgeMask() == first);
+    assert(buffer[1].toEdgeMask() == second);
+    assert(buffer[2].toEdgeMask() == expected);
+    for (std::size_t index = 3; index < buffer.size(); ++index)
+        assert(buffer[index].none());
+
+    // Distinct wide accumulators must remain isolated after the flat word
+    // vector and the view vector have both had an opportunity to reallocate.
+    buffer[3] |= probe;
+    buffer[4] |= first;
+    assert(buffer[3].toEdgeMask() == probe);
+    assert(buffer[4].toEdgeMask() == first);
+    assert(buffer[0].toEdgeMask() == first);
+
+    buffer.resetRange(1, 2);
+    assert(buffer[0].toEdgeMask() == first);
+    assert(buffer[1].none());
+    assert(buffer[2].none());
+    assert(buffer[3].toEdgeMask() == probe);
+
+    // Shrinking and regrowing retains the prefix and zeroes re-exposed rows.
+    buffer.resize(1);
+    assert(buffer[0].toEdgeMask() == first);
+    buffer.resize(5);
+    assert(buffer[0].toEdgeMask() == first);
+    for (std::size_t index = 1; index < buffer.size(); ++index)
+        assert(buffer[index].none());
+
+    buffer.reset();
+    for (const EdgeMaskAccumulator &accumulator : buffer)
+        assert(accumulator.none());
+
+    buffer[0] |= expected;
+    const std::size_t retainedCapacity = buffer.capacity();
+    buffer.clear();
+    assert(buffer.empty());
+    assert(buffer.capacity() == retainedCapacity);
+    buffer.reset(5);
+    assert(buffer.capacity() == retainedCapacity);
+    for (const EdgeMaskAccumulator &accumulator : buffer)
+        assert(accumulator.none());
+
+    bool rejectedRange = false;
+    try
+    {
+        buffer.resetRange(buffer.size(), 1);
+    }
+    catch (const std::out_of_range &)
+    {
+        rejectedRange = true;
+    }
+    assert(rejectedRange);
+
+    // Standalone accumulators are allocation-free for the inline routes.
+    if (wordCount <= EdgeMaskAccumulator::inlineWordCapacity)
+    {
+        EdgeMaskAccumulator firstAccumulator;
+        EdgeMaskAccumulator secondAccumulator;
+        firstAccumulator.add(first);
+        secondAccumulator.add(second);
+        EdgeMaskAccumulator inlineAccumulator;
+        inlineAccumulator |= firstAccumulator;
+        inlineAccumulator |= secondAccumulator;
+        assert(inlineAccumulator.toEdgeMask() == expected);
+        assert(inlineAccumulator.intersectionCount(endProbe) == 2);
+        inlineAccumulator.clear();
+        assert(inlineAccumulator.none());
+    }
+}
+
 void testDomainIndependence()
 {
     EdgeMask::configure(1025);
@@ -356,6 +478,11 @@ int main()
 
     testCopyMoveAndContainers<EdgeMask>(1025);
     testCopyMoveAndContainers<AtomMask>(1025);
+    constexpr std::array<std::size_t, 6> accumulatorWidths{
+        64, 65, 127, 128, 129, 257
+    };
+    for (const std::size_t width : accumulatorWidths)
+        testAccumulatorWidth(width);
     testDomainIndependence();
     testSequentialReconfiguration<EdgeMask>();
     testSequentialReconfiguration<AtomMask>();

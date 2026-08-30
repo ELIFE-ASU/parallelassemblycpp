@@ -74,9 +74,10 @@ struct assemblyState
      * 
      * @param targetMasks The vector of bitsets used in place of sizeList
      */
+    template<typename MaskRange>
     int maxDupBonds(
         int maxFragSize,
-        const vector<EdgeMask> &targetMasks
+        const MaskRange &targetMasks
     ) const
     {
         int dupBondsTotal = -ceilLog2(maxFragSize);
@@ -85,7 +86,7 @@ struct assemblyState
             dupBondsTotal += fixedSizeDupBondsForFragment(
                 fragments[i].edgeCount,
                 maxFragSize,
-                static_cast<int>(targetMasks[i].count())
+                static_cast<int>(maskCountAt(targetMasks, i))
             );
         }
         return dupBondsTotal;
@@ -97,10 +98,11 @@ struct assemblyState
      * @param fragSizeListMax The result vector
      * @param targetMasks The vector of vector of bitsets
      */
+    template<typename MaskTable>
     void maxDupBondsPrefix(
         vi &fragSizeListMax,
         int maxFragSize,
-        const vector<vector<EdgeMask> > &targetMasks
+        const MaskTable &targetMasks
     ) const
     {
         if (maxFragSize < 2)
@@ -122,13 +124,12 @@ struct assemblyState
         {
             const size_t index = duplicateSize - 2;
             int bound = -ceilLog2(duplicateSize);
-            const vector<EdgeMask> &duplicateMasks = targetMasks[index];
             for (size_t i = 0; i < fragments.size(); i++)
             {
                 bound += fixedSizeDupBondsForFragment(
                     fragments[i].edgeCount,
                     duplicateSize,
-                    static_cast<int>(duplicateMasks[i].count())
+                    static_cast<int>(tableMaskCountAt(targetMasks, index, i))
                 );
             }
             fragSizeListMax[index] = max(
@@ -168,6 +169,31 @@ struct assemblyState
         }
         return dupBonds2;
     }
+
+private:
+    template<typename MaskRange>
+    static size_t maskCountAt(const MaskRange &masks, size_t index)
+    {
+        if constexpr (requires { masks.maskCount(index); })
+            return masks.maskCount(index);
+        else
+            return masks[index].count();
+    }
+
+    template<typename MaskTable>
+    static size_t tableMaskCountAt(
+        const MaskTable &masks,
+        size_t row,
+        size_t column
+    )
+    {
+        if constexpr (requires { masks.maskCount(row, column); })
+            return masks.maskCount(row, column);
+        else
+            return masks[row][column].count();
+    }
+
+public:
 
     /**
      * @brief Old branch and bound. Only used during initial enumeration

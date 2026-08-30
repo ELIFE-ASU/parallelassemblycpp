@@ -7,9 +7,11 @@
 #include <functional>
 #include <limits>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #ifndef ASSEMBLYCPP_SEARCH_LOCAL
     #define ASSEMBLYCPP_SEARCH_LOCAL
@@ -528,6 +530,26 @@ public:
         }
         if (storage_.tail == other.storage_.tail) return *this;
         replaceWithComputed(storage_.tail, other.storage_.tail, Operation::and_);
+        return *this;
+    }
+
+    /** Intersect with any word-oriented view without materialising a mask. */
+    template<typename WordSource>
+    [[gnu::always_inline]] ActiveWordMask &intersectWords(
+        const WordSource &other
+    )
+    {
+        if (activeWordCount_ == 0) return *this;
+        if (isSmall()) [[likely]]
+        {
+            storage_.word &= other.activeWord(0);
+            return *this;
+        }
+        if (storage_.tail == nullptr) return *this;
+        WideWords *destination = ensureUniqueWords();
+        for (std::size_t word = 0; word < activeWordCount_; ++word)
+            destination->data()[word] &= other.activeWord(word);
+        releaseWordsIfZero();
         return *this;
     }
 
@@ -1104,6 +1126,455 @@ struct AtomMaskDomain;
 
 using EdgeMask = ActiveWordMask<EdgeMaskDomain>;
 using AtomMask = ActiveWordMask<AtomMaskDomain>;
+
+/**
+ * @brief Allocation-free union accumulator for the configured edge domain.
+ *
+ * One- and two-word domains live directly in the accumulator. Wider domains
+ * are non-owning views into storage supplied by EdgeMaskAccumulatorBuffer, so a
+ * group of accumulators needs only one flat word allocation. Like EdgeMask,
+ * an accumulator must not outlive a reconfiguration of the edge-mask domain.
+ */
+class EdgeMaskAccumulator
+{
+public:
+    using word_type = EdgeMask::word_type;
+    static constexpr std::size_t inlineWordCapacity = 2;
+
+    EdgeMaskAccumulator() noexcept:
+        wordCount_(EdgeMask::activeWordCount())
+    {
+        if (usesExternalWords()) storage_.externalWords = nullptr;
+    }
+
+    EdgeMaskAccumulator(const EdgeMaskAccumulator &) = delete;
+    EdgeMaskAccumulator &operator=(const EdgeMaskAccumulator &) = delete;
+
+    EdgeMaskAccumulator(EdgeMaskAccumulator &&other) noexcept:
+        wordCount_(other.wordCount_)
+    {
+        moveStorageFrom(other);
+    }
+
+    EdgeMaskAccumulator &operator=(EdgeMaskAccumulator &&other) noexcept
+    {
+        if (this == &other) return *this;
+        wordCount_ = other.wordCount_;
+        moveStorageFrom(other);
+        return *this;
+    }
+
+    [[nodiscard]] std::size_t activeWordCount() const noexcept
+    {
+        return wordCount_;
+    }
+
+    EdgeMaskAccumulator &clear()
+    {
+        if (wordCount_ == 1)
+        {
+            storage_.inlineWords[0] = 0;
+            return *this;
+        }
+        if (wordCount_ == inlineWordCapacity)
+        {
+            storage_.inlineWords[0] = 0;
+            storage_.inlineWords[1] = 0;
+            return *this;
+        }
+        std::fill_n(mutableWords(), wordCount_, word_type{0});
+        return *this;
+    }
+
+    EdgeMaskAccumulator &add(const EdgeMask &mask)
+    {
+        if (wordCount_ == 1)
+        {
+            storage_.inlineWords[0] |= mask.activeWord(0);
+            return *this;
+        }
+        if (wordCount_ == inlineWordCapacity)
+        {
+            storage_.inlineWords[0] |= mask.activeWord(0);
+            storage_.inlineWords[1] |= mask.activeWord(1);
+            return *this;
+        }
+        word_type *destination = mutableWords();
+        for (std::size_t word = 0; word < wordCount_; ++word)
+            destination[word] |= mask.activeWord(word);
+        return *this;
+    }
+
+    EdgeMaskAccumulator &add(const EdgeMaskAccumulator &other)
+    {
+        if (wordCount_ != other.wordCount_)
+        {
+            throw std::invalid_argument(
+                "cannot combine edge-mask accumulators of different widths"
+            );
+        }
+        if (wordCount_ == 1)
+        {
+            storage_.inlineWords[0] |= other.storage_.inlineWords[0];
+            return *this;
+        }
+        if (wordCount_ == inlineWordCapacity)
+        {
+            storage_.inlineWords[0] |= other.storage_.inlineWords[0];
+            storage_.inlineWords[1] |= other.storage_.inlineWords[1];
+            return *this;
+        }
+        word_type *destination = mutableWords();
+        const word_type *source = other.words();
+        for (std::size_t word = 0; word < wordCount_; ++word)
+            destination[word] |= source[word];
+        return *this;
+    }
+
+    EdgeMaskAccumulator &operator|=(const EdgeMask &mask)
+    {
+        return add(mask);
+    }
+
+    EdgeMaskAccumulator &operator|=(const EdgeMaskAccumulator &other)
+    {
+        return add(other);
+    }
+
+    [[nodiscard]] bool any() const
+    {
+        if (wordCount_ == 1) return storage_.inlineWords[0] != 0;
+        if (wordCount_ == inlineWordCapacity)
+        {
+            return (storage_.inlineWords[0] | storage_.inlineWords[1]) != 0;
+        }
+        const word_type *source = words();
+        for (std::size_t word = 0; word < wordCount_; ++word)
+        {
+            if (source[word] != 0) return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool none() const
+    {
+        return !any();
+    }
+
+    [[nodiscard]] std::size_t count() const
+    {
+        if (wordCount_ == 1)
+        {
+            return static_cast<std::size_t>(
+                std::popcount(storage_.inlineWords[0])
+            );
+        }
+        if (wordCount_ == inlineWordCapacity)
+        {
+            return static_cast<std::size_t>(
+                std::popcount(storage_.inlineWords[0]) +
+                std::popcount(storage_.inlineWords[1])
+            );
+        }
+        const word_type *source = words();
+        std::size_t result = 0;
+        for (std::size_t word = 0; word < wordCount_; ++word)
+        {
+            result += static_cast<std::size_t>(std::popcount(source[word]));
+        }
+        return result;
+    }
+
+    [[nodiscard]] word_type activeWord(std::size_t index) const noexcept
+    {
+        if (!usesExternalWords()) return storage_.inlineWords[index];
+        return storage_.externalWords[index];
+    }
+
+    [[nodiscard]] std::size_t intersectionCount(
+        const EdgeMask &mask
+    ) const
+    {
+        if (wordCount_ == 1)
+        {
+            return static_cast<std::size_t>(std::popcount(
+                storage_.inlineWords[0] & mask.activeWord(0)
+            ));
+        }
+        if (wordCount_ == inlineWordCapacity)
+        {
+            return static_cast<std::size_t>(
+                std::popcount(
+                    storage_.inlineWords[0] & mask.activeWord(0)
+                ) +
+                std::popcount(
+                    storage_.inlineWords[1] & mask.activeWord(1)
+                )
+            );
+        }
+        const word_type *source = words();
+        std::size_t result = 0;
+        for (std::size_t word = 0; word < wordCount_; ++word)
+        {
+            result += static_cast<std::size_t>(std::popcount(
+                source[word] & mask.activeWord(word)
+            ));
+        }
+        return result;
+    }
+
+    /** Materialise an owning value only when an API specifically requires it. */
+    [[nodiscard]] EdgeMask toEdgeMask() const
+    {
+        return EdgeMask::fromActiveWords(words());
+    }
+
+private:
+    friend class EdgeMaskAccumulatorBuffer;
+
+    union Storage
+    {
+        word_type inlineWords[inlineWordCapacity];
+        word_type *externalWords;
+
+        constexpr Storage() noexcept: inlineWords{0, 0} {}
+    } storage_;
+    std::size_t wordCount_;
+
+    [[nodiscard]] bool usesExternalWords() const noexcept
+    {
+        return wordCount_ > inlineWordCapacity;
+    }
+
+    [[nodiscard]] word_type *mutableWords()
+    {
+        if (!usesExternalWords()) return storage_.inlineWords;
+        if (storage_.externalWords == nullptr)
+        {
+            throw std::logic_error(
+                "wide edge-mask accumulator is not bound to a buffer"
+            );
+        }
+        return storage_.externalWords;
+    }
+
+    [[nodiscard]] const word_type *words() const
+    {
+        if (!usesExternalWords()) return storage_.inlineWords;
+        if (storage_.externalWords == nullptr)
+        {
+            throw std::logic_error(
+                "wide edge-mask accumulator is not bound to a buffer"
+            );
+        }
+        return storage_.externalWords;
+    }
+
+    void bind(word_type *externalWords, std::size_t wordCount) noexcept
+    {
+        if (wordCount > inlineWordCapacity)
+        {
+            storage_.externalWords = externalWords;
+        }
+        else if (wordCount_ > inlineWordCapacity)
+        {
+            storage_.inlineWords[0] = 0;
+            storage_.inlineWords[1] = 0;
+        }
+        wordCount_ = wordCount;
+    }
+
+    void moveStorageFrom(const EdgeMaskAccumulator &other) noexcept
+    {
+        if (usesExternalWords())
+        {
+            storage_.externalWords = other.storage_.externalWords;
+        }
+        else
+        {
+            storage_.inlineWords[0] = other.storage_.inlineWords[0];
+            storage_.inlineWords[1] = other.storage_.inlineWords[1];
+        }
+    }
+};
+
+/**
+ * @brief Reusable contiguous storage for a logical span of mask accumulators.
+ *
+ * resize() preserves the existing prefix and zeroes newly exposed entries.
+ * reset() retains both vector capacities while clearing the requested span.
+ */
+class EdgeMaskAccumulatorBuffer
+{
+public:
+    using value_type = EdgeMaskAccumulator;
+    using size_type = std::size_t;
+    using iterator = std::vector<value_type>::iterator;
+    using const_iterator = std::vector<value_type>::const_iterator;
+
+    EdgeMaskAccumulatorBuffer() noexcept:
+        bitCount_(EdgeMask::size()),
+        wordCount_(EdgeMask::activeWordCount())
+    {}
+
+    explicit EdgeMaskAccumulatorBuffer(size_type count):
+        EdgeMaskAccumulatorBuffer()
+    {
+        reset(count);
+    }
+
+    EdgeMaskAccumulatorBuffer(const EdgeMaskAccumulatorBuffer &) = delete;
+    EdgeMaskAccumulatorBuffer &operator=(
+        const EdgeMaskAccumulatorBuffer &
+    ) = delete;
+    EdgeMaskAccumulatorBuffer(EdgeMaskAccumulatorBuffer &&) noexcept = default;
+    EdgeMaskAccumulatorBuffer &operator=(
+        EdgeMaskAccumulatorBuffer &&
+    ) noexcept = default;
+
+    /** Preserve the existing prefix and clear only newly exposed entries. */
+    void resize(size_type count)
+    {
+        synchronizeConfiguration();
+        const size_type flatWordCount = checkedFlatWordCount(count);
+        accumulators_.resize(count);
+        if (wordCount_ > value_type::inlineWordCapacity)
+            externalWords_.resize(flatWordCount);
+        else
+            externalWords_.clear();
+        rebind();
+    }
+
+    /** Resize the logical span and clear every accumulator in it. */
+    void reset(size_type count)
+    {
+        resize(count);
+        reset();
+    }
+
+    /** Clear every logical accumulator without changing the logical size. */
+    void reset()
+    {
+        for (value_type &accumulator : accumulators_) accumulator.clear();
+    }
+
+    /** Clear a checked subrange expressed as an offset and element count. */
+    void resetRange(size_type offset, size_type count)
+    {
+        if (offset > size() || count > size() - offset)
+            throw std::out_of_range("accumulator reset range is out of bounds");
+        for (size_type index = offset; index < offset + count; ++index)
+            accumulators_[index].clear();
+    }
+
+    /** Drop the logical span while retaining both underlying capacities. */
+    void clear() noexcept
+    {
+        accumulators_.clear();
+        externalWords_.clear();
+    }
+
+    [[nodiscard]] size_type size() const noexcept
+    {
+        return accumulators_.size();
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return accumulators_.empty();
+    }
+
+    [[nodiscard]] size_type capacity() const noexcept
+    {
+        return accumulators_.capacity();
+    }
+
+    [[nodiscard]] value_type *data() noexcept
+    {
+        return accumulators_.data();
+    }
+
+    [[nodiscard]] const value_type *data() const noexcept
+    {
+        return accumulators_.data();
+    }
+
+    [[nodiscard]] value_type &operator[](size_type index) noexcept
+    {
+        return accumulators_[index];
+    }
+
+    [[nodiscard]] const value_type &operator[](size_type index) const noexcept
+    {
+        return accumulators_[index];
+    }
+
+    [[nodiscard]] iterator begin() noexcept {return accumulators_.begin();}
+    [[nodiscard]] const_iterator begin() const noexcept
+    {
+        return accumulators_.begin();
+    }
+    [[nodiscard]] iterator end() noexcept {return accumulators_.end();}
+    [[nodiscard]] const_iterator end() const noexcept
+    {
+        return accumulators_.end();
+    }
+
+    [[nodiscard]] std::span<value_type> span() noexcept
+    {
+        return accumulators_;
+    }
+
+    [[nodiscard]] std::span<const value_type> span() const noexcept
+    {
+        return accumulators_;
+    }
+
+private:
+    std::vector<value_type> accumulators_;
+    std::vector<value_type::word_type> externalWords_;
+    size_type bitCount_;
+    size_type wordCount_;
+
+    void synchronizeConfiguration() noexcept
+    {
+        const size_type configuredBitCount = EdgeMask::size();
+        const size_type configuredWordCount = EdgeMask::activeWordCount();
+        if (
+            bitCount_ == configuredBitCount &&
+            wordCount_ == configuredWordCount
+        ) return;
+        clear();
+        bitCount_ = configuredBitCount;
+        wordCount_ = configuredWordCount;
+    }
+
+    [[nodiscard]] size_type checkedFlatWordCount(size_type count) const
+    {
+        if (
+            wordCount_ != 0 &&
+            count > std::numeric_limits<size_type>::max() / wordCount_
+        )
+        {
+            throw std::length_error("edge-mask accumulator buffer is too large");
+        }
+        return count * wordCount_;
+    }
+
+    void rebind() noexcept
+    {
+        value_type::word_type *base = externalWords_.data();
+        for (size_type index = 0; index < accumulators_.size(); ++index)
+        {
+            accumulators_[index].bind(
+                wordCount_ > value_type::inlineWordCapacity
+                    ? base + index * wordCount_
+                    : nullptr,
+                wordCount_
+            );
+        }
+    }
+};
 
 static_assert(!std::is_same_v<EdgeMask, AtomMask>);
 static_assert(sizeof(EdgeMask) == sizeof(std::uint64_t));

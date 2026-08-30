@@ -114,7 +114,8 @@ bool initialRecursiveEnumeration(
                     retainedStateCount,
                     tempDag,
                     fragments,
-                    incidentEdges
+                    incidentEdges,
+                    stmap.aliveScratch
                 );
                 if (enumerationLimitReached)
                 {
@@ -145,8 +146,7 @@ bool initialRecursiveEnumeration(
 int dagRecursiveEnumeration(
     const vector<dagLevel> &dag,
     assemblyState &_target,
-    vector<dagDuplicateClassLevel> &stmapVector,
-    vector<vector<EdgeMask>> &targetMasks,
+    dagAssemblySearchFrame &frame,
     duplicateClassIndexWorkspace &classIndex
 )
 {
@@ -157,7 +157,8 @@ int dagRecursiveEnumeration(
     vector<assemblyFragment> &fragments = _target.fragments;
     size_t currSize = 1;
     
-    stmapVector.resize(1);
+    dagDuplicateClassLevel &firstLevel =
+        frame.appendDuplicateLevel(fragments.size());
     classIndex.beginLevel();
     for (size_t i = 0; i < fragments.size(); i++)
     {
@@ -172,7 +173,7 @@ int dagRecursiveEnumeration(
                 dagGenerate(
                     dag,
                     m,
-                    stmapVector[0],
+                    firstLevel,
                     classIndex,
                     fragments[i].mask,
                     currSize,
@@ -183,17 +184,18 @@ int dagRecursiveEnumeration(
             }
         }
     }
-    stmapVector[0].seal();
+    firstLevel.seal();
     bool active = 1, overweight = 0, last = 0;
     while (active)
     {
         if (searchShouldStop()) return 0;
-        vector<EdgeMask> targetMask(fragments.size(), 0);
+        span<EdgeMaskAccumulator> targetMask = frame.targetMasks.appendRow();
         active = 0;
-        stmapVector.emplace_back();
+        dagDuplicateClassLevel &nextLevel =
+            frame.appendDuplicateLevel(fragments.size());
         classIndex.beginLevel();
         dagDuplicateClassLevel &stmap =
-            stmapVector[stmapVector.size() - 2];
+            frame.duplicateLevels[frame.duplicateLevelCount - 2];
         for (auto &entry : stmap.classes)
         {
             if (searchShouldStop()) return 0;
@@ -204,28 +206,30 @@ int dagRecursiveEnumeration(
                 active |= dagDuplicateGenerator(
                     dag,
                     ss,
-                    stmapVector.back(),
+                    nextLevel,
                     classIndex,
                     targetMask,
                     fragments,
                     ordinal,
                     overweight,
-                    last
+                    last,
+                    stmap.aliveScratch
                 );
                 if (searchShouldStop()) return 0;
             }
         }
-        stmapVector.back().seal();
+        nextLevel.seal();
         if (overweight) last = 1;
-        targetMasks.push_back(targetMask);
         currSize++;
     }
-    if (stmapVector.back().size() == 0) stmapVector.pop_back();
+    if (
+        frame.duplicateLevels[frame.duplicateLevelCount - 1].empty()
+    ) --frame.duplicateLevelCount;
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return 0;
         assemblyFragment &fragment = fragments[i];
-        fragment.retainEdges(targetMasks[0][i]);
+        fragment.retainEdges(frame.targetMasks.row(0)[i]);
     }
     return currSize;
 }
@@ -313,10 +317,11 @@ void configureHomogeneousPathEdgePositions(vector<int> &edgePositions)
  * @param boundTotals Reusable scratch for each unrestricted duplicate size
  * @return int the largest remaining duplicate-bond estimate
  */
+template<typename MatchMask, typename MaxFragmentMask>
 int postFragmentationCutoff(
     const assemblyState &target,
-    const EdgeMask &matchMask,
-    const EdgeMask &maxFragMask,
+    const MatchMask &matchMask,
+    const MaxFragmentMask &maxFragMask,
     vi &boundTotals
 )
 {
@@ -335,12 +340,12 @@ int postFragmentationCutoff(
             const int matchingEdges = i == 0
                 ? maxFragSize
                 : static_cast<int>(
-                    fragment.mask.intersectionCount(matchMask)
+                    matchMask.intersectionCount(fragment.mask)
                 );
             const int maximalEdges = i == 0
                 ? maxFragSize
                 : static_cast<int>(
-                    fragment.mask.intersectionCount(maxFragMask)
+                    maxFragMask.intersectionCount(fragment.mask)
                 );
             matchDB += assemblyState::fixedSizeDupBondsForFragment(
                 edgeCount,
@@ -567,9 +572,11 @@ int pairSpecificGenericBound(
     return result;
 }
 
+template<typename DuplicateMasks>
 [[gnu::noinline]] bool shouldVisitFragmentPairBlocks(
     assemblyState &target,
     const dagDuplicateSet &duplicates,
+    const DuplicateMasks &duplicateMasks,
     int targetedBound,
     int pairBoundLimit,
     int &matchingClassBound
@@ -597,7 +604,7 @@ int pairSpecificGenericBound(
     {
         matchingClassBound = target.maxDupBonds(
             duplicates.size,
-            duplicates.maskList
+            duplicateMasks
         );
         if (matchingClassBound > pairBoundLimit) return false;
     }
@@ -1135,47 +1142,58 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     recordImprovedAssemblyIndex<trackPath>(input, AI, searchStorage);
     if (searchShouldStop()) return;
 
-    vector<dagDuplicateClassLevel> stmapVector;
-    vector<vector<EdgeMask> > targetMasks;
+    dagAssemblySearchFrameScope frameScope(
+        searchStorage,
+        input.fragments.size()
+    );
+    dagAssemblySearchFrame &frame = frameScope.frame;
     int maxFragSize = dagRecursiveEnumeration(
         dag,
         input,
-        stmapVector,
-        targetMasks,
+        frame,
         searchStorage.duplicateClassIndex
     );
 
     if (searchShouldStop()) return;
 
     /// Find the fragment-size-specific AI lower bounds
-    vi fragSizeListMax;
-    input.maxDupBondsPrefix(fragSizeListMax, maxFragSize, targetMasks);
+    vi &fragSizeListMax = frame.fragSizeListMax;
+    input.maxDupBondsPrefix(fragSizeListMax, maxFragSize, frame.targetMasks);
     if (searchShouldStop()) return;
 
     /// Begin iterating through the enumerated duplicatable fragments
-    assemblyState candidate;
-    candidate.reserveFragments(input.fragments.size() + 2);
-    for (int j = stmapVector.size() - 1; j >= 0; j--)
+    assemblyState &candidate = frame.candidate;
+    for (size_t levelIndex = frame.duplicateLevelCount; levelIndex > 0;)
     {
+        --levelIndex;
         if (searchShouldStop()) return;
-        dagDuplicateClassLevel &stmap = stmapVector[j];
-        vector<EdgeMask> stmapMaskList(input.fragments.size(), 0);
-        vi unrestrictedParentTotals;
-        vi pairGenericBoundCache;
-        EdgeMask maskM = 0;
+        dagDuplicateClassLevel &stmap = frame.duplicateLevels[levelIndex];
+        frame.aggregateMasks.reset(input.fragments.size() + 2);
+        span<EdgeMaskAccumulator> stmapMaskList =
+            frame.aggregateMasks.span().first(input.fragments.size());
+        EdgeMaskAccumulator &maskC =
+            frame.aggregateMasks[input.fragments.size()];
+        EdgeMaskAccumulator &maskM =
+            frame.aggregateMasks[input.fragments.size() + 1];
+        vi &unrestrictedParentTotals = frame.unrestrictedParentTotals;
+        vi &pairGenericBoundCache = frame.pairGenericBoundCache;
+        unrestrictedParentTotals.clear();
+        pairGenericBoundCache.clear();
         for (auto &entry : stmap.classes)
         {
             if (searchShouldStop()) return;
             dagDuplicateSet &ss = entry.duplicates;
             if (!ss.dead)
             {
-            EdgeMask maskC = 0;
+            maskC.clear();
+            const duplicateFragmentMaskList duplicateMasks =
+                stmap.fragmentMasks(entry);
             
-            for (size_t i = 0; i < ss.maskList.size(); i++)
+            for (const duplicateFragmentMaskEntry duplicateMask : duplicateMasks)
             {
                 if (searchShouldStop()) return;
-                maskC |= ss.maskList[i];
-                stmapMaskList[i] |= ss.maskList[i];
+                maskC |= duplicateMask.mask;
+                stmapMaskList[duplicateMask.fragment] |= duplicateMask.mask;
             }
             maskM |= maskC;
             int dupBondsMaxFrag = input.maxDupBonds(ss.size, stmapMaskList);
@@ -1203,7 +1221,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             (
                                 matchingClassBound = input.maxDupBonds(
                                     ss.size,
-                                    ss.maskList
+                                    duplicateMasks
                                 )
                             ) <= pairBoundLimit
                         )
@@ -1231,7 +1249,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                 {
                                     matchingClassBound = input.maxDupBonds(
                                         ss.size,
-                                        ss.maskList
+                                        duplicateMasks
                                     );
                                 }
                                 targetedBoundsFit =
@@ -1447,6 +1465,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             shouldVisitFragmentPairBlocks(
                                 input,
                                 ss,
+                                duplicateMasks,
                                 dupBondsMaxFrag,
                                 pairBoundLimit,
                                 matchingClassBound
@@ -1486,7 +1505,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                                 matchingClassBound =
                                                     input.maxDupBonds(
                                                         ss.size,
-                                                        ss.maskList
+                                                        duplicateMasks
                                                     );
                                             }
                                             targetedBoundsFit =

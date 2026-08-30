@@ -79,6 +79,91 @@ struct assemblyPathWitness
     vector<assemblyPathStep> best;
 };
 
+/** Row-major aggregate masks whose backing allocations survive frame reuse. */
+struct flatEdgeMaskAccumulatorTable
+{
+    EdgeMaskAccumulatorBuffer masks;
+    size_t rows = 0;
+    size_t columns = 0;
+
+    void reset(size_t columnCount)
+    {
+        masks.clear();
+        rows = 0;
+        columns = columnCount;
+    }
+
+    span<EdgeMaskAccumulator> appendRow()
+    {
+        if (
+            columns != 0 &&
+            rows == numeric_limits<size_t>::max() / columns
+        ) throw length_error("aggregate mask table exceeds capacity");
+        const size_t offset = rows * columns;
+        masks.resize(offset + columns);
+        ++rows;
+        return masks.span().subspan(offset, columns);
+    }
+
+    span<EdgeMaskAccumulator> row(size_t index)
+    {
+        if (index >= rows) throw out_of_range("aggregate mask row");
+        return masks.span().subspan(index * columns, columns);
+    }
+
+    span<const EdgeMaskAccumulator> row(size_t index) const
+    {
+        if (index >= rows) throw out_of_range("aggregate mask row");
+        return masks.span().subspan(index * columns, columns);
+    }
+
+    size_t maskCount(size_t rowIndex, size_t columnIndex) const
+    {
+        if (rowIndex >= rows || columnIndex >= columns)
+            throw out_of_range("aggregate mask cell");
+        return masks[rowIndex * columns + columnIndex].count();
+    }
+};
+
+/** Mutable storage reused by one worker at one active recursive depth. */
+struct dagAssemblySearchFrame
+{
+    vector<dagDuplicateClassLevel> duplicateLevels;
+    size_t duplicateLevelCount = 0;
+    flatEdgeMaskAccumulatorTable targetMasks;
+    EdgeMaskAccumulatorBuffer aggregateMasks;
+    vi fragSizeListMax;
+    vi unrestrictedParentTotals;
+    vi pairGenericBoundCache;
+    assemblyState candidate;
+
+    void reset(size_t fragmentCount)
+    {
+        for (dagDuplicateClassLevel &level : duplicateLevels)
+            level.reset(fragmentCount);
+        duplicateLevelCount = 0;
+        targetMasks.reset(fragmentCount);
+        aggregateMasks.reset(fragmentCount + 2);
+        fragSizeListMax.clear();
+        unrestrictedParentTotals.clear();
+        pairGenericBoundCache.clear();
+        candidate.clearFragments();
+        candidate.reserveFragments(fragmentCount + 2);
+    }
+
+    dagDuplicateClassLevel &appendDuplicateLevel(size_t fragmentCount)
+    {
+        if (duplicateLevelCount == duplicateLevels.size())
+        {
+            duplicateLevels.emplace_back();
+            duplicateLevels.back().reset(fragmentCount);
+        }
+        dagDuplicateClassLevel &level =
+            duplicateLevels[duplicateLevelCount++];
+        return level;
+    }
+};
+
 inline ASSEMBLYCPP_SEARCH_LOCAL sharedAssemblyTranspositionTable
     *sharedAssemblyStates = nullptr;
 inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t sharedAssemblyWorkerIndex = 0;
@@ -90,6 +175,8 @@ struct assemblySearchStorage
     assemblyPathWitness *pathway = nullptr;
     duplicateClassIndexWorkspace duplicateClassIndex;
     vi candidateKey;
+    deque<dagAssemblySearchFrame> recursiveFrames;
+    size_t recursiveDepth = 0;
 
     explicit assemblySearchStorage(assemblyPathWitness *_pathway = nullptr):
         states(1024),
@@ -103,6 +190,21 @@ struct assemblySearchStorage
             pathway->current.reserve(univEdgeList.size());
             pathway->best.reserve(univEdgeList.size());
         }
+    }
+
+    dagAssemblySearchFrame &acquireRecursiveFrame(size_t fragmentCount)
+    {
+        if (recursiveDepth == recursiveFrames.size())
+            recursiveFrames.emplace_back();
+        dagAssemblySearchFrame &frame = recursiveFrames[recursiveDepth++];
+        frame.reset(fragmentCount);
+        return frame;
+    }
+
+    void releaseRecursiveFrame() noexcept
+    {
+        if (recursiveDepth == 0) terminate();
+        --recursiveDepth;
     }
 
     /** L1-first lookup for searches configured with a process-shared L2. */
@@ -138,6 +240,30 @@ struct assemblySearchStorage
         }
         return sharedResult.outcome;
     }
+};
+
+/** Balance frame depth on every recursive exit, including cancellation. */
+struct dagAssemblySearchFrameScope
+{
+    assemblySearchStorage &storage;
+    dagAssemblySearchFrame &frame;
+
+    dagAssemblySearchFrameScope(
+        assemblySearchStorage &_storage,
+        size_t fragmentCount
+    ):
+        storage(_storage),
+        frame(storage.acquireRecursiveFrame(fragmentCount)) {}
+
+    ~dagAssemblySearchFrameScope()
+    {
+        storage.releaseRecursiveFrame();
+    }
+
+    dagAssemblySearchFrameScope(const dagAssemblySearchFrameScope &) = delete;
+    dagAssemblySearchFrameScope &operator=(
+        const dagAssemblySearchFrameScope &
+    ) = delete;
 };
 
 /**

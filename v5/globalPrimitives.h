@@ -51,6 +51,19 @@ struct assemblyFragment
         connected = false;
         return true;
     }
+
+    /** Retain aggregate-mask words without materialising an owning wide mask. */
+    [[gnu::always_inline]] bool retainEdges(
+        const EdgeMaskAccumulator &allowedMask
+    )
+    {
+        if (allowedMask.intersectionCount(mask) == edgeCount) return false;
+        mask.intersectWords(allowedMask);
+        edgeCount = static_cast<uint32_t>(mask.count());
+        canonicalId = unknownCanonicalId;
+        connected = false;
+        return true;
+    }
 };
 
 static_assert(sizeof(assemblyFragment) == 2 * sizeof(uint64_t));

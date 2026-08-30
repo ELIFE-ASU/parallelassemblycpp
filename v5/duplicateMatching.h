@@ -389,46 +389,27 @@ struct validMatchings
     maxFragSize(_maxFragSize) {}
 };
 
-template<typename potentialDuplicate>
+template<typename PotentialDuplicate>
 struct duplicateSet
 {
+    using occurrence_type = PotentialDuplicate;
+
     /// @brief bitset count of the duplicates in the duplicate set
-    size_t size;
-    /// @brief fragment masks from the assembly states
-    vector<EdgeMask> maskList;
-    /// @brief list of potential duplicates
-    vector<potentialDuplicate> list;
-    duplicateSet(size_t _size, size_t fragments)
-    {
-        size = _size; maskList.resize(fragments);
-    }
+    size_t size = 0;
+    /// @brief total fragments in the assembly state (including empty CSR rows)
+    size_t fragmentCount = 0;
+    /// @brief stable occurrence slice owned by the enclosing class level
+    span<PotentialDuplicate> list;
 
     /**
-     * @brief Insert a potential duplicate into the list
-     */
-    void insert(potentialDuplicate m)
-    {
-        maskList[m.fragment] |= m.mask;
-        list.push_back(std::move(m));
-    }
-
-    /**
-     * @brief Check if there is a valid matching in the current maskList
+     * @brief Check whether the sealed class contains a valid matching
      *
      * @return true if there is such a matching
      * @return false otherwise
      */
     bool isValid()
     {
-        int count = 0, last = 0;
-        for (size_t i = 0; i < maskList.size(); i++)
-        {
-            if (searchShouldStop()) return false;
-            if (maskList[i] != 0) {count++; last = i;}
-        }
-        if (count > 1) return true;
-        if (maskList[last].count() < (size<<1)) return false;
-        return true;
+        return valid;
     }
     
     /**
@@ -683,16 +664,27 @@ struct duplicateSet
      */
     bool occurrencesSpanMultipleFragments()
     {
-        bool foundFragment = false;
-        for (const EdgeMask &mask : maskList)
-        {
-            if (searchShouldStop()) return false;
-            if (mask == 0) continue;
-            if (foundFragment) return true;
-            foundFragment = true;
-        }
-        return false;
+        return spansMultipleFragments;
     }
+
+    void bind(
+        size_t duplicateSize,
+        size_t fragments,
+        span<PotentialDuplicate> occurrences,
+        bool isValidClass,
+        bool spansFragments
+    ) noexcept
+    {
+        size = duplicateSize;
+        fragmentCount = fragments;
+        list = occurrences;
+        valid = isValidClass;
+        spansMultipleFragments = spansFragments;
+    }
+
+private:
+    bool valid = false;
+    bool spansMultipleFragments = false;
 };
 
 /**
@@ -715,7 +707,8 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
     size_t &retainedStateCount,
     vector<initialDagLevel> &tempDag,
     const vector<assemblyFragment> &fragments,
-    const initialIncidentEdgeIndex &incidentEdges)
+    const initialIncidentEdgeIndex &incidentEdges,
+    vector<uint8_t> &aliveScratch)
     {
         bool output = 0;
         const bool allAlive = occurrencesSpanMultipleFragments();
@@ -748,7 +741,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
             return output;
         }
 
-        vb alive(list.size(), 0);
+        aliveScratch.assign(list.size(), 0);
         for (size_t i = 0; i < list.size(); i++)
         {
             if (searchShouldStop()) return output;
@@ -760,17 +753,17 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
                 {
                     if (list[i].mask.disjoint(list[j].mask))
                     {
-                        alive[i] = 1;
-                        alive[j] = 1;
+                        aliveScratch[i] = 1;
+                        aliveScratch[j] = 1;
                     }
                 }
                 else
                 {
-                    alive[i] = 1;
-                    alive[j] = 1;
+                    aliveScratch[i] = 1;
+                    aliveScratch[j] = 1;
                 }
             }
-            if (alive[i])
+            if (aliveScratch[i])
             {
                 if (!populateDAG(list[i])) return output;
             }
@@ -789,6 +782,137 @@ struct dagDuplicateSet : duplicateSet<potentialDuplicate>
     using duplicateSet::duplicateSet;
 };
 
+/** One non-empty fragment union in a duplicate class's sparse mask row. */
+struct duplicateFragmentMaskEntry
+{
+    size_t fragment;
+    const EdgeMaskAccumulator &mask;
+};
+
+/** Metadata stored separately from the level-wide accumulator buffer. */
+struct duplicateFragmentMaskRow
+{
+    uint32_t fragment;
+};
+
+/**
+ * @brief Read-only sparse fragment-mask row backed by one class level.
+ *
+ * Entries are sorted by fragment index. Iteration visits only fragments which
+ * contain an occurrence, while fragmentCount retains the dense assembly-state
+ * domain required by child enumeration and bound calculations.
+ */
+class duplicateFragmentMaskList
+{
+public:
+    class iterator
+    {
+    public:
+        using difference_type = ptrdiff_t;
+        using value_type = duplicateFragmentMaskEntry;
+        using iterator_category = forward_iterator_tag;
+
+        iterator &operator++() noexcept
+        {
+            ++position;
+            return *this;
+        }
+
+        iterator operator++(int) noexcept
+        {
+            iterator previous = *this;
+            ++*this;
+            return previous;
+        }
+
+        bool operator==(const iterator &other) const noexcept
+        {
+            return position == other.position;
+        }
+
+        duplicateFragmentMaskEntry operator*() const
+        {
+            return {
+                rows[position].fragment,
+                (*accumulators)[accumulatorOffset + position]
+            };
+        }
+
+    private:
+        friend class duplicateFragmentMaskList;
+
+        iterator(
+            span<const duplicateFragmentMaskRow> _rows,
+            const EdgeMaskAccumulatorBuffer *_accumulators,
+            size_t _accumulatorOffset,
+            size_t _position
+        ):
+            rows(_rows),
+            accumulators(_accumulators),
+            accumulatorOffset(_accumulatorOffset),
+            position(_position) {}
+
+        span<const duplicateFragmentMaskRow> rows;
+        const EdgeMaskAccumulatorBuffer *accumulators = nullptr;
+        size_t accumulatorOffset = 0;
+        size_t position = 0;
+    };
+
+    size_t fragmentCount = 0;
+
+    bool empty() const noexcept {return rows.empty();}
+    size_t size() const noexcept {return rows.size();}
+
+    iterator begin() const
+    {
+        return iterator(rows, accumulators, accumulatorOffset, 0);
+    }
+
+    iterator end() const
+    {
+        return iterator(rows, accumulators, accumulatorOffset, rows.size());
+    }
+
+    duplicateFragmentMaskEntry operator[](size_t position) const
+    {
+        return *iterator(rows, accumulators, accumulatorOffset, position);
+    }
+
+    size_t maskCount(size_t fragment) const
+    {
+        const auto entry = lower_bound(
+            rows.begin(),
+            rows.end(),
+            fragment,
+            [](const duplicateFragmentMaskRow &candidate, size_t value)
+            {
+                return candidate.fragment < value;
+            }
+        );
+        if (entry == rows.end() || entry->fragment != fragment) return 0;
+        const size_t position = static_cast<size_t>(entry - rows.begin());
+        return (*accumulators)[accumulatorOffset + position].count();
+    }
+
+private:
+    template<typename> friend struct duplicateClassLevel;
+
+    duplicateFragmentMaskList(
+        size_t _fragmentCount,
+        span<const duplicateFragmentMaskRow> _rows,
+        const EdgeMaskAccumulatorBuffer &_accumulators,
+        size_t _accumulatorOffset
+    ):
+        fragmentCount(_fragmentCount),
+        rows(_rows),
+        accumulators(&_accumulators),
+        accumulatorOffset(_accumulatorOffset) {}
+
+    span<const duplicateFragmentMaskRow> rows;
+    const EdgeMaskAccumulatorBuffer *accumulators = nullptr;
+    size_t accumulatorOffset = 0;
+};
+
 /** @brief One compact canonical-class bucket in an enumeration level. */
 template<typename DuplicateSetType>
 struct duplicateClassEntry
@@ -796,37 +920,328 @@ struct duplicateClassEntry
     int canonicalId;
     DuplicateSetType duplicates;
 
-    duplicateClassEntry(
-        int _canonicalId,
-        size_t duplicateSize,
-        size_t fragmentCount
-    ):
-        canonicalId(_canonicalId),
-        duplicates(duplicateSize, fragmentCount) {}
+    explicit duplicateClassEntry(int _canonicalId): canonicalId(_canonicalId) {}
+
+private:
+    template<typename> friend struct duplicateClassLevel;
+
+    static constexpr uint32_t noOccurrence =
+        numeric_limits<uint32_t>::max();
+    uint32_t firstOccurrence = noOccurrence;
+    uint32_t lastOccurrence = noOccurrence;
+    uint32_t occurrenceCount = 0;
+    size_t maskOffset = 0;
+    size_t maskCount = 0;
 };
 
 /**
- * @brief Compact duplicate classes, sealed in ascending canonical-ID order.
+ * @brief Compact duplicate classes with flat occurrences and CSR mask rows.
+ *
+ * Insertions append to one level-wide staging vector and link occurrences by
+ * primitive indices. seal() sorts class metadata by canonical ID, moves every
+ * class into one stable occurrence vector without changing its insertion
+ * order, and constructs sparse fragment-union rows in flat accumulator storage.
  */
 template<typename DuplicateSetType>
 struct duplicateClassLevel
 {
-    vector<duplicateClassEntry<DuplicateSetType>> classes;
+    using occurrence_type = typename DuplicateSetType::occurrence_type;
+    using entry_type = duplicateClassEntry<DuplicateSetType>;
+
+    class appender
+    {
+    public:
+        void insert(occurrence_type occurrence)
+        {
+            level->insert(position, std::move(occurrence));
+        }
+
+    private:
+        friend struct duplicateClassLevel;
+
+        appender(duplicateClassLevel &_level, uint32_t _position):
+            level(&_level), position(_position) {}
+
+        duplicateClassLevel *level;
+        uint32_t position;
+    };
+
+    vector<entry_type> classes;
+    vector<uint8_t> aliveScratch;
 
     bool empty() const noexcept {return classes.empty();}
     size_t size() const noexcept {return classes.size();}
+    size_t fragmentCount() const noexcept {return fragmentCountValue;}
+
+    duplicateFragmentMaskList fragmentMasks(const entry_type &entry) const
+    {
+        const duplicateFragmentMaskRow *rowData = entry.maskCount == 0
+            ? nullptr
+            : maskRows.data() + entry.maskOffset;
+        return duplicateFragmentMaskList(
+            fragmentCountValue,
+            span<const duplicateFragmentMaskRow>(rowData, entry.maskCount),
+            maskAccumulators,
+            entry.maskOffset
+        );
+    }
+
+    /** Clear one reusable level without releasing any vector capacity. */
+    void reset()
+    {
+        classes.clear();
+        stagedOccurrences.clear();
+        sealedOccurrences.clear();
+        occurrenceOffsets.clear();
+        maskRows.clear();
+        maskOffsets.clear();
+        fragmentPositions.clear();
+        aliveScratch.clear();
+        maskAccumulators.reset(0);
+        duplicateSizeValue = 0;
+        fragmentCountValue = 0;
+        configured = false;
+        fragmentCountPreset = false;
+        sealed = false;
+    }
+
+    /** Reset and retain the assembly fragment domain for an empty level too. */
+    void reset(size_t fragments)
+    {
+        reset();
+        fragmentCountValue = fragments;
+        fragmentCountPreset = true;
+    }
 
     void seal()
     {
-        if (classes.size() < 2) return;
-        sort(
-            classes.begin(),
-            classes.end(),
-            [](const auto &left, const auto &right)
+        if (sealed) return;
+        if (classes.size() > 1)
+        {
+            sort(
+                classes.begin(),
+                classes.end(),
+                [](const entry_type &left, const entry_type &right)
+                {
+                    return left.canonicalId < right.canonicalId;
+                }
+            );
+        }
+
+        compactOccurrences();
+        buildFragmentMasks();
+        stagedOccurrences.clear();
+        sealed = true;
+    }
+
+    appender appendTo(uint32_t position)
+    {
+        if (sealed) throw logic_error("sealed duplicate-class level modified");
+        if (position >= classes.size())
+            throw logic_error("duplicate-class position is outside its level");
+        return appender(*this, position);
+    }
+
+    void prepare(size_t duplicateSize, size_t fragments)
+    {
+        if (sealed) throw logic_error("sealed duplicate-class level modified");
+        if (!configured)
+        {
+            if (fragmentCountPreset && fragmentCountValue != fragments)
             {
-                return left.canonicalId < right.canonicalId;
+                throw logic_error("inconsistent duplicate-class fragment count");
             }
+            duplicateSizeValue = duplicateSize;
+            fragmentCountValue = fragments;
+            configured = true;
+            return;
+        }
+        if (
+            duplicateSizeValue != duplicateSize ||
+            fragmentCountValue != fragments
+        )
+        {
+            throw logic_error("inconsistent duplicate-class level shape");
+        }
+    }
+
+private:
+    struct stagedOccurrence
+    {
+        occurrence_type occurrence;
+        uint32_t next = entry_type::noOccurrence;
+
+        explicit stagedOccurrence(occurrence_type _occurrence):
+            occurrence(std::move(_occurrence)) {}
+    };
+
+    vector<stagedOccurrence> stagedOccurrences;
+    vector<occurrence_type> sealedOccurrences;
+    vector<size_t> occurrenceOffsets;
+    vector<duplicateFragmentMaskRow> maskRows;
+    vector<size_t> maskOffsets;
+    vector<size_t> fragmentPositions;
+    EdgeMaskAccumulatorBuffer maskAccumulators;
+    size_t duplicateSizeValue = 0;
+    size_t fragmentCountValue = 0;
+    bool configured = false;
+    bool fragmentCountPreset = false;
+    bool sealed = false;
+
+    void insert(uint32_t classPosition, occurrence_type occurrence)
+    {
+        if (sealed) throw logic_error("sealed duplicate-class level modified");
+        if (classPosition >= classes.size())
+            throw logic_error("duplicate-class position is outside its level");
+        if (
+            occurrence.fragment < 0 ||
+            static_cast<size_t>(occurrence.fragment) >= fragmentCountValue
+        )
+        {
+            throw logic_error("duplicate occurrence fragment is outside its level");
+        }
+        if (stagedOccurrences.size() >= entry_type::noOccurrence)
+            throw length_error("duplicate occurrences exceed index capacity");
+
+        entry_type &entry = classes[classPosition];
+        if (entry.occurrenceCount == entry_type::noOccurrence)
+            throw length_error("duplicate class exceeds occurrence capacity");
+        const uint32_t occurrenceIndex = static_cast<uint32_t>(
+            stagedOccurrences.size()
         );
+        stagedOccurrences.emplace_back(std::move(occurrence));
+        if (entry.lastOccurrence == entry_type::noOccurrence)
+        {
+            entry.firstOccurrence = occurrenceIndex;
+        }
+        else
+        {
+            stagedOccurrences[entry.lastOccurrence].next = occurrenceIndex;
+        }
+        entry.lastOccurrence = occurrenceIndex;
+        ++entry.occurrenceCount;
+    }
+
+    void compactOccurrences()
+    {
+        sealedOccurrences.clear();
+        sealedOccurrences.reserve(stagedOccurrences.size());
+        occurrenceOffsets.clear();
+        occurrenceOffsets.reserve(classes.size() + 1);
+
+        for (entry_type &entry : classes)
+        {
+            occurrenceOffsets.push_back(sealedOccurrences.size());
+            uint32_t occurrence = entry.firstOccurrence;
+            uint32_t observedCount = 0;
+            while (occurrence != entry_type::noOccurrence)
+            {
+                if (occurrence >= stagedOccurrences.size())
+                    throw logic_error("invalid staged duplicate occurrence");
+                stagedOccurrence &node = stagedOccurrences[occurrence];
+                sealedOccurrences.push_back(std::move(node.occurrence));
+                occurrence = node.next;
+                ++observedCount;
+            }
+            if (observedCount != entry.occurrenceCount)
+                throw logic_error("incomplete staged duplicate class");
+        }
+        occurrenceOffsets.push_back(sealedOccurrences.size());
+    }
+
+    void buildFragmentMasks()
+    {
+        constexpr size_t noPosition = numeric_limits<size_t>::max();
+        maskRows.clear();
+        maskOffsets.clear();
+        maskOffsets.reserve(classes.size() + 1);
+        fragmentPositions.assign(fragmentCountValue, noPosition);
+
+        for (size_t classPosition = 0;
+             classPosition < classes.size();
+             ++classPosition)
+        {
+            maskOffsets.push_back(maskRows.size());
+            const size_t occurrenceBegin = occurrenceOffsets[classPosition];
+            const size_t occurrenceEnd = occurrenceOffsets[classPosition + 1];
+            for (size_t occurrence = occurrenceBegin;
+                 occurrence < occurrenceEnd;
+                 ++occurrence)
+            {
+                const size_t fragment = static_cast<size_t>(
+                    sealedOccurrences[occurrence].fragment
+                );
+                if (fragmentPositions[fragment] != noPosition) continue;
+                fragmentPositions[fragment] = maskRows.size();
+                maskRows.push_back({static_cast<uint32_t>(fragment)});
+            }
+
+            const size_t maskBegin = maskOffsets.back();
+            sort(
+                maskRows.begin() + maskBegin,
+                maskRows.end(),
+                [](const auto &left, const auto &right)
+                {
+                    return left.fragment < right.fragment;
+                }
+            );
+            for (size_t row = maskBegin; row < maskRows.size(); ++row)
+                fragmentPositions[maskRows[row].fragment] = noPosition;
+        }
+        maskOffsets.push_back(maskRows.size());
+
+        maskAccumulators.reset(maskRows.size());
+        for (size_t classPosition = 0;
+             classPosition < classes.size();
+             ++classPosition)
+        {
+            const size_t maskBegin = maskOffsets[classPosition];
+            const size_t maskEnd = maskOffsets[classPosition + 1];
+            for (size_t row = maskBegin; row < maskEnd; ++row)
+                fragmentPositions[maskRows[row].fragment] = row;
+
+            const size_t occurrenceBegin = occurrenceOffsets[classPosition];
+            const size_t occurrenceEnd = occurrenceOffsets[classPosition + 1];
+            for (size_t occurrence = occurrenceBegin;
+                 occurrence < occurrenceEnd;
+                 ++occurrence)
+            {
+                const occurrence_type &candidate = sealedOccurrences[occurrence];
+                maskAccumulators[
+                    fragmentPositions[static_cast<size_t>(candidate.fragment)]
+                ].add(candidate.mask);
+            }
+            for (size_t row = maskBegin; row < maskEnd; ++row)
+                fragmentPositions[maskRows[row].fragment] = noPosition;
+        }
+
+        for (size_t classPosition = 0;
+             classPosition < classes.size();
+             ++classPosition)
+        {
+            entry_type &entry = classes[classPosition];
+            entry.maskOffset = maskOffsets[classPosition];
+            entry.maskCount = maskOffsets[classPosition + 1] - entry.maskOffset;
+            const size_t occurrenceBegin = occurrenceOffsets[classPosition];
+            const size_t occurrenceCount =
+                occurrenceOffsets[classPosition + 1] - occurrenceBegin;
+            occurrence_type *occurrenceData = occurrenceCount == 0
+                ? nullptr
+                : sealedOccurrences.data() + occurrenceBegin;
+            const bool spansFragments = entry.maskCount > 1;
+            const bool valid = spansFragments || (
+                entry.maskCount == 1 &&
+                maskAccumulators[entry.maskOffset].count() >=
+                    (duplicateSizeValue << 1)
+            );
+            entry.duplicates.bind(
+                duplicateSizeValue,
+                fragmentCountValue,
+                span<occurrence_type>(occurrenceData, occurrenceCount),
+                valid,
+                spansFragments
+            );
+        }
     }
 };
 
@@ -859,7 +1274,7 @@ struct duplicateClassIndexWorkspace
     }
 
     template<typename DuplicateSetType>
-    DuplicateSetType &getOrCreate(
+    typename duplicateClassLevel<DuplicateSetType>::appender getOrCreate(
         duplicateClassLevel<DuplicateSetType> &level,
         int canonicalId,
         size_t duplicateSize,
@@ -868,12 +1283,15 @@ struct duplicateClassIndexWorkspace
     {
         if (generation == 0) [[unlikely]]
             throw logic_error("duplicate-class level was not started");
+        level.prepare(duplicateSize, fragmentCount);
         if (
             !level.classes.empty() &&
             level.classes.back().canonicalId == canonicalId
         ) [[likely]]
         {
-            return level.classes.back().duplicates;
+            return level.appendTo(
+                static_cast<uint32_t>(level.classes.size() - 1)
+            );
         }
         const size_t id = static_cast<size_t>(canonicalId);
         if (canonicalId >= 0 && id < slots.size()) [[likely]]
@@ -881,24 +1299,21 @@ struct duplicateClassIndexWorkspace
             const slot &entry = slots[id];
             if (entry.generation == generation) [[likely]]
             {
-                return level.classes[entry.position].duplicates;
+                return level.appendTo(entry.position);
             }
         }
         return create(
             level,
-            canonicalId,
-            duplicateSize,
-            fragmentCount
+            canonicalId
         );
     }
 
 private:
     template<typename DuplicateSetType>
-    [[gnu::noinline]] DuplicateSetType &create(
+    [[gnu::noinline]]
+    typename duplicateClassLevel<DuplicateSetType>::appender create(
         duplicateClassLevel<DuplicateSetType> &level,
-        int canonicalId,
-        size_t duplicateSize,
-        size_t fragmentCount
+        int canonicalId
     )
     {
         if (generation == 0)
@@ -913,12 +1328,8 @@ private:
         slot &entry = slots[id];
         entry.generation = generation;
         entry.position = static_cast<uint32_t>(level.classes.size());
-        level.classes.emplace_back(
-            canonicalId,
-            duplicateSize,
-            fragmentCount
-        );
-        return level.classes.back().duplicates;
+        level.classes.emplace_back(canonicalId);
+        return level.appendTo(entry.position);
     }
 };
 
@@ -1001,11 +1412,12 @@ bool dagDuplicateGenerator(
     dagDuplicateSet &ds,
     dagDuplicateClassLevel &stmap,
     duplicateClassIndexWorkspace &classIndex,
-    vector<EdgeMask> &takenMasks,
+    span<EdgeMaskAccumulator> takenMasks,
     const vector<assemblyFragment> &stateFragments,
     int ordinal,
     bool &overweight,
-    bool last
+    bool last,
+    vector<uint8_t> &aliveScratch
 )
     {
         bool output = 0;
@@ -1015,7 +1427,7 @@ bool dagDuplicateGenerator(
         auto generateFromDuplicate = [&](potentialDuplicate &duplicate)
         {
             const int frag = duplicate.fragment;
-            takenMasks[frag] |= duplicate.mask;
+            takenMasks[frag].add(duplicate.mask);
             ds.dead = 0;
             if (!last)
             {
@@ -1027,7 +1439,7 @@ bool dagDuplicateGenerator(
                     stateFragments[frag].mask,
                     ds.size,
                     ordinal,
-                    ds.maskList.size()
+                    ds.fragmentCount
                 );
                 if (searchShouldStop()) return false;
                 output = 1;
@@ -1044,7 +1456,7 @@ bool dagDuplicateGenerator(
             return output;
         }
 
-        vb alive(ds.list.size(), 0);
+        aliveScratch.assign(ds.list.size(), 0);
         for (size_t i = 0; i < ds.list.size(); i++)
         {
             if (searchShouldStop()) return output;
@@ -1056,17 +1468,17 @@ bool dagDuplicateGenerator(
                 {
                     if (ds.list[i].mask.disjoint(ds.list[j].mask))
                     {
-                        alive[i] = 1;
-                        alive[j] = 1;
+                        aliveScratch[i] = 1;
+                        aliveScratch[j] = 1;
                     }
                 }
                 else
                 {
-                    alive[i] = 1;
-                    alive[j] = 1;
+                    aliveScratch[i] = 1;
+                    aliveScratch[j] = 1;
                 }
             }
-            if (alive[i])
+            if (aliveScratch[i])
             {
                 if (!generateFromDuplicate(ds.list[i])) return output;
             }
