@@ -72,7 +72,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             InputFlag::parallel,
             "parallel",
             "auto|on|off",
-            "auto",
+            "off",
             "Select parallel search automatically, require it, or disable it.",
             {}
         },

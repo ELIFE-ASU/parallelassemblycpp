@@ -1410,6 +1410,40 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
         working_directory = Path(temporary)
         input_name = "input.mol"
         shutil.copy2(high_work_case.source, working_directory / input_name)
+
+        # The default is serial even for high estimated work. A malformed
+        # parallel-only lease setting proves that no parallel setup was
+        # attempted when --parallel is omitted.
+        default_environment = environment.copy()
+        default_environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = "invalid"
+        try:
+            default_completed = run_command(
+                [
+                    str(openmp),
+                    input_name,
+                    "--pathway=0",
+                    "--threads=2",
+                ],
+                working_directory,
+                default_environment,
+                timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TestFailure(
+                f"{high_work_case.name}: default serial policy exceeded "
+                f"{timeout:g}s"
+            ) from error
+        require(
+            default_completed.returncode == 0,
+            f"{high_work_case.name}: default policy attempted parallel "
+            f"execution\n{format_completed(default_completed)}",
+        )
+        require(
+            fallback_prefix not in default_completed.stderr,
+            f"{high_work_case.name}: default-off policy reported a fallback\n"
+            f"{format_completed(default_completed)}",
+        )
+
         try:
             completed = run_command(
                 [
@@ -1454,8 +1488,9 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
         )
 
     print(
-        "PASS execution policy: auto/on/off, estimate/runtime/intermediate "
-        "fallbacks, hard errors, and sub-32-bond high-work selection"
+        "PASS execution policy: default-off, auto/on/off, "
+        "estimate/runtime/intermediate fallbacks, hard errors, and "
+        "sub-32-bond high-work selection"
     )
     return len(scenarios) + 1
 

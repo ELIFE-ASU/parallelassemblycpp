@@ -86,7 +86,7 @@ values are `0` or `1`.
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
-| `--parallel=<auto\|on\|off>` | `auto` | Select parallel search automatically, require it, or disable it. |
+| `--parallel=<auto\|on\|off>` | `off` | Select parallel search automatically, require it, or disable it. |
 | `--threads=<auto\|N>` | `auto` | Set the OpenMP thread count per process; `N` must be positive. |
 | `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from molfiles. |
 | `--verbose=<0\|1>` | `0` | Print the parsed input graph. |

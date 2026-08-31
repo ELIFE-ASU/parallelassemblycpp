@@ -404,6 +404,10 @@ def run_cli_checks(executable: Path) -> int:
         "--enum-max=<COUNT>",
         "--pathway=<0|1>",
         "--parallel=<auto|on|off>",
+        (
+            "Select parallel search automatically, require it, or disable it. "
+            "Default: off."
+        ),
         "--threads=<auto|N>",
         "--remove-hydrogens=<0|1>",
         "--verbose=<0|1>",

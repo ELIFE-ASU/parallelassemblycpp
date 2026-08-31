@@ -156,7 +156,7 @@ enum class parallelMode
     off
 };
 
-parallelMode parallelExecutionMode = parallelMode::automatic;
+parallelMode parallelExecutionMode = parallelMode::off;
 // Zero selects the OpenMP runtime default; positive values are per process.
 size_t parallelThreadCount = 0;
 ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
