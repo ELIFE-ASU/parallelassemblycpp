@@ -10,6 +10,8 @@ enum class InputFlag
     runtime,
     enumMax,
     pathway,
+    parallel,
+    threads,
     removeHydrogensFlag,
     verboseFlag,
     compensateDisjoint,
@@ -64,6 +66,22 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "0|1",
             "1",
             "Write recovered pathway JSON to INPUTPathway.",
+            {}
+        },
+        {
+            InputFlag::parallel,
+            "parallel",
+            "auto|on|off",
+            "auto",
+            "Select parallel search automatically, require it, or disable it.",
+            {}
+        },
+        {
+            InputFlag::threads,
+            "threads",
+            "auto|N",
+            "auto",
+            "Set the OpenMP thread count per process (N must be positive).",
             {}
         },
         {
@@ -167,6 +185,43 @@ bool parseBooleanFlag(const InputFlagDefinition& definition, const string& value
     );
 }
 
+parallelMode parseParallelModeFlag(
+    const InputFlagDefinition& definition,
+    const string& value
+)
+{
+    if (value == "auto") return parallelMode::automatic;
+    if (value == "on") return parallelMode::on;
+    if (value == "off") return parallelMode::off;
+    throw std::invalid_argument(
+        inputFlagLabel(definition) +
+        ": expected auto, on, or off; got '" + value + "'"
+    );
+}
+
+size_t parseParallelThreadCountFlag(
+    const InputFlagDefinition& definition,
+    const string& value
+)
+{
+    if (value == "auto") return 0;
+
+    const unsigned long long parsed = parseUnsignedFlag(definition, value);
+    if (
+        parsed < 1 ||
+        parsed > static_cast<unsigned long long>(std::numeric_limits<int>::max())
+    )
+    {
+        throw std::invalid_argument(
+            inputFlagLabel(definition) +
+            ": expected auto or an integer from 1 to " +
+            std::to_string(std::numeric_limits<int>::max()) +
+            "; got '" + value + "'"
+        );
+    }
+    return static_cast<size_t>(parsed);
+}
+
 void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 {
     switch (definition.flag)
@@ -195,6 +250,14 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 
         case InputFlag::pathway:
             isPathway = parseBooleanFlag(definition, value);
+            break;
+
+        case InputFlag::parallel:
+            parallelExecutionMode = parseParallelModeFlag(definition, value);
+            break;
+
+        case InputFlag::threads:
+            parallelThreadCount = parseParallelThreadCountFlag(definition, value);
             break;
 
         case InputFlag::removeHydrogensFlag:

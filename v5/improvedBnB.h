@@ -886,7 +886,7 @@ template<bool trackPath>
 void recordImprovedAssemblyIndex(
     assemblyState &input,
     int &AI,
-    const assemblySearchStorage &searchStorage
+    assemblySearchStorage &searchStorage
 )
 {
     if (sharedAssemblyIndex != nullptr)
@@ -916,7 +916,13 @@ void recordImprovedAssemblyIndex(
             distributedSearchProgressCountdown = 0;
     }
     if constexpr (trackPath)
+    {
         searchStorage.pathway->best = searchStorage.pathway->current;
+        if (
+            searchStorage.stopAtPathwayTarget &&
+            candidate == searchStorage.pathwayTargetAssemblyIndex
+        ) searchStorage.pathwayTargetReached = true;
+    }
     const unsigned long long time = elapsedClockTicks();
     if (!suppressSearchOutput)
     {
@@ -1084,7 +1090,11 @@ bool continueCanonicalAssemblySearchWithWorkspace(
             searchStorage
         );
     }
-    if constexpr (trackPath) searchStorage.pathway->current.pop_back();
+    if constexpr (trackPath)
+    {
+        searchStorage.pathway->current.pop_back();
+        if (searchStorage.pathwayTargetReached) return false;
+    }
     return !searchShouldStop();
 }
 
@@ -1150,6 +1160,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     const bool usePairBound =
         fragmentationWorkspace.edgeCount >= pairBoundMinimumMoleculeEdges;
     recordImprovedAssemblyIndex<trackPath>(input, AI, searchStorage);
+    if constexpr (trackPath)
+    {
+        if (searchStorage.pathwayTargetReached) return;
+    }
     if (searchShouldStop()) return;
 
     dagAssemblySearchFrameScope frameScope(
@@ -1679,6 +1693,10 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
 )
 {
     recordImprovedAssemblyIndex<trackPath>(input, AI, searchStorage);
+    if constexpr (trackPath)
+    {
+        if (searchStorage.pathwayTargetReached) return;
+    }
     if (searchShouldStop()) return;
 
     vector<initialDuplicateClassLevel> stmapVector;
@@ -2076,8 +2094,7 @@ bool buildRootJobDescriptors(
  */
 void prepareParallelSearchContext(
     molGraph &mg,
-    SearchContext &context,
-    std::size_t localWorkerCount
+    SearchContext &context
 )
 {
     sharedTargetMolecule = nullptr;
@@ -2098,10 +2115,14 @@ void prepareParallelSearchContext(
     clearTreeCanonInterner();
     intermediateMAs.clear();
 
+    context.originalMolecule = mg;
+    context.originalEdges = mg.writeEdgeList();
+    originalMolecule = context.originalMolecule;
+    originalEdgeList = context.originalEdges;
     totalBonds = mg.totalBonds;
     disjointFragments = mg.disjointFragments();
-    vector<edgeL> removedEdges;
-    targetMolecule = preprocessWriteback(mg, removedEdges);
+    context.removedEdges.clear();
+    targetMolecule = preprocessWriteback(mg, context.removedEdges);
     univEdgeList = targetMolecule.writeEdgeList();
     prepareCanonicalisationGraph(targetMolecule, univEdgeList);
 
@@ -2156,21 +2177,13 @@ void prepareParallelSearchContext(
     // Locking cannot repay its fixed setup cost on short or low-reuse graphs.
     // Small homogeneous paths also finish almost entirely in their dedicated
     // root-equivalence pass; larger frontiers leave enough work for L2 reuse.
-    const bool useSharedReuse =
-        localWorkerCount > 1 &&
+    context.sharedReuseEligible =
         univEdgeList.size() > 30 &&
         graphHashMap.size() <= bitsetHashTable.size() / 2 &&
         (
             context.homogeneousPathEdgePositions.empty() ||
             context.rootJobs.size() >= 10000
         );
-    if (useSharedReuse)
-    {
-        context.canonicalRegistry =
-            make_unique<sharedCanonicalIdRegistry>(graphHashMap.size());
-        context.sharedStates =
-            make_unique<sharedAssemblyTranspositionTable>(localWorkerCount);
-    }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
 #endif
@@ -2203,6 +2216,23 @@ void prepareParallelSearchContext(
 
     context.processedMolecule = std::move(targetMolecule);
     context.universeEdges = std::move(univEdgeList);
+}
+
+/** Allocate parallel-only shared caches after the prepared-work decision. */
+void configureParallelSharedReuse(
+    SearchContext &context,
+    std::size_t localWorkerCount
+)
+{
+    context.canonicalRegistry.reset();
+    context.sharedStates.reset();
+    if (!context.sharedReuseEligible || localWorkerCount <= 1) return;
+
+    context.canonicalRegistry = make_unique<sharedCanonicalIdRegistry>(
+        context.canonicalSeed.graphHashes.size()
+    );
+    context.sharedStates =
+        make_unique<sharedAssemblyTranspositionTable>(localWorkerCount);
 }
 
 /** Configure only thread-local state from an immutable, mask-free context. */
@@ -2323,7 +2353,11 @@ EdgeMask reconstructRootOccurrence(
     );
 }
 
-template<matchingEquivalenceMode equivalenceMode, bool useSharedStates>
+template<
+    matchingEquivalenceMode equivalenceMode,
+    bool trackPath,
+    bool useSharedStates
+>
 bool runParallelRootJobImpl(
     const SearchContext &context,
     size_t jobIndex,
@@ -2379,8 +2413,8 @@ bool runParallelRootJobImpl(
     // so only their first/best encounter proceeds into recursive search.
     return continueAssemblySearchWithWorkspace<
         equivalenceMode,
-        false,
-        true,
+        trackPath,
+        !trackPath,
         useSharedStates
     >(
         context.dag,
@@ -2394,7 +2428,7 @@ bool runParallelRootJobImpl(
     );
 }
 
-template<bool useSharedStates>
+template<bool trackPath, bool useSharedStates>
 bool runParallelRootJob(
     const SearchContext &context,
     size_t jobIndex,
@@ -2405,11 +2439,13 @@ bool runParallelRootJob(
     {
         return runParallelRootJobImpl<
             matchingEquivalenceMode::homogeneousPath,
+            trackPath,
             useSharedStates
         >(context, jobIndex, worker);
     }
     return runParallelRootJobImpl<
         matchingEquivalenceMode::none,
+        trackPath,
         useSharedStates
     >(context, jobIndex, worker);
 }
@@ -2421,7 +2457,7 @@ void warmStartParallelIncumbent(
     WorkerContext &worker
 )
 {
-    if (jobIndex >= context.rootJobs.size()) return;
+    if (jobIndex >= context.rootJobs.size() || searchShouldStop()) return;
     const rootJobDescriptor &job = context.rootJobs[jobIndex];
     const rootOccurrenceDescriptor &firstOccurrence =
         context.rootOccurrences[job.firstOccurrence];
@@ -2444,6 +2480,7 @@ void warmStartParallelIncumbent(
         worker.candidate,
         worker.fragmentation
     );
+    if (searchShouldStop()) return;
     worker.candidate.sumDupBonds = matching.maxFragSize - 1;
     recordImprovedAssemblyIndex<false>(
         worker.candidate,
@@ -2593,7 +2630,7 @@ void runParallelRootJobs(
                 bool completed = false;
                 try
                 {
-                    completed = runParallelRootJob<useSharedStates>(
+                    completed = runParallelRootJob<false, useSharedStates>(
                         context,
                         jobIndex,
                         worker

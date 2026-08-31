@@ -147,6 +147,18 @@ bool verbose = false;
 bool disjointCompensation = false;
 bool memTest = false;
 bool writeIntermediateMAs = false;
+
+/** User policy for selecting the parallel search implementation. */
+enum class parallelMode
+{
+    automatic,
+    on,
+    off
+};
+
+parallelMode parallelExecutionMode = parallelMode::automatic;
+// Zero selects the OpenMP runtime default; positive values are per process.
+size_t parallelThreadCount = 0;
 ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
 ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
 ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>> intermediateMAs;

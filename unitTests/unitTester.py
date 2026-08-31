@@ -403,6 +403,8 @@ def run_cli_checks(executable: Path) -> int:
         "--runtime=<TICKS>",
         "--enum-max=<COUNT>",
         "--pathway=<0|1>",
+        "--parallel=<auto|on|off>",
+        "--threads=<auto|N>",
         "--remove-hydrogens=<0|1>",
         "--verbose=<0|1>",
         "--compensate-disjoint=<0|1>",
@@ -504,11 +506,43 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
+        valid_execution_options = (
+            "--parallel=auto",
+            "--parallel=on",
+            "--parallel=off",
+            "--threads=auto",
+            "--threads=1",
+            "--threads=2147483647",
+        )
+        for option in valid_execution_options:
+            completed = run_cli_command(
+                executable, ["--help", option], working_directory
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"execution option {option!r} should be accepted",
+                completed,
+            )
+            scenarios += 1
+
         invalid_cases = [
             (["input", "--does-not-exist=1"], "unknown option"),
             (["input", "--pathway"], "requires a value"),
             (["input", "--pathway="], "expected 0 or 1"),
             (["input", "--pathway=2"], "expected 0 or 1"),
+            (["input", "--parallel"], "requires a value"),
+            (["input", "--parallel="], "expected auto, on, or off"),
+            (["input", "--parallel=ON"], "expected auto, on, or off"),
+            (["input", "--parallel=1"], "expected auto, on, or off"),
+            (["input", "--threads"], "requires a value"),
+            (["input", "--threads="], "expected a non-negative integer"),
+            (["input", "--threads=0"], "expected auto or an integer from 1"),
+            (["input", "--threads=-1"], "expected a non-negative integer"),
+            (["input", "--threads=2junk"], "expected a non-negative integer"),
+            (
+                ["input", "--threads=2147483648"],
+                "expected auto or an integer from 1",
+            ),
             (["input", "--remove-hydrogens=yes"], "expected 0 or 1"),
             (["input", "--verbose=2"], "expected 0 or 1"),
             (["input", "--enum-max=0"], "expected an integer from 1"),
@@ -517,6 +551,14 @@ def run_cli_checks(executable: Path) -> int:
             (["input", f"--runtime={'9' * 100}"], "non-negative integer"),
             (
                 ["input", "--pathway=0", "--pathway=1"],
+                "may be specified only once",
+            ),
+            (
+                ["input", "--parallel=auto", "--parallel=off"],
+                "may be specified only once",
+            ),
+            (
+                ["input", "--threads=auto", "--threads=2"],
                 "may be specified only once",
             ),
             (["first-input", "second-input"], "expected one INPUT"),
@@ -550,6 +592,8 @@ def run_cli_checks(executable: Path) -> int:
             "--runtime=1000000000",
             "--enum-max=1000000",
             "--pathway=0",
+            "--parallel=off",
+            "--threads=2",
             "--remove-hydrogens=0",
             "--verbose=0",
             "--compensate-disjoint=1",

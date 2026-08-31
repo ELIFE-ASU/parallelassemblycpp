@@ -214,18 +214,7 @@ struct ParallelReplicaResult
 #endif
 };
 
-size_t parallelMinimumBonds()
-{
-    constexpr size_t defaultMinimum = 32;
-    const char *configured = std::getenv("ASSEMBLYCPP_PARALLEL_MIN_BONDS");
-    if (configured == nullptr || *configured == '\0') return defaultMinimum;
-
-    size_t result = 0;
-    const char *end = configured + std::char_traits<char>::length(configured);
-    const auto parsed = std::from_chars(configured, end, result);
-    if (parsed.ec != std::errc() || parsed.ptr != end) return defaultMinimum;
-    return result;
-}
+constexpr uint64_t parallelAutomaticMinimumWorkUnits = UINT64_C(32768);
 
 bool configuredParallelBranchLeaseSize(size_t &leaseSize)
 {
@@ -334,19 +323,40 @@ size_t adaptiveParallelBranchLeaseSize(
         : guided;
 }
 
-int localParallelThreadCount()
+bool configuredLocalParallelThreadCount(int &threadCount, string &reason)
 {
 #if defined(ASSEMBLYCPP_USE_OPENMP)
     omp_set_dynamic(0);
-    return max(1, min(omp_get_max_threads(), omp_get_thread_limit()));
+    const int threadLimit = max(1, omp_get_thread_limit());
+    if (parallelThreadCount != 0)
+    {
+        if (parallelThreadCount > static_cast<size_t>(threadLimit))
+        {
+            reason = "--threads=" + to_string(parallelThreadCount) +
+                " exceeds the OpenMP thread limit " + to_string(threadLimit);
+            return false;
+        }
+        threadCount = static_cast<int>(parallelThreadCount);
+        omp_set_num_threads(threadCount);
+        return true;
+    }
+    threadCount = max(1, min(omp_get_max_threads(), threadLimit));
+    omp_set_num_threads(threadCount);
+    return true;
 #else
-    return 1;
+    threadCount = 1;
+    if (parallelThreadCount > 1)
+    {
+        reason = "--threads=" + to_string(parallelThreadCount) +
+            " requires an OpenMP-enabled executable";
+        return false;
+    }
+    return true;
 #endif
 }
 
-bool hasMultipleParallelWorkers()
+bool hasMultipleParallelWorkers(int localThreads)
 {
-    const int localThreads = localParallelThreadCount();
 #if defined(ASSEMBLYCPP_USE_MPI)
     return assemblyCppMpiSize > 1 || localThreads > 1;
 #else
@@ -354,27 +364,28 @@ bool hasMultipleParallelWorkers()
 #endif
 }
 
-bool parallelSearchEligible(const molGraph &graph)
+string parallelCompatibilityFallbackReason(int localThreads)
 {
-    // Pathway and improvement-history output require one deterministic winning
-    // search. Keep those modes serial until witness transfer is implemented.
-    return
-        !isPathway &&
-        !writeIntermediateMAs &&
-        runTimeMax == std::numeric_limits<unsigned long long>::max() &&
-        hasMultipleParallelWorkers() &&
-        static_cast<size_t>(graph.totalBonds) >= parallelMinimumBonds();
+    if (runTimeMax != std::numeric_limits<unsigned long long>::max())
+        return "finite --runtime budgets require serial execution";
+    if (writeIntermediateMAs)
+        return "--write-intermediate-mas requires serial execution";
+    if (!hasMultipleParallelWorkers(localThreads))
+        return "only one worker is available";
+    return {};
 }
 
 #if defined(ASSEMBLYCPP_USE_MPI)
 bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
 {
-    constexpr size_t optionCount = 10;
+    constexpr size_t optionCount = 12;
     const array<unsigned long long, optionCount> local = {
         arguments.showHelp ? 1ULL : 0ULL,
         static_cast<unsigned long long>(ENUM_MAX),
         runTimeMax,
         isPathway ? 1ULL : 0ULL,
+        static_cast<unsigned long long>(parallelExecutionMode),
+        static_cast<unsigned long long>(parallelThreadCount),
         removeHydrogens ? 1ULL : 0ULL,
         verbose ? 1ULL : 0ULL,
         disjointCompensation ? 1ULL : 0ULL,
@@ -905,16 +916,158 @@ void MpiDistributedSearchController::notifyScheduler() noexcept
 }
 #endif
 
-bool runParallelSearch(molGraph &graph, ofstream &output)
+/**
+ * Consume an already prepared root frontier on this thread.
+ *
+ * With a target, the traversal stops at the first deterministic witness for
+ * the proven optimum. Without one it is the serial fallback used after the
+ * automatic work decision, avoiding a second root/DAG enumeration.
+ */
+template<bool trackPath>
+bool runPreparedDeterministicSearch(
+    const SearchContext &context,
+    ofstream &output,
+    optional<int> targetAssemblyIndex = nullopt,
+    bool writeResult = true
+)
 {
-    size_t branchLeaseSize = 1;
-    if (!configuredParallelBranchLeaseSize(branchLeaseSize)) return false;
+    const bool previousSuppressSearchOutput = suppressSearchOutput;
+    bool succeeded = true;
+    try
+    {
+        // configureParallelWorker first establishes a cleanup-safe empty TLS
+        // state. Keep it inside this guard so a later configuration allocation
+        // cannot strand arena state or borrowed context pointers.
+        configureParallelWorker(context, 0);
+        originalMolecule = context.originalMolecule;
+        originalEdgeList = context.originalEdges;
+        allEdges.set();
+        activeDistributedSearch = nullptr;
+        ownsDistributedSearchProgress = false;
+        parallelTaskScheduler = nullptr;
+        sharedAssemblyIndex = nullptr;
+        suppressSearchOutput = targetAssemblyIndex.has_value();
+
+        assemblyPathWitness pathwayWitness;
+        WorkerContext worker(
+            context,
+            0,
+            trackPath ? std::addressof(pathwayWitness) : nullptr
+        );
+        if (targetAssemblyIndex.has_value())
+        {
+            worker.assemblyIndex = *targetAssemblyIndex ==
+                    std::numeric_limits<int>::max()
+                ? *targetAssemblyIndex
+                : *targetAssemblyIndex + 1;
+            if constexpr (trackPath)
+            {
+                worker.search.stopAtPathwayTarget = true;
+                worker.search.pathwayTargetAssemblyIndex =
+                    *targetAssemblyIndex;
+            }
+        }
+        else worker.assemblyIndex = std::numeric_limits<int>::max();
+
+        recordImprovedAssemblyIndex<trackPath>(
+            worker.root,
+            worker.assemblyIndex,
+            worker.search
+        );
+        for (size_t jobIndex = 0;
+             jobIndex < context.rootJobs.size() && !searchShouldStop();
+             ++jobIndex)
+        {
+            if constexpr (trackPath)
+            {
+                if (worker.search.pathwayTargetReached) break;
+            }
+            if (!runParallelRootJob<trackPath, false>(
+                context,
+                jobIndex,
+                worker
+            )) break;
+        }
+
+        if (targetAssemblyIndex.has_value())
+        {
+            if constexpr (trackPath)
+            {
+                if (!worker.search.pathwayTargetReached)
+                {
+                    cerr << "error: deterministic pathway reconstruction did "
+                            "not reach assembly index "
+                         << compensateDisjointAssemblyIndex(
+                                *targetAssemblyIndex
+                            ) << '\n';
+                    succeeded = false;
+                }
+                else
+                {
+                    succeeded = recoverPathway2(
+                        pathwayWitness.best,
+                        context.removedEdges
+                    );
+                }
+            }
+        }
+        else
+        {
+            lastCalculatedAssemblyIndex = compensateDisjointAssemblyIndex(
+                worker.assemblyIndex
+            );
+            if (writeResult)
+            {
+                output << lastCalculatedAssemblyIndex << '\n';
+                if (runtimeLimitReached)
+                    output << "status: runtime limit reached\n";
+                if (enumerationLimitReached)
+                    output << "status: enumeration limit reached\n";
+            }
+            if constexpr (trackPath)
+            {
+                succeeded = recoverPathway2(
+                    pathwayWitness.best,
+                    context.removedEdges
+                );
+            }
+        }
+    }
+    catch (...)
+    {
+        suppressSearchOutput = previousSuppressSearchOutput;
+        clearParallelWorkerMasks();
+        throw;
+    }
+
+    suppressSearchOutput = previousSuppressSearchOutput;
+    clearParallelWorkerMasks();
+    return succeeded;
+}
+
+enum class ParallelSearchOutcome
+{
+    completed,
+    failed
+};
+
+struct ParallelSearchResult
+{
+    ParallelSearchOutcome outcome = ParallelSearchOutcome::failed;
+    string fallbackReason;
+};
+
+ParallelSearchResult runParallelSearch(
+    molGraph &graph,
+    ofstream &output,
+    int localThreads
+)
+{
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     const uint64_t parallelStartedNanoseconds = searchTelemetryEnabled
         ? searchTelemetryWallNanoseconds()
         : 0;
 #endif
-    const int localThreads = localParallelThreadCount();
     int globalWorkerCount = localThreads;
     int globalWorkerOffset = 0;
 #if defined(ASSEMBLYCPP_USE_MPI)
@@ -944,8 +1097,7 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     {
         prepareParallelSearchContext(
             graph,
-            searchContext,
-            static_cast<size_t>(localThreads)
+            searchContext
         );
     }
     catch (const std::exception &exception)
@@ -979,8 +1131,68 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
             cerr << "error: parallel root preparation failed: "
                  << preparationError << '\n';
         }
-        return false;
+        return {ParallelSearchOutcome::failed, {}};
     }
+
+    const PreparedSearchWorkEstimate work =
+        estimatePreparedSearchWork(searchContext);
+    int useParallelSearch =
+        parallelExecutionMode == parallelMode::on ||
+        work.workUnits >= parallelAutomaticMinimumWorkUnits;
+#if defined(ASSEMBLYCPP_USE_MPI)
+    MPI_Bcast(&useParallelSearch, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+    if (useParallelSearch == 0)
+    {
+        ostringstream reason;
+        reason << "estimated work " << work.workUnits << " ("
+               << work.rootJobCount << " root jobs x "
+               << work.retainedDagNodeCount << " retained DAG nodes) is below "
+               << parallelAutomaticMinimumWorkUnits;
+        int serialSucceeded = 1;
+        string serialError;
+        if (isPrimaryProcess())
+        {
+            try
+            {
+                serialSucceeded = isPathway
+                    ? (runPreparedDeterministicSearch<true>(
+                        searchContext,
+                        output
+                    ) ? 1 : 0)
+                    : (runPreparedDeterministicSearch<false>(
+                        searchContext,
+                        output
+                    ) ? 1 : 0);
+            }
+            catch (const std::exception &exception)
+            {
+                serialError = exception.what();
+                serialSucceeded = 0;
+            }
+            catch (...)
+            {
+                serialError = "unknown prepared serial-search failure";
+                serialSucceeded = 0;
+            }
+        }
+#if defined(ASSEMBLYCPP_USE_MPI)
+        MPI_Bcast(&serialSucceeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+        if (isPrimaryProcess() && !serialError.empty())
+            cerr << "error: prepared serial search failed: "
+                 << serialError << '\n';
+        return {
+            serialSucceeded != 0
+                ? ParallelSearchOutcome::completed
+                : ParallelSearchOutcome::failed,
+            reason.str()
+        };
+    }
+
+    size_t branchLeaseSize = 1;
+    if (!configuredParallelBranchLeaseSize(branchLeaseSize))
+        return {ParallelSearchOutcome::failed, {}};
 
 #if defined(ASSEMBLYCPP_USE_MPI)
     const bool distributedRootQueue = assemblyCppMpiSize > 1;
@@ -1034,6 +1246,10 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     int schedulerPreparationSucceeded = 1;
     try
     {
+        configureParallelSharedReuse(
+            searchContext,
+            static_cast<size_t>(localThreads)
+        );
         taskSchedulerStorage = make_unique<ParallelTaskScheduler>(
             searchContext.rootJobs.size(),
             rankPartitionIndex,
@@ -1079,7 +1295,7 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
             cerr << "error: parallel scheduler preparation failed: "
                  << preparationError << '\n';
         }
-        return false;
+        return {ParallelSearchOutcome::failed, {}};
     }
     ParallelTaskScheduler &taskScheduler = *taskSchedulerStorage;
 #if defined(ASSEMBLYCPP_USE_MPI)
@@ -1197,9 +1413,7 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
                         taskScheduler
                     );
                 }
-                result.assemblyIndex = compensateDisjointAssemblyIndex(
-                    worker.assemblyIndex
-                );
+                result.assemblyIndex = worker.assemblyIndex;
             }
             clearParallelWorkerMasks();
             result.succeeded = true;
@@ -1337,29 +1551,31 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
     }
 #endif
 
-    int localAssemblyIndex = compensateDisjointAssemblyIndex(
-        processBest.load(std::memory_order_relaxed)
-    );
+    int localInternalAssemblyIndex =
+        processBest.load(std::memory_order_relaxed);
     int localSucceeded = 1;
     int localRuntimeLimit = 0;
     int localEnumerationLimit = 0;
     for (const ParallelReplicaResult &replica : replicas)
     {
-        localAssemblyIndex = min(localAssemblyIndex, replica.assemblyIndex);
+        localInternalAssemblyIndex = min(
+            localInternalAssemblyIndex,
+            replica.assemblyIndex
+        );
         localSucceeded &= replica.started && replica.succeeded ? 1 : 0;
         localRuntimeLimit |= replica.runtimeLimitReached ? 1 : 0;
         localEnumerationLimit |= replica.enumerationLimitReached ? 1 : 0;
     }
 
-    int globalAssemblyIndex = localAssemblyIndex;
+    int globalInternalAssemblyIndex = localInternalAssemblyIndex;
     int globalSucceeded = localSucceeded;
     int globalRuntimeLimit = localRuntimeLimit;
     int globalEnumerationLimit = localEnumerationLimit;
     int globalUserInterrupt = receivedUserInterrupt() ? 1 : 0;
 #if defined(ASSEMBLYCPP_USE_MPI)
     MPI_Allreduce(
-        &localAssemblyIndex,
-        &globalAssemblyIndex,
+        &localInternalAssemblyIndex,
+        &globalInternalAssemblyIndex,
         1,
         MPI_INT,
         MPI_MIN,
@@ -1523,6 +1739,55 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
 #endif
     }
 
+    int pathwaySucceeded = 1;
+    string pathwayError;
+    if (
+        isPathway && globalSucceeded != 0 &&
+        globalRuntimeLimit == 0 && globalUserInterrupt == 0
+    )
+    {
+        if (isPrimaryProcess())
+        {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            const bool telemetryWasEnabled = searchTelemetryEnabled;
+            searchTelemetryEnabled = false;
+#endif
+            try
+            {
+                pathwaySucceeded = runPreparedDeterministicSearch<true>(
+                    searchContext,
+                    output,
+                    globalInternalAssemblyIndex,
+                    false
+                ) ? 1 : 0;
+            }
+            catch (const std::exception &exception)
+            {
+                pathwayError = exception.what();
+                pathwaySucceeded = 0;
+            }
+            catch (...)
+            {
+                pathwayError = "unknown deterministic pathway-reconstruction "
+                    "failure";
+                pathwaySucceeded = 0;
+            }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            searchTelemetryEnabled = telemetryWasEnabled;
+#endif
+        }
+#if defined(ASSEMBLYCPP_USE_MPI)
+        MPI_Bcast(&pathwaySucceeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+        if (isPrimaryProcess() && !pathwayError.empty())
+            cerr << "error: deterministic pathway reconstruction failed: "
+                 << pathwayError << '\n';
+        globalSucceeded &= pathwaySucceeded;
+    }
+
+    const int globalAssemblyIndex = compensateDisjointAssemblyIndex(
+        globalInternalAssemblyIndex
+    );
     lastCalculatedAssemblyIndex = globalAssemblyIndex;
     runtimeLimitReached = globalRuntimeLimit != 0;
     enumerationLimitReached = globalEnumerationLimit != 0;
@@ -1543,7 +1808,12 @@ bool runParallelSearch(molGraph &graph, ofstream &output)
         if (globalSucceeded == 0)
             cerr << "error: one or more parallel workers did not complete\n";
     }
-    return globalSucceeded != 0;
+    return {
+        globalSucceeded != 0
+            ? ParallelSearchOutcome::completed
+            : ParallelSearchOutcome::failed,
+        {}
+    };
 }
 
 #endif
@@ -1557,14 +1827,72 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
             cerr << "error: MPI ranks loaded different input graphs\n";
         return false;
     }
-    int useParallelSearch = 0;
-    if (isPrimaryProcess())
-        useParallelSearch = parallelSearchEligible(graph) ? 1 : 0;
-    MPI_Bcast(&useParallelSearch, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (useParallelSearch != 0) return runParallelSearch(graph, output);
-#elif defined(ASSEMBLYCPP_USE_OPENMP)
-    if (parallelSearchEligible(graph)) return runParallelSearch(graph, output);
 #endif
+
+    if (parallelExecutionMode != parallelMode::off)
+    {
+#if defined(ASSEMBLYCPP_USE_OPENMP) || defined(ASSEMBLYCPP_USE_MPI)
+        int localThreads = 1;
+        string fallbackReason;
+        int localThreadConfigurationValid =
+            configuredLocalParallelThreadCount(
+                localThreads,
+                fallbackReason
+            ) ? 1 : 0;
+#if defined(ASSEMBLYCPP_USE_MPI)
+        int allThreadConfigurationsValid = localThreadConfigurationValid;
+        MPI_Allreduce(
+            &localThreadConfigurationValid,
+            &allThreadConfigurationsValid,
+            1,
+            MPI_INT,
+            MPI_MIN,
+            MPI_COMM_WORLD
+        );
+        localThreadConfigurationValid = allThreadConfigurationsValid;
+        if (
+            localThreadConfigurationValid == 0 &&
+            fallbackReason.empty()
+        ) fallbackReason =
+            "the requested thread count is unavailable on another MPI rank";
+#endif
+        if (localThreadConfigurationValid != 0)
+            fallbackReason = parallelCompatibilityFallbackReason(localThreads);
+
+        if (!fallbackReason.empty())
+        {
+            if (parallelExecutionMode == parallelMode::on)
+            {
+                if (isPrimaryProcess())
+                    cerr << "error: --parallel=on cannot be honored: "
+                         << fallbackReason << '\n';
+                return false;
+            }
+            if (isPrimaryProcess())
+                cerr << "parallel: serial fallback: "
+                     << fallbackReason << '\n';
+        }
+        else
+        {
+            const ParallelSearchResult result = runParallelSearch(
+                graph,
+                output,
+                localThreads
+            );
+            if (isPrimaryProcess() && !result.fallbackReason.empty())
+                cerr << "parallel: serial fallback: "
+                     << result.fallbackReason << '\n';
+            return result.outcome == ParallelSearchOutcome::completed;
+        }
+#else
+        if (parallelExecutionMode == parallelMode::on)
+        {
+            cerr << "error: --parallel=on cannot be honored: this executable "
+                    "was built without parallel support\n";
+            return false;
+        }
+#endif
+    }
 
 #if defined(ASSEMBLYCPP_USE_MPI)
     int succeeded = 1;

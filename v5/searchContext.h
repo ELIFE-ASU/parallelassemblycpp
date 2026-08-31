@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+
 #include "distributedRootMapping.h"
 
 /** A root occurrence stored without an EdgeMask from the producer thread. */
@@ -36,6 +40,14 @@ struct canonicalisationSeed
     decltype(treeCanonInterner) treeInterner;
 };
 
+/** A stable, platform-independent estimate derived from prepared search data. */
+struct PreparedSearchWorkEstimate
+{
+    std::uint64_t rootJobCount = 0;
+    std::uint64_t retainedDagNodeCount = 0;
+    std::uint64_t workUnits = 0;
+};
+
 /**
  * Problem input shared immutably by every worker after construction.
  *
@@ -47,7 +59,10 @@ struct canonicalisationSeed
  */
 struct SearchContext
 {
+    molGraph originalMolecule;
     molGraph processedMolecule;
+    vector<edgeL> originalEdges;
+    vector<edgeL> removedEdges;
     vector<edgeL> universeEdges;
     vector<dagLevel> dag;
     vector<rootOccurrenceDescriptor> rootOccurrences;
@@ -62,6 +77,7 @@ struct SearchContext
     int componentCount = 1;
     int rootAssemblyIndex = -1;
     bool enumerationLimit = false;
+    bool sharedReuseEligible = false;
 
     SearchContext() = default;
     SearchContext(const SearchContext &) = delete;
@@ -75,6 +91,46 @@ struct SearchContext
             (universeEdges.size() % EdgeMask::wordBits != 0);
     }
 };
+
+/** Estimate root-search work without allowing size arithmetic to wrap. */
+[[nodiscard]] inline PreparedSearchWorkEstimate estimatePreparedSearchWork(
+    const SearchContext &context
+) noexcept
+{
+    constexpr std::uint64_t maximum =
+        std::numeric_limits<std::uint64_t>::max();
+    auto saturatedSize = [maximum](std::size_t value) noexcept
+    {
+        if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t))
+        {
+            if (value > static_cast<std::size_t>(maximum)) return maximum;
+        }
+        return static_cast<std::uint64_t>(value);
+    };
+
+    PreparedSearchWorkEstimate result;
+    result.rootJobCount = saturatedSize(context.rootJobs.size());
+    for (const dagLevel &level : context.dag)
+    {
+        const std::uint64_t levelNodes = saturatedSize(level.nodes.size());
+        if (levelNodes > maximum - result.retainedDagNodeCount)
+        {
+            result.retainedDagNodeCount = maximum;
+            break;
+        }
+        result.retainedDagNodeCount += levelNodes;
+    }
+
+    if (result.rootJobCount == 0) return result;
+    const std::uint64_t retainedNodes =
+        result.retainedDagNodeCount == 0
+            ? std::uint64_t{1}
+            : result.retainedDagNodeCount;
+    result.workUnits = result.rootJobCount > maximum / retainedNodes
+        ? maximum
+        : result.rootJobCount * retainedNodes;
+    return result;
+}
 
 struct assemblyPathWitness
 {
@@ -176,6 +232,9 @@ struct assemblySearchStorage
 {
     assemblyTranspositionTable states;
     assemblyPathWitness *pathway = nullptr;
+    int pathwayTargetAssemblyIndex = std::numeric_limits<int>::max();
+    bool stopAtPathwayTarget = false;
+    bool pathwayTargetReached = false;
     duplicateClassIndexWorkspace duplicateClassIndex;
     vi candidateKey;
     deque<dagAssemblySearchFrame> recursiveFrames;
@@ -288,13 +347,15 @@ struct WorkerContext
 
     explicit WorkerContext(
         const SearchContext &context,
-        std::size_t workerIndex = 0
+        std::size_t workerIndex = 0,
+        assemblyPathWitness *pathway = nullptr
     ):
         fragmentation(
             context.processedMolecule.mg.size(),
             context.universeEdges.size(),
             context.universeEdges
         ),
+        search(pathway),
         assemblyIndex(context.rootAssemblyIndex)
     {
         search.parallelWorkerIndex = workerIndex;

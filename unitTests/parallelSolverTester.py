@@ -134,6 +134,12 @@ LATE_REFILL_ADAPTIVE_TELEMETRY_CASE = SolverCase(
     edges=66,
     active_mask_words=2,
 )
+PATHWAY_PARITY_NAME = "ketoconazole-pathway"
+PATHWAY_PARITY_SOURCE = TEST_DIRECTORY / "ketoconazole.mol"
+PATHWAY_PARITY_EXPECTED_INDEX = 22
+PATHWAY_PARITY_EXPECTED = (
+    TEST_DIRECTORY / "expected_pathways" / "ketoconazole.json"
+)
 MPI_TOPOLOGY = ParallelTopology("mpi", (1, 1))
 HYBRID_TOPOLOGY = ParallelTopology("hybrid", (2, 2))
 
@@ -311,7 +317,6 @@ def run_solver(
 ) -> tuple[int, dict[str, Any] | None]:
     environment = os.environ.copy()
     if topology is not None:
-        environment["ASSEMBLYCPP_PARALLEL_MIN_BONDS"] = "0"
         # A default-mode test must not inherit a developer's local override.
         environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
         if branch_lease_size is not None:
@@ -337,6 +342,21 @@ def run_solver(
         input_path = working_directory / input_name
         shutil.copy2(case.source, input_path)
         solver_arguments = [str(executable), input_name, "--pathway=0"]
+        if topology is not None:
+            require(
+                len(set(topology.threads_per_rank)) == 1,
+                f"{topology.mode}: test topology must use uniform thread counts",
+            )
+            solver_arguments.extend(
+                [
+                    (
+                        "--parallel=on"
+                        if topology.worker_count > 1
+                        else "--parallel=off"
+                    ),
+                    f"--threads={topology.threads_per_rank[0]}",
+                ]
+            )
         if telemetry:
             solver_arguments.append("--telemetry=1")
         if topology is not None and topology.rank_count > 1:
@@ -1091,6 +1111,355 @@ def run_parity_suite(
     return runs
 
 
+def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
+    topology = target.topology
+    require(
+        len(set(topology.threads_per_rank)) == 1,
+        f"{topology.mode}: test topology must use uniform thread counts",
+    )
+    threads = topology.threads_per_rank[0]
+    environment = os.environ.copy()
+    environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
+    if target.branch_lease_size is not None:
+        require(target.branch_lease_size > 0, "branch lease size must be positive")
+        environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(
+            target.branch_lease_size
+        )
+    if topology.mode in {"openmp", "hybrid"}:
+        thread_text = str(threads)
+        environment.update(
+            {
+                "OMP_NUM_THREADS": thread_text,
+                "OMP_THREAD_LIMIT": thread_text,
+                "OMP_DYNAMIC": "FALSE",
+            }
+        )
+    try:
+        expected_pathway = json.loads(
+            PATHWAY_PARITY_EXPECTED.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise TestFailure(
+            f"cannot read expected pathway {PATHWAY_PARITY_EXPECTED}: {error}"
+        ) from error
+
+    with tempfile.TemporaryDirectory(
+        prefix="assemblycpp-parallel-pathway-"
+    ) as temporary:
+        working_directory = Path(temporary)
+        input_name = "input.mol"
+        shutil.copy2(PATHWAY_PARITY_SOURCE, working_directory / input_name)
+        solver_arguments = [
+            str(target.executable),
+            input_name,
+            "--parallel=on",
+            f"--threads={threads}",
+        ]
+        if topology.rank_count > 1:
+            require(
+                target.mpiexec is not None,
+                f"{topology.mode}: mpiexec is required",
+            )
+            arguments = [
+                str(target.mpiexec),
+                target.numproc_flag,
+                str(topology.rank_count),
+                *solver_arguments,
+            ]
+        else:
+            arguments = solver_arguments
+        try:
+            completed = run_command(
+                arguments, working_directory, environment, timeout
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TestFailure(
+                f"{PATHWAY_PARITY_NAME}: {target.label} pathway run exceeded "
+                f"{timeout:g}s"
+            ) from error
+        if completed.returncode != 0:
+            raise TestFailure(
+                f"{PATHWAY_PARITY_NAME}: {target.executable.name} failed\n"
+                f"{format_completed(completed)}"
+            )
+
+        output_path = working_directory / "inputOut"
+        pathway_path = working_directory / "inputPathway"
+        try:
+            output_text = output_path.read_text(encoding="utf-8")
+            actual_pathway = json.loads(pathway_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise TestFailure(
+                f"{PATHWAY_PARITY_NAME}: cannot read parallel pathway output: "
+                f"{error}\n"
+                f"{format_completed(completed)}"
+            ) from error
+
+        match = ASSEMBLY_INDEX_PATTERN.search(output_text)
+        require(
+            match is not None,
+            f"{PATHWAY_PARITY_NAME}: assembly index is absent from {output_path}",
+        )
+        index = int(match.group(1))
+        require(
+            index == PATHWAY_PARITY_EXPECTED_INDEX,
+            f"{PATHWAY_PARITY_NAME}: index {index}, expected "
+            f"{PATHWAY_PARITY_EXPECTED_INDEX}",
+        )
+        require(
+            actual_pathway == expected_pathway,
+            f"{PATHWAY_PARITY_NAME}: parallel pathway JSON differs from "
+            f"{PATHWAY_PARITY_EXPECTED}",
+        )
+
+    print(
+        f"PASS pathway {PATHWAY_PARITY_NAME}: {target.label} index and JSON parity"
+    )
+    return 1
+
+
+def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
+    """Check automatic fallback, forced parallelism, and hard blockers."""
+    case = SPARSE_ADAPTIVE_TELEMETRY_CASE
+    environment = os.environ.copy()
+    environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
+    environment.update(
+        {
+            "OMP_NUM_THREADS": "2",
+            "OMP_THREAD_LIMIT": "2",
+            "OMP_DYNAMIC": "FALSE",
+        }
+    )
+    fallback_prefix = "parallel: serial fallback: "
+    scenarios = (
+        (
+            "automatic-work-estimate",
+            ("--parallel=auto", "--threads=2"),
+            0,
+            (
+                fallback_prefix + "estimated work ",
+                "root jobs x",
+                "retained DAG nodes) is below",
+            ),
+            (),
+            False,
+        ),
+        (
+            "forced-parallel",
+            ("--parallel=on", "--threads=2"),
+            0,
+            (),
+            (fallback_prefix,),
+            False,
+        ),
+        (
+            "parallel-disabled",
+            ("--parallel=off", "--threads=2"),
+            0,
+            (),
+            (fallback_prefix,),
+            False,
+        ),
+        (
+            "automatic-finite-runtime",
+            (
+                "--parallel=auto",
+                "--threads=2",
+                "--runtime=1000000000",
+            ),
+            0,
+            (
+                fallback_prefix
+                + "finite --runtime budgets require serial execution",
+            ),
+            (),
+            False,
+        ),
+        (
+            "forced-finite-runtime",
+            (
+                "--parallel=on",
+                "--threads=2",
+                "--runtime=1000000000",
+            ),
+            1,
+            (
+                "error: --parallel=on cannot be honored: finite --runtime "
+                "budgets require serial execution",
+            ),
+            (),
+            False,
+        ),
+        (
+            "automatic-intermediate-output",
+            (
+                "--parallel=auto",
+                "--threads=2",
+                "--write-intermediate-mas=1",
+            ),
+            0,
+            (
+                fallback_prefix
+                + "--write-intermediate-mas requires serial execution",
+            ),
+            (),
+            True,
+        ),
+        (
+            "forced-intermediate-output",
+            (
+                "--parallel=on",
+                "--threads=2",
+                "--write-intermediate-mas=1",
+            ),
+            1,
+            (
+                "error: --parallel=on cannot be honored: "
+                "--write-intermediate-mas requires serial execution",
+            ),
+            (),
+            False,
+        ),
+    )
+
+    for (
+        name,
+        options,
+        expected_returncode,
+        required_stderr,
+        forbidden_stderr,
+        expect_intermediate,
+    ) in scenarios:
+        with tempfile.TemporaryDirectory(
+            prefix=f"assemblycpp-policy-{name}-"
+        ) as temporary:
+            working_directory = Path(temporary)
+            input_name = "input.mol"
+            shutil.copy2(case.source, working_directory / input_name)
+            arguments = [
+                str(openmp),
+                input_name,
+                "--pathway=0",
+                *options,
+            ]
+            try:
+                completed = run_command(
+                    arguments,
+                    working_directory,
+                    environment,
+                    timeout,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise TestFailure(
+                    f"execution policy {name!r} exceeded {timeout:g}s"
+                ) from error
+
+            require(
+                completed.returncode == expected_returncode,
+                f"execution policy {name!r} returned {completed.returncode}, "
+                f"expected {expected_returncode}\n{format_completed(completed)}",
+            )
+            for diagnostic in required_stderr:
+                require(
+                    diagnostic in completed.stderr,
+                    f"execution policy {name!r} did not report {diagnostic!r}\n"
+                    f"{format_completed(completed)}",
+                )
+            for diagnostic in forbidden_stderr:
+                require(
+                    diagnostic not in completed.stderr,
+                    f"execution policy {name!r} unexpectedly reported "
+                    f"{diagnostic!r}\n{format_completed(completed)}",
+                )
+
+            if expected_returncode == 0:
+                output_path = working_directory / "inputOut"
+                try:
+                    output_text = output_path.read_text(encoding="utf-8")
+                except OSError as error:
+                    raise TestFailure(
+                        f"execution policy {name!r} cannot read {output_path}: "
+                        f"{error}\n{format_completed(completed)}"
+                    ) from error
+                match = ASSEMBLY_INDEX_PATTERN.search(output_text)
+                require(
+                    match is not None and int(match.group(1)) == case.expected_index,
+                    f"execution policy {name!r} did not preserve assembly index "
+                    f"{case.expected_index}\n{format_completed(completed)}",
+                )
+                intermediate_path = working_directory / "inputIntermediateMAs"
+                require(
+                    intermediate_path.is_file() == expect_intermediate,
+                    f"execution policy {name!r} produced an unexpected "
+                    "intermediate-output state",
+                )
+
+    # Hydrogen removal leaves 24 processed bonds, below the retired fixed
+    # 32-bond gate, while the prepared root/DAG frontier is large enough for
+    # automatic parallel execution.
+    high_work_case = SolverCase(
+        name="automatic-high-work-sucrose",
+        source=TEST_DIRECTORY / "sucrose.mol",
+        expected_index=8,
+        edges=24,
+        active_mask_words=1,
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="assemblycpp-policy-automatic-high-work-"
+    ) as temporary:
+        working_directory = Path(temporary)
+        input_name = "input.mol"
+        shutil.copy2(high_work_case.source, working_directory / input_name)
+        try:
+            completed = run_command(
+                [
+                    str(openmp),
+                    input_name,
+                    "--pathway=0",
+                    "--parallel=auto",
+                    "--threads=2",
+                ],
+                working_directory,
+                environment,
+                timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TestFailure(
+                f"{high_work_case.name}: automatic policy exceeded {timeout:g}s"
+            ) from error
+        require(
+            completed.returncode == 0,
+            f"{high_work_case.name}: automatic policy failed\n"
+            f"{format_completed(completed)}",
+        )
+        require(
+            fallback_prefix not in completed.stderr,
+            f"{high_work_case.name}: high prepared work unexpectedly selected "
+            f"serial execution\n{format_completed(completed)}",
+        )
+        output_path = working_directory / "inputOut"
+        try:
+            output_text = output_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise TestFailure(
+                f"{high_work_case.name}: cannot read {output_path}: {error}\n"
+                f"{format_completed(completed)}"
+            ) from error
+        match = ASSEMBLY_INDEX_PATTERN.search(output_text)
+        require(
+            match is not None and int(match.group(1)) == high_work_case.expected_index,
+            f"{high_work_case.name}: automatic parallel search did not preserve "
+            f"assembly index {high_work_case.expected_index}\n"
+            f"{format_completed(completed)}",
+        )
+
+    print(
+        "PASS execution policy: auto/on/off, estimate/runtime/intermediate "
+        "fallbacks, hard errors, and sub-32-bond high-work selection"
+    )
+    return len(scenarios) + 1
+
+
 def run_invalid_lease_configuration_suite(
     openmp: Path,
     case: SolverCase,
@@ -1104,7 +1473,6 @@ def run_invalid_lease_configuration_suite(
                 "OMP_NUM_THREADS": "2",
                 "OMP_THREAD_LIMIT": "2",
                 "OMP_DYNAMIC": "FALSE",
-                "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0",
                 "ASSEMBLYCPP_BRANCH_LEASE_SIZE": value,
             }
         )
@@ -1116,7 +1484,13 @@ def run_invalid_lease_configuration_suite(
             shutil.copy2(case.source, working_directory / input_name)
             try:
                 completed = run_command(
-                    [str(openmp), input_name, "--pathway=0"],
+                    [
+                        str(openmp),
+                        input_name,
+                        "--pathway=0",
+                        "--parallel=on",
+                        "--threads=2",
+                    ],
                     working_directory,
                     environment,
                     timeout,
@@ -1506,11 +1880,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
         cases = load_cases(options.manifest)
         runs = 0
         if options.openmp is not None:
+            openmp_target = ParallelTarget(
+                "openmp-2",
+                options.openmp,
+                ParallelTopology("openmp", (2,)),
+            )
             runs += run_parity_suite(
                 options.serial,
                 options.openmp,
                 cases,
                 options.repetitions,
+                options.timeout,
+            )
+            runs += run_pathway_parity_suite(openmp_target, options.timeout)
+            runs += run_openmp_execution_policy_suite(
+                options.openmp,
                 options.timeout,
             )
         if options.openmp_telemetry is not None:
@@ -1532,18 +1916,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.timeout,
             )
         if options.mpi is not None:
+            mpi_target = ParallelTarget(
+                "mpi-2",
+                options.mpi,
+                MPI_TOPOLOGY,
+                options.mpiexec,
+                options.mpiexec_numproc_flag,
+            )
             runs += run_distributed_parity_suite(
                 options.serial,
-                ParallelTarget(
-                    "mpi-2",
-                    options.mpi,
-                    MPI_TOPOLOGY,
-                    options.mpiexec,
-                    options.mpiexec_numproc_flag,
-                ),
+                mpi_target,
                 cases,
                 options.timeout,
             )
+            runs += run_pathway_parity_suite(mpi_target, options.timeout)
         if options.mpi_telemetry is not None:
             runs += run_distributed_telemetry_suite(
                 options.serial,
@@ -1558,18 +1944,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.timeout,
             )
         if options.hybrid is not None:
+            hybrid_target = ParallelTarget(
+                "hybrid-2x2",
+                options.hybrid,
+                HYBRID_TOPOLOGY,
+                options.mpiexec,
+                options.mpiexec_numproc_flag,
+            )
             runs += run_distributed_parity_suite(
                 options.serial,
-                ParallelTarget(
-                    "hybrid-2x2",
-                    options.hybrid,
-                    HYBRID_TOPOLOGY,
-                    options.mpiexec,
-                    options.mpiexec_numproc_flag,
-                ),
+                hybrid_target,
                 cases,
                 options.timeout,
             )
+            runs += run_pathway_parity_suite(hybrid_target, options.timeout)
         if options.hybrid_telemetry is not None:
             runs += run_distributed_telemetry_suite(
                 options.serial,

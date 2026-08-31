@@ -86,6 +86,8 @@ values are `0` or `1`.
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
+| `--parallel=<auto\|on\|off>` | `auto` | Select parallel search automatically, require it, or disable it. |
+| `--threads=<auto\|N>` | `auto` | Set the OpenMP thread count per process; `N` must be positive. |
 | `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from molfiles. |
 | `--verbose=<0\|1>` | `0` | Print the parsed input graph. |
 | `--compensate-disjoint=<0\|1>` | `0` | Subtract one per processed component after the first. |
@@ -97,6 +99,18 @@ values are `0` or `1`.
 best index found so far, which may not be the proven minimum. Run
 `AssemblyCpp --help` for full details and accepted legacy option names.
 `--telemetry` is available only in telemetry-enabled executables.
+`--threads=auto` uses the OpenMP runtime default and therefore honours settings
+such as `OMP_NUM_THREADS`; an explicit thread count applies to each process.
+
+In a parallel-enabled executable, `--parallel=auto` prepares the root jobs and
+DAG, then uses their estimated search work to choose parallel or serial
+execution. A serial fallback reports its reason. `--parallel=on` bypasses only
+that work estimate: it fails if parallel execution cannot be honored, such as
+when only one worker is available. `--parallel=off` always uses serial search.
+Finite `--runtime` budgets and `--write-intermediate-mas=1` require serial
+search, so `auto` reports a fallback and `on` reports an error. Pathway output
+is supported with parallel optimization followed by bounded deterministic
+reconstruction of a winning pathway.
 
 ### Outputs
 

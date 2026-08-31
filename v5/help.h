@@ -36,6 +36,16 @@ Options:
 Notes:
   Options may appear before or after INPUT. Use --name=value.
   Boolean values are 0 or 1.
+  In a parallel-enabled executable, --parallel=auto uses a work estimate from
+  the prepared root jobs and DAG. If it selects serial execution, it reports
+  the reason. --parallel=on bypasses the estimate, but fails when parallel
+  execution cannot be honored. --parallel=off always runs serially.
+  --threads sets the local thread count for each process; auto uses the OpenMP
+  runtime default.
+  Finite --runtime budgets and --write-intermediate-mas require serial search;
+  a parallel-enabled executable reports an auto fallback or an on-mode error.
+  Pathway output is supported after parallel optimization by deterministic
+  reconstruction of a winning pathway.
   --runtime is a cooperative std::clock budget and may overrun while an
   operation finishes. CLOCKS_PER_SEC converts ticks to seconds; the clock
   source is platform-specific.
