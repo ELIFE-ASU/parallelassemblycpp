@@ -24,10 +24,9 @@
 #include <vector>
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
-constexpr int HASH_DEPTH_MAX = 7;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 
 #include "../v5/activeWordMask.h"
 
@@ -50,25 +49,45 @@ molGraph makeTree(
     bool reverseEdges = false
 )
 {
+    assert(labels.size() <= static_cast<size_t>(numeric_limits<int>::max()));
     vector<int> permutation = oldToNew;
     if (permutation.empty())
     {
         permutation.resize(labels.size());
-        for (size_t i = 0; i < labels.size(); i++)
-            permutation[i] = static_cast<int>(i);
+        for (size_t index = 0; index < labels.size(); index++)
+            permutation[index] = static_cast<int>(index);
     }
     assert(permutation.size() == labels.size());
 
+    vector<unsigned char> seen(labels.size(), 0);
     vector<string> permutedLabels(labels.size());
-    for (size_t old = 0; old < labels.size(); old++)
-        permutedLabels[permutation[old]] = labels[old];
+    for (size_t oldIndex = 0; oldIndex < labels.size(); oldIndex++)
+    {
+        const int replacement = permutation[oldIndex];
+        assert(replacement >= 0);
+        const size_t replacementIndex = static_cast<size_t>(replacement);
+        assert(replacementIndex < labels.size());
+        assert(seen[replacementIndex] == 0);
+        seen[replacementIndex] = 1;
+        permutedLabels[replacementIndex] = labels[oldIndex];
+    }
 
     molGraph result;
     for (string &label : permutedLabels) result.addAtom(label);
     const auto addEdge = [&](const edgeSpec &edge)
     {
         const auto [left, right, bondType] = edge;
-        result.addBond(permutation[left], permutation[right], bondType);
+        assert(left >= 0);
+        assert(right >= 0);
+        const size_t leftIndex = static_cast<size_t>(left);
+        const size_t rightIndex = static_cast<size_t>(right);
+        assert(leftIndex < permutation.size());
+        assert(rightIndex < permutation.size());
+        result.addBond(
+            permutation[leftIndex],
+            permutation[rightIndex],
+            bondType
+        );
     };
     if (reverseEdges)
     {
@@ -95,11 +114,12 @@ bool equivalentTrees(molGraph left, molGraph right)
     return leftForm == rightForm;
 }
 
-vector<int> reversePermutation(size_t size)
+vector<int> reversePermutation(size_t vertexCount)
 {
-    vector<int> permutation(size);
-    for (size_t i = 0; i < size; i++)
-        permutation[i] = static_cast<int>(size - i - 1);
+    assert(vertexCount <= static_cast<size_t>(numeric_limits<int>::max()));
+    vector<int> permutation(vertexCount);
+    for (size_t index = 0; index < vertexCount; index++)
+        permutation[index] = static_cast<int>(vertexCount - index - 1);
     return permutation;
 }
 
@@ -168,7 +188,7 @@ void testWideBondLabels()
         {"C", "N", "C", "N"},
         {{0, 1, 1}, {2, 3, 257}}
     );
-    vector<edgeL> removedEdges;
+    vector<MoleculeEdge> removedEdges;
     const molGraph processed = preprocessWriteback(uniqueEdges, removedEdges);
     assert(removedEdges.size() == 2);
     assert(processed.totalBonds == 0);

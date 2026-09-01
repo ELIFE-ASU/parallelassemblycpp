@@ -22,17 +22,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[3]
-REFERENCE = Path(
-    "/home/louie/skunkworks/assemblytheorytools/assemblytheorytools/"
+DEFAULT_REFERENCE = (
+    ROOT.parent / "assemblytheorytools/assemblytheorytools/"
     "precompiled/asscpp_combined_static_linux"
 )
-CURRENT_SERIAL = ROOT / "build/parallel/AssemblyCpp"
-CURRENT_OMP = ROOT / "build/parallel/AssemblyCppOMP"
-RUST_REPO = ROOT / "build/daymudelab-assembly-theory"
-RUST_BINARY = RUST_REPO / "target/release/assembly-theory"
-INPUT_DIRECTORY = ROOT / "benchmarks/inputs/scaling"
+DEFAULT_CURRENT_SERIAL = ROOT / "build/parallel/AssemblyCpp"
+DEFAULT_CURRENT_OMP = ROOT / "build/parallel/AssemblyCppOMP"
+DEFAULT_RUST_REPOSITORY = ROOT / "build/daymudelab-assembly-theory"
+DEFAULT_INPUT_DIRECTORY = ROOT / "benchmarks/inputs/scaling"
 CPP_RESULT_RE = re.compile(r"has assembly index:\s*(-?\d+)")
 RUST_RESULT_RE = re.compile(r"^[0-9]+$")
 
@@ -78,67 +76,79 @@ def variant(
 
 VARIANTS = {
     "reference": variant(
-        "Shipped reference (serial)", "shipped-reference", REFERENCE, 1, "reference"
+        "Shipped reference (serial)",
+        "shipped-reference",
+        DEFAULT_REFERENCE,
+        1,
+        "reference",
     ),
     "current_serial": variant(
-        "Current C++ serial", "current-cpp", CURRENT_SERIAL, 1, "current-serial"
+        "Current C++ serial",
+        "current-cpp",
+        DEFAULT_CURRENT_SERIAL,
+        1,
+        "current-serial",
     ),
     "rust_serial": variant(
-        "Rust serial", "daymudelab-rust", RUST_BINARY, 1, "rust-serial"
+        "Rust serial",
+        "daymudelab-rust",
+        DEFAULT_RUST_REPOSITORY / "target/release/assembly-theory",
+        1,
+        "rust-serial",
     ),
     "current_omp1": variant(
         "Current C++ OpenMP, 1 worker",
         "current-cpp",
-        CURRENT_OMP,
+        DEFAULT_CURRENT_OMP,
         1,
         "current-openmp",
     ),
     "rust_parallel1": variant(
         "Rust depth-one, 1 worker",
         "daymudelab-rust",
-        RUST_BINARY,
+        DEFAULT_RUST_REPOSITORY / "target/release/assembly-theory",
         1,
         "rust-depth-one",
     ),
     "current_omp2": variant(
         "Current C++ OpenMP, 2 workers",
         "current-cpp",
-        CURRENT_OMP,
+        DEFAULT_CURRENT_OMP,
         2,
         "current-openmp",
     ),
     "rust_parallel2": variant(
         "Rust depth-one, 2 workers",
         "daymudelab-rust",
-        RUST_BINARY,
+        DEFAULT_RUST_REPOSITORY / "target/release/assembly-theory",
         2,
         "rust-depth-one",
     ),
     "current_omp4": variant(
         "Current C++ OpenMP, 4 workers",
         "current-cpp",
-        CURRENT_OMP,
+        DEFAULT_CURRENT_OMP,
         4,
         "current-openmp",
     ),
     "rust_parallel4": variant(
         "Rust depth-one, 4 workers",
         "daymudelab-rust",
-        RUST_BINARY,
+        DEFAULT_RUST_REPOSITORY / "target/release/assembly-theory",
         4,
         "rust-depth-one",
     ),
     "current_omp8": variant(
         "Current C++ OpenMP, 8 workers",
         "current-cpp",
-        CURRENT_OMP,
+        DEFAULT_CURRENT_OMP,
         8,
         "current-openmp",
     ),
     "rust_parallel8": variant(
         "Rust depth-one, 8 workers",
         "daymudelab-rust",
-        RUST_BINARY,
+        DEFAULT_RUST_REPOSITORY / "target/release/assembly-theory",
         8,
         "rust-depth-one",
     ),
@@ -216,14 +226,16 @@ def command_for(specification: dict[str, Any], input_name: str) -> list[str]:
     command = ["taskset", "-c", specification["cpus"], executable]
     mode = specification["mode"]
     if mode == "reference":
-        return command + [
+        return [
+            *command,
             Path(input_name).stem,
             "-pathway=0",
             "-removeHydrogens=1",
             "-compensateDisjoint=0",
         ]
     if mode in ("current-serial", "current-openmp"):
-        return command + [
+        return [
+            *command,
             "--pathway=0",
             "--remove-hydrogens=1",
             "--compensate-disjoint=0",
@@ -233,9 +245,9 @@ def command_for(specification: dict[str, Any], input_name: str) -> list[str]:
             input_name,
         ]
     if mode == "rust-serial":
-        return command + ["--parallel", "none", input_name]
+        return [*command, "--parallel", "none", input_name]
     if mode == "rust-depth-one":
-        return command + ["--parallel", "depth-one", input_name]
+        return [*command, "--parallel", "depth-one", input_name]
     raise ValueError(f"unknown mode: {mode}")
 
 
@@ -273,8 +285,7 @@ def run_once(name: str, source: Path, expected: int, timeout: float) -> float:
             command,
             cwd=directory,
             env=controlled_environment(specification),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
@@ -307,11 +318,16 @@ def write_json_atomic(path: Path, report: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary.replace(path)
 
 
 def report_metadata(
-    selected_variants: list[str], runs: int, warmup: int, first: int, last: int
+    selected_variants: list[str],
+    runs: int,
+    warmup: int,
+    first: int,
+    last: int,
+    rust_repository: Path,
 ) -> dict[str, Any]:
     variants = {}
     for name in selected_variants:
@@ -354,8 +370,10 @@ def report_metadata(
         "source": {
             "current_cpp_commit": git_value(ROOT, "rev-parse", "HEAD"),
             "rust_repository": "https://github.com/DaymudeLab/assembly-theory",
-            "rust_commit": git_value(RUST_REPO, "rev-parse", "HEAD"),
-            "rust_describe": git_value(RUST_REPO, "describe", "--always", "--dirty"),
+            "rust_commit": git_value(rust_repository, "rev-parse", "HEAD"),
+            "rust_describe": git_value(
+                rust_repository, "describe", "--always", "--dirty"
+            ),
             "rust_build": "cargo build --locked --release",
             "rust_target_tuning": "Cargo release default (no RUSTFLAGS target-cpu override)",
             "current_cpp_build": "CMake parallel Release preset, x86-64-v3, no LTO",
@@ -367,7 +385,7 @@ def report_metadata(
 
 def write_csv(path: Path, report: dict[str, Any]) -> None:
     with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
             [
                 "case",
@@ -412,12 +430,22 @@ def write_csv(path: Path, report: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--first", type=int, default=2)
     parser.add_argument("--last", type=int, default=10)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
+    parser.add_argument("--current-serial", type=Path, default=DEFAULT_CURRENT_SERIAL)
+    parser.add_argument("--current-openmp", type=Path, default=DEFAULT_CURRENT_OMP)
+    parser.add_argument("--rust-repository", type=Path, default=DEFAULT_RUST_REPOSITORY)
+    parser.add_argument(
+        "--rust-binary",
+        type=Path,
+        help="Rust executable (defaults to target/release under --rust-repository)",
+    )
+    parser.add_argument("--input-directory", type=Path, default=DEFAULT_INPUT_DIRECTORY)
     parser.add_argument(
         "--variants",
         nargs="+",
@@ -431,9 +459,31 @@ def main() -> None:
     if arguments.runs < 1 or arguments.warmup < 0:
         raise SystemExit("runs must be >= 1 and warmup must be >= 0")
 
-    selected_cases = [case for case in CASES if arguments.first <= case[2] <= arguments.last]
+    selected_cases = [
+        case for case in CASES if arguments.first <= case[2] <= arguments.last
+    ]
     if not selected_cases:
         raise SystemExit("no cases selected")
+
+    rust_repository = arguments.rust_repository.resolve()
+    rust_binary = (
+        arguments.rust_binary.resolve()
+        if arguments.rust_binary is not None
+        else rust_repository / "target/release/assembly-theory"
+    )
+    VARIANTS["reference"]["executable"] = arguments.reference.resolve()
+    VARIANTS["current_serial"]["executable"] = arguments.current_serial.resolve()
+    for name in ("current_omp1", "current_omp2", "current_omp4", "current_omp8"):
+        VARIANTS[name]["executable"] = arguments.current_openmp.resolve()
+    for name in (
+        "rust_serial",
+        "rust_parallel1",
+        "rust_parallel2",
+        "rust_parallel4",
+        "rust_parallel8",
+    ):
+        VARIANTS[name]["executable"] = rust_binary
+
     for name in arguments.variants:
         executable = Path(VARIANTS[name]["executable"])
         if not executable.is_file() or not os.access(executable, os.X_OK):
@@ -445,16 +495,22 @@ def main() -> None:
         arguments.warmup,
         arguments.first,
         arguments.last,
+        rust_repository,
     )
     samples: dict[str, dict[str, list[float]]] = {
         case[0]: {name: [] for name in arguments.variants} for case in selected_cases
     }
     variant_order = list(arguments.variants)
 
-    for case_index, (case_id, filename, components, atoms, bonds, expected) in enumerate(
-        selected_cases
-    ):
-        source = INPUT_DIRECTORY / filename
+    for case_index, (
+        case_id,
+        filename,
+        components,
+        atoms,
+        bonds,
+        expected,
+    ) in enumerate(selected_cases):
+        source = arguments.input_directory.resolve() / filename
         print(
             f"[{case_index + 1}/{len(selected_cases)}] {case_id}: "
             f"{components} components, {atoms} atoms, {bonds} bonds",
@@ -474,8 +530,7 @@ def main() -> None:
                 value = run_once(name, source, expected, arguments.timeout)
                 samples[case_id][name].append(value)
                 print(
-                    f"  run {run_index + 1}/{arguments.runs} {name}: "
-                    f"{value:.6f} s",
+                    f"  run {run_index + 1}/{arguments.runs} {name}: {value:.6f} s",
                     flush=True,
                 )
 

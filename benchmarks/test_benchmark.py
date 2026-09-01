@@ -11,10 +11,18 @@ import tempfile
 import textwrap
 import time
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
 from benchmarks import benchmark
+
+
+def _find_component_root(parents: list[int], atom_index: int) -> int:
+    while parents[atom_index] != atom_index:
+        parents[atom_index] = parents[parents[atom_index]]
+        atom_index = parents[atom_index]
+    return atom_index
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -188,9 +196,7 @@ class BenchmarkTests(unittest.TestCase):
             "residual_cache_small_molecule_bypasses": residual[
                 "small_molecule_bypasses"
             ],
-            "residual_cache_wide_molecule_bypasses": residual[
-                "wide_molecule_bypasses"
-            ],
+            "residual_cache_wide_molecule_bypasses": residual["wide_molecule_bypasses"],
             "residual_cache_small_residual_bypasses": residual[
                 "small_residual_bypasses"
             ],
@@ -213,9 +219,7 @@ class BenchmarkTests(unittest.TestCase):
             "pair_bound_cache_hits": pair_bound["hits"],
             "pair_bound_cache_misses": pair_bound["misses"],
         }
-        empty_counters = {
-            name: 0 for name in benchmark.PARALLEL_TELEMETRY_COUNTERS
-        }
+        empty_counters = dict.fromkeys(benchmark.PARALLEL_TELEMETRY_COUNTERS, 0)
         graph = telemetry["processed_graph"]
         assert isinstance(graph, dict)
         worker_graph = {
@@ -703,9 +707,7 @@ class BenchmarkTests(unittest.TestCase):
 
             self.assertEqual(results[0].telemetry, telemetry_document)
             telemetry_run.assert_called_once()
-            self.assertEqual(
-                telemetry_run.call_args.kwargs.get("execution"), execution
-            )
+            self.assertEqual(telemetry_run.call_args.kwargs.get("execution"), execution)
 
     def test_configured_telemetry_command_applies_launcher_and_environment(
         self,
@@ -758,7 +760,9 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(timeout, 1.0)
             self.assertEqual(environment["OMP_NUM_THREADS"], "3")
 
-    def test_role_execution_configs_launch_with_environment_and_reach_json(self) -> None:
+    def test_role_execution_configs_launch_with_environment_and_reach_json(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
             fixture = self.create_fixture(directory)
@@ -1231,17 +1235,16 @@ class BenchmarkTests(unittest.TestCase):
             bond_lines = lines[4 + atom_count : 4 + atom_count + bond_count]
             parents = list(range(atom_count))
 
-            def root(atom: int) -> int:
-                while parents[atom] != atom:
-                    parents[atom] = parents[parents[atom]]
-                    atom = parents[atom]
-                return atom
-
             for line in bond_lines:
-                first = root(int(line[0:3]) - 1)
-                second = root(int(line[3:6]) - 1)
+                first = _find_component_root(parents, int(line[0:3]) - 1)
+                second = _find_component_root(parents, int(line[3:6]) - 1)
                 parents[first] = second
-            component_count = len({root(atom) for atom in range(atom_count)})
+            component_count = len(
+                {
+                    _find_component_root(parents, atom_index)
+                    for atom_index in range(atom_count)
+                }
+            )
 
             self.assertEqual(
                 (atom_count, bond_count, component_count),
@@ -1253,7 +1256,7 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(lines[4 + atom_count + bond_count], "M  END")
             blocks.append((atom_lines, bond_lines))
 
-        for previous, current in zip(blocks, blocks[1:]):
+        for previous, current in pairwise(blocks):
             previous_atoms, previous_bonds = previous
             current_atoms, current_bonds = current
             self.assertEqual(current_atoms[: len(previous_atoms)], previous_atoms)
@@ -1293,10 +1296,7 @@ class BenchmarkTests(unittest.TestCase):
             [1, 1, 2, 2, 2, 3],
         )
         self.assertEqual(
-            [
-                31 <= bonds
-                for bonds in expected_bonds
-            ],
+            [bonds >= 31 for bonds in expected_bonds],
             [True, True, True, True, True, True],
         )
 
@@ -1487,9 +1487,9 @@ class BenchmarkTests(unittest.TestCase):
             )
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            malformed_dynamic["parallel"]["branch_scheduler"][
-                "adaptive_splitting"
-            ]["maximum_depth"] = 2
+            malformed_dynamic["parallel"]["branch_scheduler"]["adaptive_splitting"][
+                "maximum_depth"
+            ] = 2
             malformed_path = directory / "parallel-dynamic-task-depth-policy.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
@@ -1502,9 +1502,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            malformed_dynamic["parallel"]["workers"][0][
-                "scheduler_idle_waits"
-            ] = -1
+            malformed_dynamic["parallel"]["workers"][0]["scheduler_idle_waits"] = -1
             malformed_path = directory / "parallel-dynamic-negative-scheduler.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
@@ -1530,9 +1528,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            malformed_dynamic["parallel"]["workers"][0][
-                "local_task_executions"
-            ] = 0
+            malformed_dynamic["parallel"]["workers"][0]["local_task_executions"] = 0
             malformed_path = directory / "parallel-dynamic-task-executions.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
@@ -1545,9 +1541,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            malformed_dynamic["parallel"]["aggregate"][
-                "scheduler_idle_waits"
-            ] += 1
+            malformed_dynamic["parallel"]["aggregate"]["scheduler_idle_waits"] += 1
             malformed_path = directory / "parallel-dynamic-scheduler-sum.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
@@ -1560,9 +1554,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            malformed_dynamic["parallel"]["aggregate"][
-                "task_queue_high_watermark"
-            ] += 1
+            malformed_dynamic["parallel"]["aggregate"]["task_queue_high_watermark"] += 1
             malformed_path = directory / "parallel-dynamic-queue-maximum.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
@@ -1608,12 +1600,8 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            malformed_dynamic["parallel"]["workers"][0][
-                "depth_two_tasks_spawned"
-            ] += 1
-            malformed_dynamic["parallel"]["aggregate"][
-                "depth_two_tasks_spawned"
-            ] += 1
+            malformed_dynamic["parallel"]["workers"][0]["depth_two_tasks_spawned"] += 1
+            malformed_dynamic["parallel"]["aggregate"]["depth_two_tasks_spawned"] += 1
             malformed_path = directory / "parallel-dynamic-depth-two-balance.json"
             malformed_path.write_text(
                 json.dumps(malformed_dynamic),
@@ -1627,9 +1615,7 @@ class BenchmarkTests(unittest.TestCase):
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["workers"][0]["busy_nanoseconds"] = 51
-            malformed_parallel["parallel"]["aggregate"][
-                "worker_busy_nanoseconds"
-            ] = 81
+            malformed_parallel["parallel"]["aggregate"]["worker_busy_nanoseconds"] = 81
             malformed_path = directory / "parallel-scheduler-busy-time.json"
             malformed_path.write_text(
                 json.dumps(malformed_parallel),
@@ -1662,9 +1648,9 @@ class BenchmarkTests(unittest.TestCase):
             )
 
             malformed_shared_cache = json.loads(json.dumps(mpi_dynamic_telemetry))
-            malformed_shared_cache["parallel"]["aggregate"][
-                "shared_assembly_cache"
-            ]["lock_acquisitions"] = 1
+            malformed_shared_cache["parallel"]["aggregate"]["shared_assembly_cache"][
+                "lock_acquisitions"
+            ] = 1
             malformed_path = directory / "parallel-shared-cache-lookups.json"
             malformed_path.write_text(
                 json.dumps(malformed_shared_cache),
@@ -1677,9 +1663,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             legacy_mpi_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
-            del legacy_mpi_dynamic["parallel"]["aggregate"][
-                "shared_assembly_cache"
-            ]
+            del legacy_mpi_dynamic["parallel"]["aggregate"]["shared_assembly_cache"]
             legacy_scheduler = legacy_mpi_dynamic["parallel"]["branch_scheduler"]
             legacy_scheduler["strategy"] = (
                 "dynamic_leases_with_static_mpi_rank_partition"
@@ -1710,12 +1694,8 @@ class BenchmarkTests(unittest.TestCase):
             )
 
             malformed_legacy = json.loads(json.dumps(legacy_mpi_dynamic))
-            malformed_legacy["parallel"]["workers"][0][
-                "branch_assignments"
-            ] = 2
-            malformed_legacy["parallel"]["workers"][1][
-                "branch_assignments"
-            ] = 0
+            malformed_legacy["parallel"]["workers"][0]["branch_assignments"] = 2
+            malformed_legacy["parallel"]["workers"][1]["branch_assignments"] = 0
             malformed_legacy["parallel"]["workers"][1]["branch_leases"] = 0
             malformed_legacy["parallel"]["aggregate"]["branch_leases"] = 1
             malformed_legacy_path = (
@@ -1732,12 +1712,8 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_legacy_path)
 
             redistributed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
-            redistributed_dynamic["parallel"]["workers"][0][
-                "branch_assignments"
-            ] = 2
-            redistributed_dynamic["parallel"]["workers"][1][
-                "branch_assignments"
-            ] = 0
+            redistributed_dynamic["parallel"]["workers"][0]["branch_assignments"] = 2
+            redistributed_dynamic["parallel"]["workers"][1]["branch_assignments"] = 0
             redistributed_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
             redistributed_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
             redistributed_path = directory / "parallel-dynamic-rank-redistribution.json"
@@ -1809,9 +1785,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             idle_lease_dynamic = json.loads(json.dumps(dynamic_telemetry))
-            idle_lease_dynamic["parallel"]["workers"][1][
-                "branch_assignments"
-            ] = 0
+            idle_lease_dynamic["parallel"]["workers"][1]["branch_assignments"] = 0
             idle_lease_dynamic["parallel"]["aggregate"]["branch_assignments"] = 1
             idle_lease_dynamic["parallel"]["branch_scan_complete"] = False
             idle_lease_path = directory / "parallel-dynamic-idle-lease.json"
@@ -1864,9 +1838,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
-            malformed_parallel["parallel"]["workers"][1][
-                "global_worker_index"
-            ] = 0
+            malformed_parallel["parallel"]["workers"][1]["global_worker_index"] = 0
             malformed_path = directory / "parallel-duplicate-worker.json"
             malformed_path.write_text(
                 json.dumps(malformed_parallel),
@@ -1879,9 +1851,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
-            malformed_parallel["parallel"]["workers"][0][
-                "busy_nanoseconds"
-            ] = 101
+            malformed_parallel["parallel"]["workers"][0]["busy_nanoseconds"] = 101
             malformed_path = directory / "parallel-worker-busy.json"
             malformed_path.write_text(
                 json.dumps(malformed_parallel),
@@ -1909,9 +1879,7 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.parse_search_telemetry(malformed_path)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
-            malformed_parallel["parallel"]["workers"][1][
-                "branch_candidates"
-            ] = 3
+            malformed_parallel["parallel"]["workers"][1]["branch_candidates"] = 3
             malformed_path = directory / "parallel-branch-disagreement.json"
             malformed_path.write_text(
                 json.dumps(malformed_parallel),

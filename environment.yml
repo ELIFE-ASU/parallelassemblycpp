@@ -7,3 +7,4 @@ dependencies:
   - ninja
   - openmpi
   - python>=3.10
+  - ruff>=0.16,<0.17

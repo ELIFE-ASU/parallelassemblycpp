@@ -227,7 +227,7 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
     switch (definition.flag)
     {
         case InputFlag::runtime:
-            runTimeMax = parseUnsignedFlag(definition, value);
+            maximumRuntimeTicks = parseUnsignedFlag(definition, value);
             break;
 
         case InputFlag::enumMax:
@@ -244,12 +244,12 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
                     "; got '" + value + "'"
                 );
             }
-            ENUM_MAX = static_cast<int>(parsed);
+            maximumEnumerationCount = static_cast<int>(parsed);
             break;
         }
 
         case InputFlag::pathway:
-            isPathway = parseBooleanFlag(definition, value);
+            pathwayOutputEnabled = parseBooleanFlag(definition, value);
             break;
 
         case InputFlag::parallel:
@@ -273,7 +273,7 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             break;
 
         case InputFlag::memoryReport:
-            memTest = parseBooleanFlag(definition, value);
+            memoryReportEnabled = parseBooleanFlag(definition, value);
             break;
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -285,7 +285,7 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 #endif
 
         case InputFlag::writeIntermediateMAsFlag:
-            writeIntermediateMAs = parseBooleanFlag(definition, value);
+            writeIntermediateAssemblyIndices = parseBooleanFlag(definition, value);
             break;
     }
 }
@@ -305,9 +305,9 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
     std::unordered_set<int> seenFlags;
     bool optionsEnabled = true;
 
-    for (int i = 1; i < argc; i++)
+    for (int argumentIndex = 1; argumentIndex < argc; argumentIndex++)
     {
-        const string argument = argv[i];
+        const string argument = argv[argumentIndex];
 
         if (optionsEnabled && argument == "--")
         {

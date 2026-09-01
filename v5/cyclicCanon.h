@@ -355,7 +355,8 @@ struct cyclicCanonForm
 class cyclicCanonSearch
 {
 public:
-    explicit cyclicCanonSearch(const cyclicCanonGraph &_graph): graph(_graph) {}
+    explicit cyclicCanonSearch(const cyclicCanonGraph &inputGraph):
+        graph(inputGraph) {}
 
     [[nodiscard]] std::vector<std::uint64_t> run()
     {
@@ -747,11 +748,11 @@ template<typename Graph>
 }
 
 [[nodiscard]] inline cyclicCanonGraph buildWholeGraphCanonRepresentation(
-    molGraph &mg,
+    molGraph &graph,
     std::uint64_t labelKind = 0
 )
 {
-    return buildWholeGraphCanonRepresentationImpl(mg, labelKind);
+    return buildWholeGraphCanonRepresentationImpl(graph, labelKind);
 }
 
 [[nodiscard]] inline cyclicCanonGraph buildWholeGraphCanonRepresentation(
@@ -763,10 +764,10 @@ template<typename Graph>
 }
 
 [[nodiscard]] inline cyclicCanonGraph buildColouredTwoCoreRepresentation(
-    molGraph &mg
+    molGraph &graph
 )
 {
-    return buildColouredTwoCoreRepresentationImpl(mg);
+    return buildColouredTwoCoreRepresentationImpl(graph);
 }
 
 [[nodiscard]] inline cyclicCanonGraph buildColouredTwoCoreRepresentation(
@@ -776,9 +777,11 @@ template<typename Graph>
     return buildColouredTwoCoreRepresentationImpl(graph);
 }
 
-[[nodiscard]] inline cyclicCanonForm canonicaliseCyclicGraph(molGraph &mg)
+[[nodiscard]] inline cyclicCanonForm canonicaliseCyclicGraph(molGraph &graph)
 {
-    return canonicaliseCyclicCanonGraph(buildColouredTwoCoreRepresentation(mg));
+    return canonicaliseCyclicCanonGraph(
+        buildColouredTwoCoreRepresentation(graph)
+    );
 }
 
 [[nodiscard]] inline cyclicCanonForm canonicaliseCyclicGraph(
@@ -790,9 +793,11 @@ template<typename Graph>
     );
 }
 
-[[nodiscard]] inline cyclicCanonForm canonicaliseWholeGraph(molGraph &mg)
+[[nodiscard]] inline cyclicCanonForm canonicaliseWholeGraph(molGraph &graph)
 {
-    return canonicaliseCyclicCanonGraph(buildWholeGraphCanonRepresentation(mg));
+    return canonicaliseCyclicCanonGraph(
+        buildWholeGraphCanonRepresentation(graph)
+    );
 }
 
 [[nodiscard]] inline cyclicCanonForm canonicaliseWholeGraph(

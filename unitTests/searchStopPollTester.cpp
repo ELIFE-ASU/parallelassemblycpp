@@ -14,9 +14,9 @@
 #include <vector>
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 
 #include "../v5/activeWordMask.h"
 #include "../v5/distributedRootMapping.h"
@@ -113,7 +113,7 @@ int main()
 {
     if (!distributedRootMappingsAreValid()) return 1;
 
-    runTimeMax = numeric_limits<unsigned long long>::max();
+    maximumRuntimeTicks = numeric_limits<unsigned long long>::max();
     searchStopPollCountdown = 0;
     searchStopInnerPollCountdown = 0;
     setInterruptFlag(false);
@@ -141,12 +141,12 @@ int main()
     setInterruptFlag(false);
     runtimeLimitReached = false;
     startTime = clock();
-    runTimeMax = numeric_limits<unsigned long long>::max() - 1;
+    maximumRuntimeTicks = numeric_limits<unsigned long long>::max() - 1;
     searchStopPollCountdown = 0;
     if (searchShouldStop()) return 1;
     if (searchStopPollCountdown != searchStopPollInterval - 1) return 1;
 
-    runTimeMax = 0;
+    maximumRuntimeTicks = 0;
     for (size_t skipped = 1; skipped < searchStopPollInterval; skipped++)
     {
         if (searchShouldStop()) return 1;

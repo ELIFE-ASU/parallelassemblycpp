@@ -71,27 +71,25 @@ class Regression:
 
 
 def parse_topology_spec(value: str) -> TopologySpec:
-    parts = value.split(":", 2)
-    if len(parts) != 3:
-        raise ScalingError(
-            f"invalid topology {value!r}: expected LABEL:WORKERS:PATH"
-        )
+    fields = value.split(":", 2)
+    if len(fields) != 3:
+        raise ScalingError(f"invalid topology {value!r}: expected LABEL:WORKERS:PATH")
 
-    label, workers_text, path_text = (part.strip() for part in parts)
+    label, worker_count_text, report_path_text = (field.strip() for field in fields)
     if not label:
         raise ScalingError(f"invalid topology {value!r}: label must not be empty")
-    if not workers_text.isdigit():
+    if not worker_count_text.isdigit():
         raise ScalingError(
             f"invalid topology {value!r}: workers must be a positive integer"
         )
-    workers = int(workers_text)
-    if workers < 1:
+    worker_count = int(worker_count_text)
+    if worker_count < 1:
         raise ScalingError(
             f"invalid topology {value!r}: workers must be a positive integer"
         )
-    if not path_text:
+    if not report_path_text:
         raise ScalingError(f"invalid topology {value!r}: path must not be empty")
-    return TopologySpec(label, workers, Path(path_text).expanduser())
+    return TopologySpec(label, worker_count, Path(report_path_text).expanduser())
 
 
 def string_at(document: object, keys: Sequence[str], context: str) -> str:
@@ -124,9 +122,7 @@ def positive_number_at(
             f"invalid {context}: expected a finite positive number"
         ) from error
     if not math.isfinite(result) or result <= 0:
-        raise ScalingError(
-            f"invalid {context}: expected a finite positive number"
-        )
+        raise ScalingError(f"invalid {context}: expected a finite positive number")
     return result
 
 
@@ -154,7 +150,7 @@ def execution_identity(
     if not isinstance(environment, dict):
         raise ScalingError(f"invalid {role} environment configuration in {path}")
 
-    normalized_environment = []
+    normalized_environment: list[tuple[str, str]] = []
     for key, value in environment.items():
         if (
             not isinstance(key, str)
@@ -171,9 +167,12 @@ def execution_identity(
 
 
 def positive_worker_value(value: str, context: str) -> int:
-    if not value.isdigit() or int(value) < 1:
+    if not value.isdigit():
         raise ScalingError(f"invalid {context}: expected a positive integer")
-    return int(value)
+    worker_count = int(value)
+    if worker_count < 1:
+        raise ScalingError(f"invalid {context}: expected a positive integer")
+    return worker_count
 
 
 def mpi_rank_count(execution: ExecutionIdentity, context: str) -> int:
@@ -181,11 +180,11 @@ def mpi_rank_count(execution: ExecutionIdentity, context: str) -> int:
     index = 0
     while index < len(execution.launcher):
         argument = execution.launcher[index]
-        parsed: int | None = None
+        parsed_rank_count: int | None = None
         if argument in MPI_RANK_FLAGS:
             if index + 1 >= len(execution.launcher):
                 raise ScalingError(f"missing MPI rank count in {context}")
-            parsed = positive_worker_value(
+            parsed_rank_count = positive_worker_value(
                 execution.launcher[index + 1],
                 f"MPI rank count in {context}",
             )
@@ -195,14 +194,14 @@ def mpi_rank_count(execution: ExecutionIdentity, context: str) -> int:
             if match is None:
                 match = MPI_EQUALS_RANK_PATTERN.fullmatch(argument)
             if match is not None:
-                parsed = positive_worker_value(
+                parsed_rank_count = positive_worker_value(
                     match.group(1),
                     f"MPI rank count in {context}",
                 )
-        if parsed is not None:
+        if parsed_rank_count is not None:
             if rank_count is not None:
                 raise ScalingError(f"multiple MPI rank counts in {context}")
-            rank_count = parsed
+            rank_count = parsed_rank_count
         index += 1
     return 1 if rank_count is None else rank_count
 
@@ -210,7 +209,7 @@ def mpi_rank_count(execution: ExecutionIdentity, context: str) -> int:
 def execution_worker_count(execution: ExecutionIdentity, context: str) -> int:
     environment = dict(execution.environment)
     thread_text = environment.get("OMP_NUM_THREADS")
-    threads = (
+    thread_count = (
         1
         if thread_text is None
         else positive_worker_value(thread_text, f"OMP_NUM_THREADS in {context}")
@@ -221,21 +220,22 @@ def execution_worker_count(execution: ExecutionIdentity, context: str) -> int:
             thread_limit_text,
             f"OMP_THREAD_LIMIT in {context}",
         )
-        threads = min(threads, thread_limit)
-    return mpi_rank_count(execution, context) * threads
+        thread_count = min(thread_count, thread_limit)
+    return mpi_rank_count(execution, context) * thread_count
 
 
 def load_result(path: Path) -> dict[str, object]:
     try:
         with path.open(encoding="utf-8") as stream:
-            document = json.load(stream)
+            document: object = json.load(stream)
     except (OSError, json.JSONDecodeError) as error:
         raise ScalingError(
             f"could not read benchmark report {path}: {error}"
         ) from error
     if not isinstance(document, dict):
         raise ScalingError(f"invalid benchmark report {path}: expected an object")
-    if document.get("schema_version") != 2:
+    schema_version = document.get("schema_version")
+    if type(schema_version) is not int or schema_version != 2:
         raise ScalingError(
             f"invalid benchmark report {path}: expected schema_version 2"
         )
@@ -272,14 +272,14 @@ def corpus_identity(document: dict[str, object], path: Path) -> CorpusIdentity:
 
 
 def parse_wall_samples(
-    case: dict[str, object],
+    case_result: dict[str, object],
     role: str,
     runs: int,
     expected_assembly_index: int,
     case_name: str,
     path: Path,
 ) -> tuple[float, ...]:
-    container = case.get(role)
+    container = case_result.get(role)
     if not isinstance(container, dict):
         raise ScalingError(f"missing {role} measurements for {case_name!r} in {path}")
     samples = container.get("measurements")
@@ -291,15 +291,14 @@ def parse_wall_samples(
             f"expected {runs}, got {len(samples)}"
         )
 
-    wall_samples = []
+    wall_samples: list[float] = []
     for expected_round, sample in enumerate(samples, start=1):
         if not isinstance(sample, dict):
             raise ScalingError(
                 f"invalid {role} sample {expected_round} for {case_name!r} in {path}"
             )
-        if sample.get("round") != expected_round or isinstance(
-            sample.get("round"), bool
-        ):
+        round_number = sample.get("round")
+        if type(round_number) is not int or round_number != expected_round:
             raise ScalingError(
                 f"invalid {role} round order for {case_name!r} in {path}"
             )
@@ -396,65 +395,71 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
             f"invalid run count in {spec.path}: expected a positive integer"
         )
 
-    identity = corpus_identity(document, spec.path)
-    cases = document.get("cases")
-    if not isinstance(cases, list) or not cases:
+    corpus = corpus_identity(document, spec.path)
+    case_results = document.get("cases")
+    if not isinstance(case_results, list) or not case_results:
         raise ScalingError(f"missing benchmark cases in {spec.path}")
 
-    case_scaling = []
+    case_speedups: list[CaseScaling] = []
     wall_samples: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
     seen_names: set[str] = set()
-    for index, case in enumerate(cases):
-        if not isinstance(case, dict):
+    for index, case_result in enumerate(case_results):
+        if not isinstance(case_result, dict):
             raise ScalingError(f"invalid benchmark case {index} in {spec.path}")
-        name = string_at(case, ("name",), f"benchmark case {index} name in {spec.path}")
+        name = string_at(
+            case_result,
+            ("name",),
+            f"benchmark case {index} name in {spec.path}",
+        )
         if name in seen_names:
             raise ScalingError(f"duplicate benchmark case {name!r} in {spec.path}")
         seen_names.add(name)
-        expected_assembly_index = case.get("expected_assembly_index")
-        if isinstance(expected_assembly_index, bool) or not isinstance(
-            expected_assembly_index, int
-        ):
+        expected_assembly_index = case_result.get("expected_assembly_index")
+        if type(expected_assembly_index) is not int:
             raise ScalingError(
                 f"invalid expected assembly index for {name!r} in {spec.path}"
             )
 
-        candidate = parse_wall_samples(
-            case,
+        candidate_samples = parse_wall_samples(
+            case_result,
             "candidate",
             runs,
             expected_assembly_index,
             name,
             spec.path,
         )
-        baseline = parse_wall_samples(
-            case,
+        baseline_samples = parse_wall_samples(
+            case_result,
             "baseline",
             runs,
             expected_assembly_index,
             name,
             spec.path,
         )
-        speedup = paired_median(baseline, candidate)
+        speedup = paired_median(baseline_samples, candidate_samples)
         require_recorded_median(
-            case,
+            case_result,
             ("comparison", "paired_wall_speedup", "median"),
             speedup,
             f"paired wall median for {name!r} in {spec.path}",
         )
-        case_scaling.append(CaseScaling(name, speedup))
-        wall_samples.append((baseline, candidate))
+        case_speedups.append(CaseScaling(name, speedup))
+        wall_samples.append((baseline_samples, candidate_samples))
 
-    corpus_names = {name for name, _ in identity.inputs}
+    corpus_names = {name for name, _ in corpus.inputs}
     if seen_names != corpus_names:
         raise ScalingError(
             f"benchmark case coverage does not match corpus in {spec.path}"
         )
 
-    round_ratios = []
+    round_ratios: list[float] = []
     for round_index in range(runs):
-        baseline_total = sum(samples[0][round_index] for samples in wall_samples)
-        candidate_total = sum(samples[1][round_index] for samples in wall_samples)
+        baseline_total = sum(
+            sample_pair[0][round_index] for sample_pair in wall_samples
+        )
+        candidate_total = sum(
+            sample_pair[1][round_index] for sample_pair in wall_samples
+        )
         if not math.isfinite(baseline_total) or not math.isfinite(candidate_total):
             raise ScalingError(f"non-finite suite round total in {spec.path}")
         round_ratios.append(baseline_total / candidate_total)
@@ -468,11 +473,11 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
     return ScalingResult(
         spec,
         suite,
-        identity,
+        corpus,
         baseline_sha256,
         baseline_execution,
         candidate_sha256,
-        tuple(case_scaling),
+        tuple(case_speedups),
         suite_speedup,
     )
 
@@ -600,17 +605,17 @@ def create_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(arguments: Sequence[str] | None = None) -> int:
-    parsed = create_argument_parser().parse_args(arguments)
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = create_argument_parser().parse_args(argv)
     try:
-        specs = [parse_topology_spec(value) for value in parsed.topologies]
+        specs = [parse_topology_spec(value) for value in arguments.topologies]
         results = evaluate_specs(specs)
     except ScalingError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
     failures = print_report(results)
-    if parsed.require_all_faster:
+    if arguments.require_all_faster:
         if failures:
             noun = "regression" if len(failures) == 1 else "regressions"
             print(f"FAIL: {len(failures)} case wall {noun}.")
@@ -625,4 +630,4 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

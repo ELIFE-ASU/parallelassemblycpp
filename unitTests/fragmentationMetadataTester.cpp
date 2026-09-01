@@ -20,9 +20,9 @@
 #include <vector>
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 
 #include "../v5/activeWordMask.h"
 
@@ -59,10 +59,14 @@ EdgeMask makeMask(initializer_list<size_t> edges)
 
 void configurePathGraph(size_t edgeCount)
 {
+    assert(
+        edgeCount < static_cast<size_t>(numeric_limits<int>::max()) &&
+        edgeCount <= static_cast<size_t>(numeric_limits<unsigned int>::max())
+    );
     bitsetHashTable.clear();
     graphHashMap.clear();
     clearTreeCanonInterner();
-    univEdgeList.clear();
+    universeEdgeList.clear();
     targetMolecule = molGraph();
     std::destroy_at(std::addressof(allEdges));
     EdgeMask::configure(edgeCount);
@@ -71,11 +75,14 @@ void configurePathGraph(size_t edgeCount)
     for (size_t atomIndex = 0; atomIndex <= edgeCount; atomIndex++)
         targetMolecule.addAtom(atomType);
     for (size_t edge = 0; edge < edgeCount; edge++)
-        targetMolecule.addBond(edge, edge + 1, 1);
-    univEdgeList = targetMolecule.writeEdgeList();
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    {
+        const int firstVertex = static_cast<int>(edge);
+        targetMolecule.addBond(firstVertex, firstVertex + 1, 1);
+    }
+    universeEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     AtomMask::configure(edgeCount + 1);
-    totalBonds = edgeCount;
+    totalBonds = static_cast<unsigned int>(edgeCount);
 }
 
 /** Own one production duplicate level and keep its sealed spans alive. */
@@ -86,8 +93,11 @@ struct dagDuplicateLevelFixture
     size_t duplicateSize;
     size_t fragmentCount;
 
-    dagDuplicateLevelFixture(size_t _duplicateSize, size_t _fragmentCount):
-        duplicateSize(_duplicateSize), fragmentCount(_fragmentCount)
+    dagDuplicateLevelFixture(
+        size_t duplicateSizeValue,
+        size_t fragmentCountValue
+    ):
+        duplicateSize(duplicateSizeValue), fragmentCount(fragmentCountValue)
     {
         rebuild();
     }
@@ -156,7 +166,7 @@ vector<int> resolveFirstCacheReplay(
     for (const assemblyFragment &fragment : output.fragments)
         assert(fragment.canonicalId == unknownCanonicalId);
 
-    vi key;
+    IntegerVector key;
     assert(canoniseAssemblyStateAndBuildKey(output, key, workspace));
     vector<int> canonicalIds;
     for (const assemblyFragment &fragment : output.fragments)
@@ -247,7 +257,7 @@ void testFragmentMetadataAndSelectiveCanonisation()
     assert(child.fragments[4].connected);
 
     const size_t initialCachedMaskCount = bitsetHashTable.size();
-    vi key;
+    IntegerVector key;
     assert(canoniseAssemblyStateAndBuildKey(child, key, workspace));
     assert(bitsetHashTable.size() == initialCachedMaskCount + 3);
     assert(key.size() == child.fragments.size());
@@ -261,7 +271,7 @@ void testFragmentMetadataAndSelectiveCanonisation()
 
     const size_t cachedMaskCount = bitsetHashTable.size();
     const size_t canonicalClassCount = graphHashMap.size();
-    const vi firstKey = key;
+    const IntegerVector firstKey = key;
     assert(canoniseAssemblyStateAndBuildKey(child, key, workspace));
     assert(key == firstKey);
     assert(bitsetHashTable.size() == cachedMaskCount);
@@ -297,14 +307,14 @@ void testMultipleResidualCacheBindings()
     ufdsMaskConstructWithWorkspace(identity, child.fragments, workspace);
     ufdsMaskConstructWithWorkspace(split, child.fragments, workspace);
     assert(child.fragments.size() == 4);
-    for (size_t i = 1; i < child.fragments.size(); i++)
-        assert(child.fragments[i].canonicalId == unknownCanonicalId);
+    for (size_t index = 1; index < child.fragments.size(); index++)
+        assert(child.fragments[index].canonicalId == unknownCanonicalId);
 
-    vi key;
+    IntegerVector key;
     assert(canoniseAssemblyStateAndBuildKey(child, key, workspace));
     vector<int> resolvedIds;
-    for (size_t i = 1; i < child.fragments.size(); i++)
-        resolvedIds.push_back(child.fragments[i].canonicalId);
+    for (size_t index = 1; index < child.fragments.size(); index++)
+        resolvedIds.push_back(child.fragments[index].canonicalId);
 
     assemblyState replay;
     replay.appendFragment(makeMask({0, 1}), 2, 700, true);
@@ -312,8 +322,10 @@ void testMultipleResidualCacheBindings()
     ufdsMaskConstructWithWorkspace(identity, replay.fragments, workspace);
     ufdsMaskConstructWithWorkspace(split, replay.fragments, workspace);
     assert(replay.fragments.size() == 4);
-    for (size_t i = 1; i < replay.fragments.size(); i++)
-        assert(replay.fragments[i].canonicalId == resolvedIds[i - 1]);
+    for (size_t index = 1; index < replay.fragments.size(); index++)
+        assert(
+            replay.fragments[index].canonicalId == resolvedIds[index - 1]
+        );
 }
 
 void testResidualCacheCanonicalIdWriteback()
@@ -417,15 +429,19 @@ void testFragmentPairMatchingTraversal()
     assert(duplicates.isValid());
     vector<int> fragmentsByOccurrence;
     for (const potentialDuplicate &occurrence : duplicates.list)
-        fragmentsByOccurrence.push_back(occurrence.fragment);
+        fragmentsByOccurrence.push_back(occurrence.fragmentIndex);
 
     vector<pair<size_t, size_t>> expectedPairs;
     assert(duplicates.visitMatchingsInReverse(
         [&](validMatchings &matching, size_t first, size_t second)
         {
             assert(first < second);
-            assert(matching.frag1 == fragmentsByOccurrence[first]);
-            assert(matching.frag2 == fragmentsByOccurrence[second]);
+            assert(
+                matching.firstFragmentIndex == fragmentsByOccurrence[first]
+            );
+            assert(
+                matching.secondFragmentIndex == fragmentsByOccurrence[second]
+            );
             expectedPairs.emplace_back(
                 matching.first.findFirst(),
                 matching.second.findFirst()
@@ -655,8 +671,12 @@ void testFragmentPairMatchingTraversal()
         [&](validMatchings &matching, size_t first, size_t second)
         {
             assert(first < second);
-            assert(matching.frag1 == interleavedFragments[first]);
-            assert(matching.frag2 == interleavedFragments[second]);
+            assert(
+                matching.firstFragmentIndex == interleavedFragments[first]
+            );
+            assert(
+                matching.secondFragmentIndex == interleavedFragments[second]
+            );
             ++expectedFallbackPairs;
             return false;
         },
@@ -670,8 +690,12 @@ void testFragmentPairMatchingTraversal()
         [&](validMatchings &matching, size_t first, size_t second)
         {
             assert(first < second);
-            assert(matching.frag1 == interleavedFragments[first]);
-            assert(matching.frag2 == interleavedFragments[second]);
+            assert(
+                matching.firstFragmentIndex == interleavedFragments[first]
+            );
+            assert(
+                matching.secondFragmentIndex == interleavedFragments[second]
+            );
             return false;
         },
         [&](validMatchings &)
@@ -703,12 +727,12 @@ void testDuplicateClassCsrStorage()
     const auto &secondClass = interleaved.level.classes[1].duplicates;
     assert(firstClass.list.size() == 3);
     assert(secondClass.list.size() == 3);
-    assert(firstClass.list[0].idx == 1);
-    assert(firstClass.list[1].idx == 3);
-    assert(firstClass.list[2].idx == 5);
-    assert(secondClass.list[0].idx == 0);
-    assert(secondClass.list[1].idx == 2);
-    assert(secondClass.list[2].idx == 4);
+    assert(firstClass.list[0].duplicateIndex == 1);
+    assert(firstClass.list[1].duplicateIndex == 3);
+    assert(firstClass.list[2].duplicateIndex == 5);
+    assert(secondClass.list[0].duplicateIndex == 0);
+    assert(secondClass.list[1].duplicateIndex == 2);
+    assert(secondClass.list[2].duplicateIndex == 4);
 
     // Sparse rows retain the complete fragment domain while storing only
     // non-empty fragment unions.

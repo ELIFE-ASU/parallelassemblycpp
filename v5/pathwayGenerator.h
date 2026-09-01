@@ -14,41 +14,44 @@ struct assemblyPathStep
  * @brief Subroutine of the pathway reconstruction function
  *
  * @param mask Bitset representing edges to output
- * @param ofs Output file stream
+ * @param outputStream Output file stream
  */
-void printMaskAsEdgeList(EdgeMask mask, ofstream &ofs)
+void printMaskAsEdgeList(EdgeMask mask, ofstream &outputStream)
 {
-    const vector<edgeL> &edgeList = searchUniverseEdgeList();
-    ofs << "[";
+    const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
+    outputStream << "[";
     bool first = true;
-    for (size_t i = 0; i < edgeList.size(); i++)
+    for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
     {
-        if (mask[i])
+        if (mask[edgeIndex])
         {
-            if (!first) ofs << ',';
-            ofs << "[" << edgeList[i].a << "," << edgeList[i].b << "]";
+            if (!first) outputStream << ',';
+            outputStream
+                << "[" << edgeList[edgeIndex].sourceAtomIndex << ","
+                << edgeList[edgeIndex].targetAtomIndex << "]";
             first = false;
         }
     }
-    ofs << "]";
+    outputStream << "]";
 }
 
 /**
  * @brief Subroutine of the pathway reconstruction function
  *
- * @param ofs Output file stream
+ * @param outputStream Output file stream
  */
-void printMaskAsEdgeList(ofstream &ofs)
+void printMaskAsEdgeList(ofstream &outputStream)
 {
-    ofs << "[";
+    outputStream << "[";
     bool first = true;
-    for (const edgeL &edge : originalEdgeList)
+    for (const MoleculeEdge &edge : originalEdgeList)
     {
-        if (!first) ofs << ',';
-        ofs << "[" << edge.a << "," << edge.b << "]";
+        if (!first) outputStream << ',';
+        outputStream << "[" << edge.sourceAtomIndex << ","
+            << edge.targetAtomIndex << "]";
         first = false;
     }
-    ofs << "]";
+    outputStream << "]";
 }
 
 /**
@@ -110,51 +113,71 @@ void printBondColour(short type, ostream &output)
  * @brief Subroutine of the pathway reconstruction function
  *
  * @param step Matching pair to output
- * @param ofs Output file stream
+ * @param outputStream Output file stream
  */
-void printMatching(const assemblyPathStep &step, ofstream &ofs)
+void printMatching(const assemblyPathStep &step, ofstream &outputStream)
 {
-    ofs << "{\"Left\":";
-    printMaskAsEdgeList(step.match, ofs);
-    ofs << ",\"Right\":";
-    printMaskAsEdgeList(step.duplicate, ofs);
-    ofs << "}";
+    outputStream << "{\"Left\":";
+    printMaskAsEdgeList(step.match, outputStream);
+    outputStream << ",\"Right\":";
+    printMaskAsEdgeList(step.duplicate, outputStream);
+    outputStream << "}";
 }
 
 /**
  * @brief Subroutine of the pathway reconstruction function
  *
- * @param ofs Output file stream
+ * @param outputStream Output file stream
  */
-void printOriginalGraph(ofstream &ofs)
+void printOriginalGraph(ofstream &outputStream)
 {
-    ofs << "\"Vertices\": [";
-    for (size_t i = 0; i < originalMolecule.mg.size(); i++)
+    outputStream << "\"Vertices\": [";
+    for (
+        size_t atomIndex = 0;
+        atomIndex < originalMolecule.atoms.size();
+        atomIndex++
+    )
     {
-            ofs << i;
-            if (i < originalMolecule.mg.size() - 1) ofs << ',';
+            outputStream << atomIndex;
+            if (atomIndex < originalMolecule.atoms.size() - 1)
+                outputStream << ',';
     }
-    ofs << "],\n";
-    ofs << "\"Edges\": ";
-    printMaskAsEdgeList(ofs);
-    ofs << ",\n";
-    ofs << "\"VertexColours\": [";
-    for (size_t i = 0; i < originalMolecule.mg.size(); i++)
+    outputStream << "],\n";
+    outputStream << "\"Edges\": ";
+    printMaskAsEdgeList(outputStream);
+    outputStream << ",\n";
+    outputStream << "\"VertexColours\": [";
+    for (
+        size_t atomIndex = 0;
+        atomIndex < originalMolecule.atoms.size();
+        atomIndex++
+    )
     {
-        printJsonString(originalMolecule.mg[i].type, ofs);
-        if (i < originalMolecule.mg.size() - 1) ofs << ',';
+        printJsonString(
+            originalMolecule.atoms[atomIndex].atomType,
+            outputStream
+        );
+        if (atomIndex < originalMolecule.atoms.size() - 1)
+            outputStream << ',';
     }
-    ofs << "],\n";
-    ofs << "\"EdgeColours\": [";
-    for (size_t i = 0; i < originalEdgeList.size(); i++)
+    outputStream << "],\n";
+    outputStream << "\"EdgeColours\": [";
+    for (
+        size_t edgeIndex = 0;
+        edgeIndex < originalEdgeList.size();
+        edgeIndex++
+    )
     {
         printBondColour(
-            originalMolecule.btypeS(originalEdgeList[i].a, originalEdgeList[i].c),
-            ofs
+            originalMolecule.bondType(
+                originalEdgeList[edgeIndex].sourceAtomIndex,
+                originalEdgeList[edgeIndex].sourceBondIndex
+            ),
+            outputStream
         );
-        if (i < originalEdgeList.size() - 1) ofs << ',';
+        if (edgeIndex < originalEdgeList.size() - 1) outputStream << ',';
     }
-    ofs << "]\n";
+    outputStream << "]\n";
 }
 
 
@@ -162,64 +185,67 @@ void printOriginalGraph(ofstream &ofs)
  * @brief Subroutine of the pathway reconstruction function
  *
  * @param mask Bitset representing target-graph edges to remove
- * @param ofs Output file stream
+ * @param outputStream Output file stream
  */
-void printRemnantGraph(EdgeMask mask, ofstream &ofs)
+void printRemnantGraph(EdgeMask mask, ofstream &outputStream)
 {
-    const vector<edgeL> &edgeList = searchUniverseEdgeList();
+    const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
     const molGraph &molecule = searchTargetMolecule();
     EdgeMask dual = allEdges ^ mask;
     AtomMask remnantAtoms = 0;
-    for (size_t i = 0; i < edgeList.size(); i++)
+    for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
     {
-        if (dual[i])
+        if (dual[edgeIndex])
         {
-            remnantAtoms.set(edgeList[i].a);
-            remnantAtoms.set(edgeList[i].b);
+            remnantAtoms.set(edgeList[edgeIndex].sourceAtomIndex);
+            remnantAtoms.set(edgeList[edgeIndex].targetAtomIndex);
         }
     }
-    ofs << "\"Vertices\": [";
+    outputStream << "\"Vertices\": [";
     bool first = true;
-    for (size_t i = 0; i < molecule.mg.size(); i++)
+    for (size_t atomIndex = 0; atomIndex < molecule.atoms.size(); atomIndex++)
     {
-        if (remnantAtoms[i])
+        if (remnantAtoms[atomIndex])
         {
-            if (!first) ofs << ',';
-            ofs << i;
+            if (!first) outputStream << ',';
+            outputStream << atomIndex;
             first = false;
         }
     }
-    ofs << "],\n";
-    ofs << "\"Edges\": ";
-    printMaskAsEdgeList(dual, ofs);
-    ofs << ",\n";
-    ofs << "\"VertexColours\": [";
+    outputStream << "],\n";
+    outputStream << "\"Edges\": ";
+    printMaskAsEdgeList(dual, outputStream);
+    outputStream << ",\n";
+    outputStream << "\"VertexColours\": [";
     first = true;
-    for (size_t i = 0; i < molecule.mg.size(); i++)
+    for (size_t atomIndex = 0; atomIndex < molecule.atoms.size(); atomIndex++)
     {
-        if (remnantAtoms[i])
+        if (remnantAtoms[atomIndex])
         {
-            if (!first) ofs << ',';
-            printJsonString(molecule.mg[i].type, ofs);
+            if (!first) outputStream << ',';
+            printJsonString(molecule.atoms[atomIndex].atomType, outputStream);
             first = false;
         }
     }
-    ofs << "],\n";
-    ofs << "\"EdgeColours\": [";
+    outputStream << "],\n";
+    outputStream << "\"EdgeColours\": [";
     first = true;
-    for (size_t i = 0; i < edgeList.size(); i++)
+    for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
     {
-        if (dual[i])
+        if (dual[edgeIndex])
         {
-            if (!first) ofs << ',';
+            if (!first) outputStream << ',';
             printBondColour(
-                molecule.btypeS(edgeList[i].a, edgeList[i].c),
-                ofs
+                molecule.bondType(
+                    edgeList[edgeIndex].sourceAtomIndex,
+                    edgeList[edgeIndex].sourceBondIndex
+                ),
+                outputStream
             );
             first = false;
         }
     }
-    ofs << "]\n";
+    outputStream << "]\n";
 }
 
 /**
@@ -233,48 +259,54 @@ void printRemnantGraph(EdgeMask mask, ofstream &ofs)
  */
 bool recoverPathway2(
     const vector<assemblyPathStep> &pathway,
-    const vector<edgeL> &removedEdges
+    const vector<MoleculeEdge> &removedEdges
 )
 {
     EdgeMask allTakenEdges = 0;
     for (const assemblyPathStep &step : pathway)
         allTakenEdges |= step.duplicate;
-    ofstream ofs(moleculeName);
-    if (!ofs.is_open())
+    ofstream outputStream(moleculeName);
+    if (!outputStream.is_open())
     {
         cerr << "error: could not open output file '" << moleculeName << "'\n";
         return false;
     }
 
-    ofs << "{\n";
-    ofs << "\"file_graph\":[\n";
-    ofs << "{\n";
-    printOriginalGraph(ofs);
-    ofs << "}\n";
-    ofs << "],\n";
-    ofs << "\"remnant\":[\n";
-    ofs << "{\n";
-    printRemnantGraph(allTakenEdges, ofs);
-    ofs << "}\n";
-    ofs << "],\n";
-    ofs << "\"duplicates\":[\n";
-    for (size_t i = 0; i < pathway.size(); i++)
+    outputStream << "{\n";
+    outputStream << "\"file_graph\":[\n";
+    outputStream << "{\n";
+    printOriginalGraph(outputStream);
+    outputStream << "}\n";
+    outputStream << "],\n";
+    outputStream << "\"remnant\":[\n";
+    outputStream << "{\n";
+    printRemnantGraph(allTakenEdges, outputStream);
+    outputStream << "}\n";
+    outputStream << "],\n";
+    outputStream << "\"duplicates\":[\n";
+    for (size_t stepIndex = 0; stepIndex < pathway.size(); stepIndex++)
     {
-        printMatching(pathway[i], ofs);
-        if (i < pathway.size() - 1) ofs << ",\n";
+        printMatching(pathway[stepIndex], outputStream);
+        if (stepIndex < pathway.size() - 1) outputStream << ",\n";
     }
-    ofs << "\n],\n";
-    ofs << "\"removed_edges\":[";    
-    for (size_t i = 0; i < removedEdges.size(); i++)
+    outputStream << "\n],\n";
+    outputStream << "\"removed_edges\":[";
+    for (
+        size_t removedEdgeIndex = 0;
+        removedEdgeIndex < removedEdges.size();
+        removedEdgeIndex++
+    )
     {
-        ofs << "[" << removedEdges[i].a << "," << removedEdges[i].b << "]";
-        if (i < removedEdges.size() - 1) ofs << ',';
+        outputStream
+            << "[" << removedEdges[removedEdgeIndex].sourceAtomIndex << ","
+            << removedEdges[removedEdgeIndex].targetAtomIndex << "]";
+        if (removedEdgeIndex < removedEdges.size() - 1) outputStream << ',';
     }
-    ofs << "]\n";
-    ofs << "}\n";
+    outputStream << "]\n";
+    outputStream << "}\n";
 
-    ofs.close();
-    if (!ofs)
+    outputStream.close();
+    if (!outputStream)
     {
         cerr << "error: could not write output file '" << moleculeName << "'\n";
         return false;

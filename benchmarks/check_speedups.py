@@ -91,7 +91,7 @@ def execution_identity(
     environment = config.get("environment")
     if not isinstance(environment, dict):
         raise GateError(f"invalid {role} environment configuration in {path}")
-    normalized_environment = []
+    normalized_environment: list[tuple[str, str]] = []
     for key, value in environment.items():
         if (
             not isinstance(key, str)
@@ -107,15 +107,14 @@ def execution_identity(
 def load_result(path: Path) -> dict[str, object]:
     try:
         with path.expanduser().open(encoding="utf-8") as stream:
-            document = json.load(stream)
+            document: object = json.load(stream)
     except (OSError, json.JSONDecodeError) as error:
         raise GateError(f"could not read benchmark report {path}: {error}") from error
     if not isinstance(document, dict):
         raise GateError(f"invalid benchmark report {path}: expected a JSON object")
-    if document.get("schema_version") != 2:
-        raise GateError(
-            f"invalid benchmark report {path}: expected schema_version 2"
-        )
+    schema_version = document.get("schema_version")
+    if type(schema_version) is not int or schema_version != 2:
+        raise GateError(f"invalid benchmark report {path}: expected schema_version 2")
     return document
 
 
@@ -197,7 +196,7 @@ def parse_measurements(
             f"expected exactly {runs}, got {len(samples)}"
         )
 
-    measurements = []
+    measurements: list[benchmark.Measurement] = []
     for expected_round, sample in enumerate(samples, start=1):
         if not isinstance(sample, dict):
             raise GateError(
@@ -205,9 +204,7 @@ def parse_measurements(
             )
         round_number = sample.get("round")
         if type(round_number) is not int or round_number != expected_round:
-            raise GateError(
-                f"invalid {role} round order for {case_name!r} in {path}"
-            )
+            raise GateError(f"invalid {role} round order for {case_name!r} in {path}")
         wall_value = sample.get("wall_seconds")
         try:
             wall_seconds = float(wall_value)
@@ -219,23 +216,17 @@ def parse_measurements(
             or not math.isfinite(wall_seconds)
             or wall_seconds <= 0
         ):
-            raise GateError(
-                f"invalid {role} wall sample for {case_name!r} in {path}"
-            )
+            raise GateError(f"invalid {role} wall sample for {case_name!r} in {path}")
         clock_ticks = sample.get("clock_ticks")
         if (
             type(clock_ticks) is not int
             or clock_ticks <= 0
             or clock_ticks > MAX_CLOCK_TICKS
         ):
-            raise GateError(
-                f"invalid {role} clock sample for {case_name!r} in {path}"
-            )
+            raise GateError(f"invalid {role} clock sample for {case_name!r} in {path}")
         assembly_index = sample.get("assembly_index")
         if type(assembly_index) is not int or assembly_index != expected_assembly_index:
-            raise GateError(
-                f"wrong {role} assembly index for {case_name!r} in {path}"
-            )
+            raise GateError(f"wrong {role} assembly index for {case_name!r} in {path}")
         measurements.append(
             benchmark.Measurement(wall_seconds, clock_ticks, assembly_index)
         )
@@ -263,16 +254,15 @@ def evaluate_results(
         for suite in benchmark.KNOWN_SUITES
     }
     expected_by_suite = {
-        suite: {case.name for case in cases}
-        for suite, cases in cases_by_suite.items()
+        suite: {case.name for case in cases} for suite, cases in cases_by_suite.items()
     }
     corpus_by_suite = {
         suite: benchmark.benchmark_corpus_metadata(manifest_path, cases)
         for suite, cases in cases_by_suite.items()
     }
-    documents: dict[str, tuple[Path, dict[str, object], int]] = {}
-    candidate_hash: str | None = None
-    baseline_hash: str | None = None
+    reports_by_suite: dict[str, tuple[Path, dict[str, object], int]] = {}
+    candidate_sha256: str | None = None
+    baseline_sha256: str | None = None
     candidate_execution: ExecutionIdentity | None = None
     baseline_execution: ExecutionIdentity | None = None
 
@@ -281,9 +271,9 @@ def evaluate_results(
         suite = string_at(document, ("suite",), f"suite in {path}")
         if suite not in expected_by_suite:
             raise GateError(f"unknown suite {suite!r} in {path}")
-        if suite in documents:
+        if suite in reports_by_suite:
             raise GateError(
-                f"duplicate suite {suite!r} in {documents[suite][0]} and {path}"
+                f"duplicate suite {suite!r} in {reports_by_suite[suite][0]} and {path}"
             )
 
         runs = document.get("runs")
@@ -305,55 +295,60 @@ def evaluate_results(
             raise GateError(f"invalid paired comparison order in {path}")
         validate_corpus_identity(document, path, corpus_by_suite[suite])
 
-        current_candidate = string_at(
+        report_candidate_sha256 = string_at(
             document,
             ("executables", "candidate", "sha256"),
             f"candidate SHA-256 in {path}",
         )
-        current_baseline = string_at(
+        report_baseline_sha256 = string_at(
             document,
             ("executables", "baseline", "sha256"),
             f"baseline SHA-256 in {path}",
         )
-        current_candidate_execution = execution_identity(document, "candidate", path)
-        current_baseline_execution = execution_identity(document, "baseline", path)
-        if candidate_hash is None:
-            candidate_hash = current_candidate
-            baseline_hash = current_baseline
-            candidate_execution = current_candidate_execution
-            baseline_execution = current_baseline_execution
+        report_candidate_execution = execution_identity(document, "candidate", path)
+        report_baseline_execution = execution_identity(document, "baseline", path)
+        if candidate_sha256 is None:
+            candidate_sha256 = report_candidate_sha256
+            baseline_sha256 = report_baseline_sha256
+            candidate_execution = report_candidate_execution
+            baseline_execution = report_baseline_execution
         elif (
-            current_candidate != candidate_hash
-            or current_baseline != baseline_hash
-            or current_candidate_execution != candidate_execution
-            or current_baseline_execution != baseline_execution
+            report_candidate_sha256 != candidate_sha256
+            or report_baseline_sha256 != baseline_sha256
+            or report_candidate_execution != candidate_execution
+            or report_baseline_execution != baseline_execution
         ):
             raise GateError(
                 "all reports must use the same candidate and baseline binary "
                 "and execution configurations"
             )
-        documents[suite] = (path, document, runs)
+        reports_by_suite[suite] = (path, document, runs)
 
-    missing_suites = [suite for suite in benchmark.KNOWN_SUITES if suite not in documents]
+    missing_suites = [
+        suite for suite in benchmark.KNOWN_SUITES if suite not in reports_by_suite
+    ]
     if missing_suites:
         raise GateError(f"missing benchmark suites: {', '.join(missing_suites)}")
-    if candidate_hash == baseline_hash and candidate_execution == baseline_execution:
+    if (
+        candidate_sha256 == baseline_sha256
+        and candidate_execution == baseline_execution
+    ):
         raise GateError(
             "candidate and baseline binary/execution identities must differ"
         )
 
     failures: list[GateFailure] = []
     for suite in benchmark.KNOWN_SUITES:
-        path, document, runs = documents[suite]
-        case_documents = document.get("cases")
-        if not isinstance(case_documents, list):
+        path, document, runs = reports_by_suite[suite]
+        case_results = document.get("cases")
+        if not isinstance(case_results, list):
             raise GateError(f"invalid cases in {path}: expected a list")
-        results_by_name: dict[
+        measurements_by_name: dict[
             str,
             tuple[tuple[benchmark.Measurement, ...], tuple[benchmark.Measurement, ...]],
         ] = {}
         case_results_by_name: dict[str, dict[str, object]] = {}
-        for index, case_result in enumerate(case_documents):
+        for index, case_result in enumerate(case_results):
             if not isinstance(case_result, dict):
                 raise GateError(f"invalid case {index} in {path}: expected an object")
             name = string_at(case_result, ("name",), f"case {index} name in {path}")
@@ -366,44 +361,56 @@ def evaluate_results(
         if actual_names != expected_names:
             missing = sorted(expected_names - actual_names)
             extra = sorted(actual_names - expected_names)
-            details = []
+            details: list[str] = []
             if missing:
                 details.append(f"missing {', '.join(missing)}")
             if extra:
                 details.append(f"unexpected {', '.join(extra)}")
-            raise GateError(f"wrong {suite} case coverage in {path}: {'; '.join(details)}")
+            raise GateError(
+                f"wrong {suite} case coverage in {path}: {'; '.join(details)}"
+            )
 
-        for current_case in cases_by_suite[suite]:
-            name = current_case.name
+        for benchmark_case in cases_by_suite[suite]:
+            name = benchmark_case.name
             case_result = case_results_by_name[name]
             reported_expected = case_result.get("expected_assembly_index")
+            expected_assembly_index = benchmark_case.expected_assembly_index
+            if expected_assembly_index is None:
+                raise GateError(
+                    f"missing reviewed assembly index for {name!r} in manifest"
+                )
             if (
                 type(reported_expected) is not int
-                or reported_expected != current_case.expected_assembly_index
+                or reported_expected != expected_assembly_index
             ):
                 raise GateError(f"stale expected assembly index for {name!r} in {path}")
-            assert current_case.expected_assembly_index is not None
-            candidate = parse_measurements(
+            candidate_measurements = parse_measurements(
                 case_result,
                 "candidate",
                 runs,
-                current_case.expected_assembly_index,
+                expected_assembly_index,
                 name,
                 path,
             )
-            baseline = parse_measurements(
+            baseline_measurements = parse_measurements(
                 case_result,
                 "baseline",
                 runs,
-                current_case.expected_assembly_index,
+                expected_assembly_index,
                 name,
                 path,
             )
-            results_by_name[name] = (candidate, baseline)
-            clock_summary = benchmark.paired_speedup_summary(
-                candidate, baseline, "clock_ticks"
+            measurements_by_name[name] = (
+                candidate_measurements,
+                baseline_measurements,
             )
-            assert clock_summary is not None
+            clock_summary = benchmark.paired_speedup_summary(
+                candidate_measurements,
+                baseline_measurements,
+                "clock_ticks",
+            )
+            if clock_summary is None:
+                raise GateError(f"missing paired clock samples for {name!r} in {path}")
             require_recorded_median(
                 case_result,
                 ("comparison", "paired_clock_speedup", "median"),
@@ -415,23 +422,23 @@ def evaluate_results(
                     GateFailure(suite, f"case {name} clock", clock_summary.median)
                 )
 
-        round_wall_ratios = []
-        round_clock_ratios = []
+        round_wall_ratios: list[float] = []
+        round_clock_ratios: list[float] = []
         for round_index in range(runs):
             candidate_wall = sum(
-                results_by_name[case.name][0][round_index].wall_seconds
+                measurements_by_name[case.name][0][round_index].wall_seconds
                 for case in cases_by_suite[suite]
             )
             baseline_wall = sum(
-                results_by_name[case.name][1][round_index].wall_seconds
+                measurements_by_name[case.name][1][round_index].wall_seconds
                 for case in cases_by_suite[suite]
             )
             candidate_clock = sum(
-                results_by_name[case.name][0][round_index].clock_ticks
+                measurements_by_name[case.name][0][round_index].clock_ticks
                 for case in cases_by_suite[suite]
             )
             baseline_clock = sum(
-                results_by_name[case.name][1][round_index].clock_ticks
+                measurements_by_name[case.name][1][round_index].clock_ticks
                 for case in cases_by_suite[suite]
             )
             round_wall_ratios.append(baseline_wall / candidate_wall)
@@ -458,10 +465,10 @@ def evaluate_results(
 
 
 def threshold_value(value: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed) or parsed < 0:
+    parsed_value = float(value)
+    if not math.isfinite(parsed_value) or parsed_value < 0:
         raise argparse.ArgumentTypeError("must be a finite non-negative number")
-    return parsed
+    return parsed_value
 
 
 def create_argument_parser() -> argparse.ArgumentParser:

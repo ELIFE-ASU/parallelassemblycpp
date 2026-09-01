@@ -60,7 +60,7 @@ struct assemblyState
 
     /**
      * @brief Old branch and bound heuristic, used only during initial enumeration
-     * 
+     *
      * @return int (maximum duplicatable bonds value). Lower bound MA is total
      * bonds - 1 - this value.
      */
@@ -71,103 +71,118 @@ struct assemblyState
 
     /**
      * @brief Bound duplicatable bonds using eligible edges in each fragment
-     * 
+     *
      * @param targetMasks The vector of bitsets used in place of sizeList
      */
     template<typename MaskRange>
     int maxDupBonds(
-        int maxFragSize,
+        int maximumFragmentSize,
         const MaskRange &targetMasks
     ) const
     {
-        int dupBondsTotal = -ceilLog2(maxFragSize);
-        for (size_t i = 0; i < fragments.size(); i++)
+        int totalDuplicateBondBound = -ceilLog2(maximumFragmentSize);
+        for (
+            size_t fragmentIndex = 0;
+            fragmentIndex < fragments.size();
+            fragmentIndex++
+        )
         {
-            dupBondsTotal += fixedSizeDupBondsForFragment(
-                fragments[i].edgeCount,
-                maxFragSize,
-                static_cast<int>(maskCountAt(targetMasks, i))
+            totalDuplicateBondBound += fixedSizeDupBondsForFragment(
+                fragments[fragmentIndex].edgeCount,
+                maximumFragmentSize,
+                static_cast<int>(maskCountAt(targetMasks, fragmentIndex))
             );
         }
-        return dupBondsTotal;
+        return totalDuplicateBondBound;
     }
 
     /**
      * @brief Like the function above but finds the maximum duplicate bonds for a vector of vector of bitsets
-     * 
-     * @param fragSizeListMax The result vector
+     *
+     * @param maximumByFragmentSize The result vector
      * @param targetMasks The vector of vector of bitsets
      */
     template<typename MaskTable>
     void maxDupBondsPrefix(
-        vi &fragSizeListMax,
-        int maxFragSize,
+        IntegerVector &maximumByFragmentSize,
+        int maximumFragmentSize,
         const MaskTable &targetMasks
     ) const
     {
-        if (maxFragSize < 2)
+        if (maximumFragmentSize < 2)
         {
-            fragSizeListMax.clear();
+            maximumByFragmentSize.clear();
             return;
         }
 
-        fragSizeListMax.assign(maxFragSize - 1, 0);
+        maximumByFragmentSize.assign(maximumFragmentSize - 1, 0);
         for (const assemblyFragment &fragment : fragments)
         {
-            fragSizeListMax[0] += fragment.edgeCount / 2;
+            maximumByFragmentSize[0] += fragment.edgeCount / 2;
         }
-        fragSizeListMax[0]--;
+        maximumByFragmentSize[0]--;
 
         for (int duplicateSize = 3;
-             duplicateSize <= maxFragSize;
+             duplicateSize <= maximumFragmentSize;
              duplicateSize++)
         {
             const size_t index = duplicateSize - 2;
             int bound = -ceilLog2(duplicateSize);
-            for (size_t i = 0; i < fragments.size(); i++)
+            for (
+                size_t fragmentIndex = 0;
+                fragmentIndex < fragments.size();
+                fragmentIndex++
+            )
             {
                 bound += fixedSizeDupBondsForFragment(
-                    fragments[i].edgeCount,
+                    fragments[fragmentIndex].edgeCount,
                     duplicateSize,
-                    static_cast<int>(tableMaskCountAt(targetMasks, index, i))
+                    static_cast<int>(tableMaskCountAt(
+                        targetMasks,
+                        index,
+                        fragmentIndex
+                    ))
                 );
             }
-            fragSizeListMax[index] = max(
+            maximumByFragmentSize[index] = max(
                 bound,
-                fragSizeListMax[index - 1]
+                maximumByFragmentSize[index - 1]
             );
         }
     }
 
     /**
      * @brief The simple branch and bound from v4
-     * 
-     * @param maxFragSize The maximum allowed fragment size
+     *
+     * @param maximumFragmentSize The maximum allowed fragment size
      * @return int The maximum number of duplicatable bonds
      */
-    int maxDupBonds(int maxFragSize) const
+    int maxDupBonds(int maximumFragmentSize) const
     {
-        int dupBonds2 = 0, dupBondsTotal;
+        int bestDuplicateBondBound = 0;
 
         for (const assemblyFragment &fragment : fragments)
-            dupBonds2 += fragment.edgeCount / 2;
-        dupBonds2--;
+            bestDuplicateBondBound += fragment.edgeCount / 2;
+        bestDuplicateBondBound--;
         for (int duplicateSize = 3;
-             duplicateSize <= maxFragSize;
+             duplicateSize <= maximumFragmentSize;
              duplicateSize++)
         {
-            dupBondsTotal = 0;
+            int candidateDuplicateBondBound = 0;
             for (const assemblyFragment &fragment : fragments)
             {
-                dupBondsTotal += unrestrictedDupBondsForFragment(
+                candidateDuplicateBondBound += unrestrictedDupBondsForFragment(
                     fragment.edgeCount,
                     duplicateSize
                 );
             }
-            dupBondsTotal -= ceilLog2(duplicateSize);
-            if (dupBondsTotal > dupBonds2) dupBonds2 = dupBondsTotal;
+            candidateDuplicateBondBound -= ceilLog2(duplicateSize);
+            bestDuplicateBondBound = max(
+                bestDuplicateBondBound,
+                candidateDuplicateBondBound
+            );
         }
-        return dupBonds2;
+        return bestDuplicateBondBound;
     }
 
 private:
@@ -197,20 +212,20 @@ public:
 
     /**
      * @brief Old branch and bound. Only used during initial enumeration
-     * 
+     *
      * @return int The Lower bound
      */
-    int lowBoundAI()
+    int lowerBoundAssemblyIndex()
     {
         return static_cast<int>(totalBonds) - sumDupBonds - 1 - maxDupBonds();
     }
 
     /**
      * @brief Upper bound MA given the sum of duplicatable bonds
-     * 
+     *
      * @return int The upper bound
      */
-    int AI()
+    int assemblyIndex()
     {
         return static_cast<int>(totalBonds) - sumDupBonds - 1;
     }
@@ -220,11 +235,15 @@ public:
      *
      * @param sorted Reused storage populated with the canonical key
      */
-    void assemblyHashCalculator(vi &sorted)
+    void assemblyHashCalculator(IntegerVector &sorted)
     {
         sorted.resize(fragments.size());
-        for (size_t i = 0; i < fragments.size(); i++)
-            sorted[i] = fragments[i].canonicalId;
+        for (
+            size_t fragmentIndex = 0;
+            fragmentIndex < fragments.size();
+            fragmentIndex++
+        )
+            sorted[fragmentIndex] = fragments[fragmentIndex].canonicalId;
         if (sorted.size() > 1) sort(sorted.begin() + 1, sorted.end());
     }
 };

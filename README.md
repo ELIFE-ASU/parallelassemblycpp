@@ -195,6 +195,26 @@ parallel parity and telemetry checks. See
 [unitTests/README.md](unitTests/README.md) for targeted commands and fixture
 details.
 
+### Quality gates
+
+All C++ targets compile with high-signal warnings treated as errors by default.
+The `ASSEMBLYCPP_STRICT_WARNINGS` CMake option exists for toolchain diagnosis,
+but changes should pass with it enabled. Check Python lint and formatting with:
+
+```bash
+ruff check .
+ruff format --check .
+python tools/check_repository.py
+```
+
+C++ variables, parameters, and data members use descriptive `lowerCamelCase`
+names, while C++ macros use `UPPER_SNAKE_CASE`. Python follows PEP 8:
+`snake_case` names, `UPPER_SNAKE_CASE` constants, single leading underscores
+for private or intentionally unused names, and protocol-required double
+underscores. Project CMake variables use the `ASSEMBLYCPP_UPPER_SNAKE_CASE`
+prefix. C++ project-defined identifiers avoid leading underscores and
+unexplained abbreviations. CI enforces the compiler and Python quality gates.
+
 ### Benchmarks
 
 Build the optimized candidate, then run a maintained suite:

@@ -9,8 +9,61 @@ permissions:
   contents: read
 
 jobs:
+  strict-clang:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure with Clang
+        run: >
+          cmake -S . -B build/clang -G Ninja
+          -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DASSEMBLYCPP_BUILD_TELEMETRY=ON
+          -DASSEMBLYCPP_FULL_REGRESSION_TESTS=OFF
+          -DASSEMBLYCPP_STRICT_WARNINGS=ON
+
+      - name: Build with Clang
+        run: cmake --build build/clang --parallel 2
+
+      - name: Test Clang unit targets
+        run: ctest --test-dir build/clang --output-on-failure -L unit
+
+      - name: Smoke-test Clang CLI
+        run: build/clang/AssemblyCpp --help
+
+  strict-msvc:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure with MSVC
+        run: >
+          cmake -S . -B build/msvc -G "Visual Studio 17 2022" -A x64
+          -DBUILD_TESTING=ON
+          -DASSEMBLYCPP_BUILD_TELEMETRY=ON
+          -DASSEMBLYCPP_BUILD_OPENMP=ON
+          -DASSEMBLYCPP_FULL_REGRESSION_TESTS=OFF
+          -DASSEMBLYCPP_STRICT_WARNINGS=ON
+
+      - name: Build with MSVC
+        run: cmake --build build/msvc --config Release --parallel 2
+
+      - name: Test MSVC unit targets
+        run: ctest --test-dir build/msvc -C Release --output-on-failure -L unit
+
+      - name: Smoke-test MSVC CLI
+        run: |
+          & .\build\msvc\Release\AssemblyCpp.exe --help
+          & .\build\msvc\Release\AssemblyCppOMP.exe --help
+
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash -el {0}
@@ -27,6 +80,12 @@ jobs:
           miniforge-version: latest
           channel-priority: strict
           conda-remove-defaults: true
+
+      - name: Check repository style
+        run: |
+          ruff format --check .
+          ruff check .
+          python tools/check_repository.py
 
       - name: Configure
         run: cmake --preset ci
@@ -121,7 +180,8 @@ jobs:
           if ! tar -tvzf "$source_archive" | awk '
             BEGIN { bad = 0 }
             $1 ~ /^d/ && $1 != "drwxr-xr-x" { bad = 1 }
-            $1 ~ /^-/ && $1 != "-rw-r--r--" { bad = 1 }
+            $1 ~ /^-/ && $NF ~ /\/output\/benchmarks\/.*\/run_benchmark.py$/ && $1 != "-rwxr-xr-x" { bad = 1 }
+            $1 ~ /^-/ && $NF !~ /\/output\/benchmarks\/.*\/run_benchmark.py$/ && $1 != "-rw-r--r--" { bad = 1 }
             END { exit bad }
           '; then
             echo 'error: source package permissions are not normalized' >&2
@@ -148,6 +208,9 @@ jobs:
             echo 'error: source package contains generated test output' >&2
             exit 1
           fi
+          cmake -E chdir "$source_root" ruff format --check .
+          cmake -E chdir "$source_root" ruff check .
+          python "$source_root/tools/check_repository.py"
           python "$source_root/unitTests/unitTester.py" --audit
           CXX=/usr/bin/g++ CXXFLAGS= LDFLAGS= cmake -E chdir "$source_root" cmake --preset release
           cmake -E chdir "$source_root" cmake --build --preset release

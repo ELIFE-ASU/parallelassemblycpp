@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "compilerAttributes.h"
+
 /**
  * @brief Hashes a molecular graph
  */
@@ -20,20 +22,20 @@ struct graphHash
     treeCanonForm treeHash;
     /// Cached coloured-core or whole-graph form with a lazy exact code.
     cyclicCanonForm cyclicHash;
-    
+
     /**
      * @brief Construct a new graph Hash object
      *
-     * @param mg molGraph to be hashed
+     * @param graph molGraph to be hashed
      * @param isCyclic Is the molecule cyclic
      */
-    graphHash(molGraph &mg, bool isCyclic)
+    graphHash(molGraph &graph, bool isCyclic)
     {
-        if (isCyclic) cyclicHash = canonicaliseCyclicGraph(mg);
+        if (isCyclic) cyclicHash = canonicaliseCyclicGraph(graph);
         else
         {
-            treeHash = centroidTreeCanon(mg, 0);
-            if (treeHash.empty()) cyclicHash = canonicaliseWholeGraph(mg);
+            treeHash = centroidTreeCanon(graph, 0);
+            if (treeHash.empty()) cyclicHash = canonicaliseWholeGraph(graph);
         }
     }
 
@@ -130,62 +132,73 @@ struct canonicalisationGraphWorkspace
     flatCanonGraph graph;
     std::uint64_t configuredInternerGeneration = 0;
     const atom *configuredAtomData = nullptr;
-    const edgeL *configuredEdgeData = nullptr;
+    const MoleculeEdge *configuredEdgeData = nullptr;
 
     /** Must be called after changing source atoms or the universe edge list. */
-    void configure(const molGraph &source, const std::vector<edgeL> &edgeList)
+    void configure(
+        const molGraph &source,
+        const std::vector<MoleculeEdge> &edgeList
+    )
     {
-        if (source.mg.size() > std::numeric_limits<std::uint32_t>::max())
+        if (source.atoms.size() > std::numeric_limits<std::uint32_t>::max())
             throw std::length_error("canonical graph has too many vertices");
 
         sourceLabels.clear();
-        sourceLabels.reserve(source.mg.size());
+        sourceLabels.reserve(source.atoms.size());
         sourceLegacyX.clear();
-        sourceLegacyX.reserve(source.mg.size());
-        for (const atom &vertex : source.mg)
+        sourceLegacyX.reserve(source.atoms.size());
+        for (const atom &vertex : source.atoms)
         {
-            sourceLabels.push_back(internTreeCanonAtom(vertex.type));
-            sourceLegacyX.push_back(vertex.type == "X");
+            sourceLabels.push_back(internTreeCanonAtom(vertex.atomType));
+            sourceLegacyX.push_back(vertex.atomType == "X");
         }
 
         sourceEdges.clear();
         sourceEdges.reserve(edgeList.size());
-        for (const edgeL &edge : edgeList)
+        for (const MoleculeEdge &edge : edgeList)
         {
             if (
-                edge.a < 0 || edge.b < 0 || edge.c < 0 || edge.a == edge.b ||
-                static_cast<std::size_t>(edge.a) >= source.mg.size() ||
-                static_cast<std::size_t>(edge.b) >= source.mg.size() ||
-                static_cast<std::size_t>(edge.c) >=
-                    source.mg[static_cast<std::size_t>(edge.a)].list.size()
+                edge.sourceAtomIndex < 0 || edge.targetAtomIndex < 0 ||
+                edge.sourceBondIndex < 0 ||
+                edge.sourceAtomIndex == edge.targetAtomIndex ||
+                static_cast<std::size_t>(edge.sourceAtomIndex) >=
+                    source.atoms.size() ||
+                static_cast<std::size_t>(edge.targetAtomIndex) >=
+                    source.atoms.size() ||
+                static_cast<std::size_t>(edge.sourceBondIndex) >=
+                    source.atoms[
+                        static_cast<std::size_t>(edge.sourceAtomIndex)
+                    ].bonds.size()
             )
             {
                 throw std::logic_error("canonical source edge is invalid");
             }
-            const bond &sourceBond = source.mg[edge.a].list[edge.c];
+            const bond &sourceBond =
+                source.atoms[edge.sourceAtomIndex]
+                    .bonds[edge.sourceBondIndex];
             sourceEdges.push_back({
-                static_cast<std::uint32_t>(edge.a),
-                static_cast<std::uint32_t>(edge.b),
+                static_cast<std::uint32_t>(edge.sourceAtomIndex),
+                static_cast<std::uint32_t>(edge.targetAtomIndex),
                 canonGraphBondType(sourceBond)
             });
         }
 
-        localVertex.resize(source.mg.size());
-        vertexEpoch.resize(source.mg.size(), 0);
-        unionNodes.reserve(source.mg.size());
-        degree.reserve(source.mg.size());
+        localVertex.resize(source.atoms.size());
+        vertexEpoch.resize(source.atoms.size(), 0);
+        unionNodes.reserve(source.atoms.size());
+        degree.reserve(source.atoms.size());
         selectedEdges.reserve(edgeList.size());
-        graph.labels.reserve(source.mg.size());
-        graph.adjacencyOffsets.reserve(source.mg.size() + 1);
+        graph.labels.reserve(source.atoms.size());
+        graph.adjacencyOffsets.reserve(source.atoms.size() + 1);
         graph.adjacency.reserve(edgeList.size() * 2);
         configuredInternerGeneration = treeCanonInternerGeneration;
-        configuredAtomData = source.mg.data();
+        configuredAtomData = source.atoms.data();
         configuredEdgeData = edgeList.data();
     }
 
     void ensureConfigured(
         const molGraph &source,
-        const std::vector<edgeL> &edgeList
+        const std::vector<MoleculeEdge> &edgeList
     )
     {
         // This catches interner resets and storage replacement. Call configure
@@ -193,9 +206,9 @@ struct canonicalisationGraphWorkspace
         // when vector sizes and backing addresses are unchanged.
         if (
             configuredInternerGeneration != treeCanonInternerGeneration ||
-            sourceLabels.size() != source.mg.size() ||
+            sourceLabels.size() != source.atoms.size() ||
             sourceEdges.size() != edgeList.size() ||
-            configuredAtomData != source.mg.data() ||
+            configuredAtomData != source.atoms.data() ||
             configuredEdgeData != edgeList.data()
         )
         {
@@ -272,7 +285,7 @@ struct canonicalisationGraphWorkspace
 
     /** Add one selected source edge without duplicating this large body in
      * the one-word and wide-mask iteration paths. */
-    [[gnu::noinline]] void addSelectedEdge(
+    ASSEMBLYCPP_NOINLINE void addSelectedEdge(
         std::size_t edgeIndex,
         bool &isCyclic
     )
@@ -322,7 +335,7 @@ struct canonicalisationGraphWorkspace
 
     const flatCanonGraph &build(
         const molGraph &source,
-        const std::vector<edgeL> &edgeList,
+        const std::vector<MoleculeEdge> &edgeList,
         const EdgeMask &mask,
         bool &isCyclic
     )
@@ -535,7 +548,7 @@ inline ASSEMBLYCPP_SEARCH_LOCAL sharedCanonicalIdRegistry
 
 void prepareCanonicalisationGraph(
     const molGraph &source,
-    const std::vector<edgeL> &edgeList
+    const std::vector<MoleculeEdge> &edgeList
 )
 {
     canonicalisationGraphScratch.configure(source, edgeList);
@@ -544,11 +557,12 @@ void prepareCanonicalisationGraph(
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
 ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
     graphHash,
-    pii,
+    IntegerPair,
     graphHashHasher
 > graphHashMap;
 #else
-ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, pii> graphHashMap;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, IntegerPair>
+    graphHashMap;
 #endif
 
 // The producer's canonical classes are immutable after DAG construction.
@@ -600,7 +614,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
 }
 
 /** Keep the allocation-heavy miss path out of the cache-hit instruction body. */
-[[gnu::noinline]] int canoniseCacheMiss(EdgeMask &mask)
+ASSEMBLYCPP_NOINLINE int canoniseCacheMiss(EdgeMask &mask)
 {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]
@@ -609,7 +623,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
 
     bool isCyclic = false;
     const molGraph &molecule = searchTargetMolecule();
-    const vector<edgeL> &edgeList = searchUniverseEdgeList();
+    const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
     const flatCanonGraph &graph = canonicalisationGraphScratch.build(
         molecule,
         edgeList,
@@ -618,7 +632,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
     );
     graphHash candidate(graph, isCyclic);
 
-    const pii *canonicalEntry = nullptr;
+    const IntegerPair *canonicalEntry = nullptr;
     if (sharedGraphHashSeed != nullptr)
     {
         bool canMatchSeed = true;
@@ -648,7 +662,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
     {
         auto localInsertion = graphHashMap.try_emplace(
             std::move(candidate),
-            pii{unknownCanonicalId, 0}
+            IntegerPair{unknownCanonicalId, 0}
         );
         localEntry = localInsertion.first;
         inserted = localInsertion.second;
@@ -705,7 +719,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
                         }
                     );
                 }
-                localEntry->second = pii{canonicalId, 1};
+                localEntry->second = IntegerPair{canonicalId, 1};
             }
             catch (...)
             {
@@ -727,7 +741,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
     if (!inserted && localEntry != graphHashMap.end())
         ++localEntry->second.second;
 
-    const pii canonical = *canonicalEntry;
+    const IntegerPair canonical = *canonicalEntry;
     bitsetHashTable.emplace(mask, canonical);
     return canonical.first;
 }

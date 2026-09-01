@@ -246,7 +246,8 @@ void testCopyMoveAndContainers(std::size_t width)
     // Reallocation repeatedly copies or moves masks which share their wide
     // storage. Mutating one element must not affect any other element.
     std::vector<Mask> copies;
-    for (std::size_t i = 0; i < 257; i++) copies.push_back(original);
+    for (std::size_t index = 0; index < 257; index++)
+        copies.push_back(original);
     assert(copies.front() == original);
     assert(copies.back() == original);
     copies[128].flip(2);

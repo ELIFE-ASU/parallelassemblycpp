@@ -1,67 +1,72 @@
 /**
  * @brief Splits an assembly state without canonicalising the resulting masks
  *
- * @param _target The assembly state to be fragmented
+ * @param target The assembly state to be fragmented
  * @param matching The duplicate pair. matching.first is retained and matching.second is deleted
  * @param duplicateCanonicalId Canonical ID of the enclosing duplicate class
- * @param _result The resulting assembly state
+ * @param result The resulting assembly state
  * @param workspace Buffers reused by successive fragmentation calls
  *
  * The caller may evaluate bitset-only bounds on the raw result. Unknown IDs
  * must be resolved before the state is hashed or recursively enumerated.
  */
 void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
-    assemblyState &_target,
+    assemblyState &target,
     validMatchings &matching,
     int duplicateCanonicalId,
-    assemblyState &_result,
+    assemblyState &result,
     ufdsMaskWorkspace &workspace
 )
 {
     workspace.beginFragmentation();
-    vector<assemblyFragment> &fragments = _target.fragments;
+    vector<assemblyFragment> &fragments = target.fragments;
     EdgeMask f1 = matching.first, f2 = matching.second;
-    const bool same = matching.frag1 == matching.frag2;
-    _result.appendFragment(
+    const bool same =
+        matching.firstFragmentIndex == matching.secondFragmentIndex;
+    result.appendFragment(
         f1,
-        matching.maxFragSize,
+        matching.maximumFragmentSize,
         duplicateCanonicalId,
         true
     );
     if (same)
     {
-        EdgeMask resultMask = fragments[matching.frag1].mask;
+        EdgeMask resultMask = fragments[matching.firstFragmentIndex].mask;
         resultMask ^= f1;
         resultMask ^= f2;
         ufdsMaskConstructWithWorkspace(
             resultMask,
-            _result.fragments,
+            result.fragments,
             workspace
         );
     }
     else
     {
-        EdgeMask resultMask1 = fragments[matching.frag1].mask;
+        EdgeMask resultMask1 = fragments[matching.firstFragmentIndex].mask;
         resultMask1 ^= f1;
         ufdsMaskConstructWithWorkspace(
             resultMask1,
-            _result.fragments,
+            result.fragments,
             workspace
         );
-        EdgeMask resultMask2 = fragments[matching.frag2].mask;
+        EdgeMask resultMask2 = fragments[matching.secondFragmentIndex].mask;
         resultMask2 ^= f2;
         ufdsMaskConstructWithWorkspace(
             resultMask2,
-            _result.fragments,
+            result.fragments,
             workspace
         );
     }
-    for (size_t i = 0; i < fragments.size(); i++)
+    for (size_t fragmentIndex = 0;
+         fragmentIndex < fragments.size();
+         fragmentIndex++)
     {
-        const assemblyFragment &fragment = fragments[i];
+        const assemblyFragment &fragment = fragments[fragmentIndex];
         if (
-            i != static_cast<size_t>(matching.frag1) &&
-            i != static_cast<size_t>(matching.frag2) &&
+            fragmentIndex !=
+                static_cast<size_t>(matching.firstFragmentIndex) &&
+            fragmentIndex !=
+                static_cast<size_t>(matching.secondFragmentIndex) &&
             fragment.mask != 0
         )
         {
@@ -71,11 +76,11 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
             {
                 ufdsMaskConstructWithWorkspace(
                     fragment.mask,
-                    _result.fragments,
+                    result.fragments,
                     workspace
                 );
             }
-            else _result.appendFragment(fragment);
+            else result.appendFragment(fragment);
         }
     }
 }
@@ -89,21 +94,25 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
  */
 bool canoniseAssemblyStateAndBuildKey(
     assemblyState &target,
-    vi &key,
+    IntegerVector &key,
     ufdsMaskWorkspace &workspace
 )
 {
     if (searchShouldStop()) return false;
     key.resize(target.fragments.size());
-    for (size_t i = 0; i < target.fragments.size(); i++)
+    for (
+        size_t fragmentIndex = 0;
+        fragmentIndex < target.fragments.size();
+        fragmentIndex++
+    )
     {
-        assemblyFragment &fragment = target.fragments[i];
+        assemblyFragment &fragment = target.fragments[fragmentIndex];
         if (fragment.canonicalId < 0)
         {
             fragment.canonicalId = canonise(fragment.mask);
             if (searchShouldStop()) return false;
         }
-        key[i] = fragment.canonicalId;
+        key[fragmentIndex] = fragment.canonicalId;
     }
     if (key.size() > 1) sort(key.begin() + 1, key.end());
     workspace.cacheCanonicalIds(target.fragments);

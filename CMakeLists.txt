@@ -36,6 +36,11 @@ option(
   "Enable link-time optimization"
   OFF
 )
+option(
+  ASSEMBLYCPP_STRICT_WARNINGS
+  "Treat high-signal compiler warnings as errors"
+  ON
+)
 set(
   ASSEMBLYCPP_PGO_PHASE
   "OFF"
@@ -314,6 +319,74 @@ function(assemblycpp_configure_target target)
       CXX_STANDARD_REQUIRED ON
       INSTALL_REMOVE_ENVIRONMENT_RPATH ON
   )
+
+  if(MSVC)
+    # These are language-conformance requirements, independent of diagnostics.
+    target_compile_options(
+      ${target}
+      PRIVATE
+        /permissive-
+        /Zc:__cplusplus
+        /Zc:preprocessor
+    )
+  endif()
+
+  if(ASSEMBLYCPP_STRICT_WARNINGS)
+    set_property(TARGET ${target} PROPERTY COMPILE_WARNING_AS_ERROR ON)
+
+    if(MSVC)
+      target_compile_options(
+        ${target}
+        PRIVATE
+          /W4
+          # Match the GNU/Clang policy: conversion warnings are handled in
+          # focused audits, cache-line alignment intentionally adds padding,
+          # and forced-inline failures are optimizer decisions rather than bugs.
+          /wd4244
+          /wd4267
+          /wd4324
+          /wd4714
+      )
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(
+        ${target}
+        PRIVATE
+          -Wall
+          -Wextra
+          -Wpedantic
+          -Wcast-align
+          -Wcast-qual
+          -Wdouble-promotion
+          -Wextra-semi
+          -Wformat=2
+          -Wimplicit-fallthrough
+          -Wnon-virtual-dtor
+          -Wnull-dereference
+          -Wold-style-cast
+          -Woverloaded-virtual
+          -Wshadow
+          -Wswitch-enum
+          -Wundef
+          -Wzero-as-null-pointer-constant
+      )
+
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(
+          ${target}
+          PRIVATE
+            -Wduplicated-branches
+            -Wduplicated-cond
+            -Wlogical-op
+        )
+      endif()
+    else()
+      message(
+        FATAL_ERROR
+        "ASSEMBLYCPP_STRICT_WARNINGS supports GNU, Clang-compatible, and "
+        "MSVC toolchains; disable it only for unsupported compiler diagnosis"
+      )
+    endif()
+  endif()
 
   if(ASSEMBLYCPP_ENABLE_LTO)
     set_property(
@@ -797,6 +870,20 @@ if(BUILD_TESTING)
   )
 
   add_test(
+    NAME tooling.repository-text-policy
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tools/check_repository.py"
+  )
+  set_tests_properties(
+    tooling.repository-text-policy
+    PROPERTIES
+      LABELS "tooling"
+      TIMEOUT 30
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  )
+
+  add_test(
     NAME tooling.benchmark-runner
     COMMAND
       "${Python3_EXECUTABLE}"
@@ -824,6 +911,21 @@ if(BUILD_TESTING)
     PROPERTIES
       LABELS "tooling"
       TIMEOUT 300
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  )
+
+  add_test(
+    NAME tooling.archived-benchmark-help
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/output/benchmarks/amino-acid-cpp-rust-2026-08-26/run_benchmark.py"
+      --help
+  )
+  set_tests_properties(
+    tooling.archived-benchmark-help
+    PROPERTIES
+      LABELS "tooling"
+      TIMEOUT 30
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   )
 

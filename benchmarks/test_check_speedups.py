@@ -12,9 +12,7 @@ from benchmarks import benchmark, check_speedups
 
 class CheckSpeedupsTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.manifest, self.cases = benchmark.load_manifest(
-            benchmark.DEFAULT_MANIFEST
-        )
+        self.manifest, self.cases = benchmark.load_manifest(benchmark.DEFAULT_MANIFEST)
 
     def write_result(
         self,
@@ -32,9 +30,7 @@ class CheckSpeedupsTests(unittest.TestCase):
         comparison_order: str = check_speedups.PAIRED_COMPARISON_ORDER,
     ) -> Path:
         overrides = case_speedups or {}
-        effective_runs = (
-            check_speedups.MINIMUM_RUNS[suite] if runs is None else runs
-        )
+        effective_runs = check_speedups.MINIMUM_RUNS[suite] if runs is None else runs
         selected_cases = [case for case in self.cases if suite in case.suites]
         case_documents = []
         candidate_clock_ticks = 100_000
@@ -82,9 +78,7 @@ class CheckSpeedupsTests(unittest.TestCase):
                     },
                     "comparison": {
                         "paired_wall_speedup": {"median": wall_speedup},
-                        "paired_clock_speedup": {
-                            "median": actual_clock_speedup
-                        },
+                        "paired_clock_speedup": {"median": actual_clock_speedup},
                     },
                 }
             )
@@ -102,10 +96,8 @@ class CheckSpeedupsTests(unittest.TestCase):
                 "baseline": {"sha256": baseline_hash},
             },
             "execution": {
-                "candidate": candidate_execution
-                or {"launcher": [], "environment": {}},
-                "baseline": baseline_execution
-                or {"launcher": [], "environment": {}},
+                "candidate": candidate_execution or {"launcher": [], "environment": {}},
+                "baseline": baseline_execution or {"launcher": [], "environment": {}},
             },
             "corpus": benchmark.benchmark_corpus_metadata(
                 self.manifest, selected_cases
@@ -113,9 +105,7 @@ class CheckSpeedupsTests(unittest.TestCase):
             "cases": case_documents,
             "comparison": {
                 "paired_round_wall_speedup": {"median": wall_speedup},
-                "paired_round_clock_speedup": {
-                    "median": aggregate_clock_speedup
-                },
+                "paired_round_clock_speedup": {"median": aggregate_clock_speedup},
             },
         }
         path = directory / f"{suite}.json"
@@ -123,10 +113,7 @@ class CheckSpeedupsTests(unittest.TestCase):
         return path
 
     def write_all_results(self, directory: Path) -> list[Path]:
-        return [
-            self.write_result(directory, suite)
-            for suite in benchmark.KNOWN_SUITES
-        ]
+        return [self.write_result(directory, suite) for suite in benchmark.KNOWN_SUITES]
 
     def test_accepts_complete_faster_results(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -342,6 +329,19 @@ class CheckSpeedupsTests(unittest.TestCase):
 
                 self.assertEqual(status, 2)
                 self.assertIn(expected_error, stderr.getvalue())
+
+    def test_rejects_noninteger_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            paths = self.write_all_results(Path(temp_directory))
+            document = json.loads(paths[0].read_text(encoding="utf-8"))
+            document["schema_version"] = 2.0
+            paths[0].write_text(json.dumps(document), encoding="utf-8")
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = check_speedups.main([str(path) for path in paths])
+
+        self.assertEqual(status, 2)
+        self.assertIn("schema_version 2", stderr.getvalue())
 
 
 if __name__ == "__main__":

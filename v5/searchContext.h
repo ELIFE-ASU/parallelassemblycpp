@@ -4,13 +4,14 @@
 #include <cstdint>
 #include <limits>
 
+#include "compilerAttributes.h"
 #include "distributedRootMapping.h"
 
 /** A root occurrence stored without an EdgeMask from the producer thread. */
 struct rootOccurrenceDescriptor
 {
     std::size_t wordOffset = 0;
-    std::int32_t fragment = 0;
+    std::int32_t fragmentIndex = 0;
 };
 
 /** One independently searchable root matching, expressed only as indices. */
@@ -61,9 +62,9 @@ struct SearchContext
 {
     molGraph originalMolecule;
     molGraph processedMolecule;
-    vector<edgeL> originalEdges;
-    vector<edgeL> removedEdges;
-    vector<edgeL> universeEdges;
+    vector<MoleculeEdge> originalEdges;
+    vector<MoleculeEdge> removedEdges;
+    vector<MoleculeEdge> universeEdges;
     vector<dagLevel> dag;
     vector<rootOccurrenceDescriptor> rootOccurrences;
     vector<std::uint64_t> occurrenceWords;
@@ -191,9 +192,9 @@ struct dagAssemblySearchFrame
     size_t duplicateLevelCount = 0;
     flatEdgeMaskAccumulatorTable targetMasks;
     EdgeMaskAccumulatorBuffer aggregateMasks;
-    vi fragSizeListMax;
-    vi unrestrictedParentTotals;
-    vi pairGenericBoundCache;
+    IntegerVector maximumByFragmentSize;
+    IntegerVector unrestrictedParentTotals;
+    IntegerVector pairGenericBoundCache;
     assemblyState candidate;
 
     void reset(size_t fragmentCount)
@@ -203,7 +204,7 @@ struct dagAssemblySearchFrame
         duplicateLevelCount = 0;
         targetMasks.reset(fragmentCount);
         aggregateMasks.reset(fragmentCount + 2);
-        fragSizeListMax.clear();
+        maximumByFragmentSize.clear();
         unrestrictedParentTotals.clear();
         pairGenericBoundCache.clear();
         candidate.clearFragments();
@@ -236,7 +237,7 @@ struct assemblySearchStorage
     bool stopAtPathwayTarget = false;
     bool pathwayTargetReached = false;
     duplicateClassIndexWorkspace duplicateClassIndex;
-    vi candidateKey;
+    IntegerVector candidateKey;
     deque<dagAssemblySearchFrame> recursiveFrames;
     size_t recursiveDepth = 0;
     // Parallel workers use these to route donated descendants back to their
@@ -245,9 +246,9 @@ struct assemblySearchStorage
     size_t parallelWorkerIndex = 0;
     unsigned int parallelTaskDepth = 1;
 
-    explicit assemblySearchStorage(assemblyPathWitness *_pathway = nullptr):
+    explicit assemblySearchStorage(assemblyPathWitness *pathwayOutput = nullptr):
         states(1024),
-        pathway(_pathway)
+        pathway(pathwayOutput)
     {
         // One search-wide scratch key is safe because every table operation
         // finishes before the synchronous recursive call can reuse it.
@@ -275,7 +276,7 @@ struct assemblySearchStorage
     }
 
     /** L1-first lookup for searches configured with a process-shared L2. */
-    [[gnu::noinline]] assemblyTranspositionTable::result considerShared(
+    ASSEMBLYCPP_NOINLINE assemblyTranspositionTable::result considerShared(
         std::span<const int> key,
         int sumDupBonds
     )
@@ -316,10 +317,10 @@ struct dagAssemblySearchFrameScope
     dagAssemblySearchFrame &frame;
 
     dagAssemblySearchFrameScope(
-        assemblySearchStorage &_storage,
+        assemblySearchStorage &searchStorage,
         size_t fragmentCount
     ):
-        storage(_storage),
+        storage(searchStorage),
         frame(storage.acquireRecursiveFrame(fragmentCount)) {}
 
     ~dagAssemblySearchFrameScope()
@@ -351,7 +352,7 @@ struct WorkerContext
         assemblyPathWitness *pathway = nullptr
     ):
         fragmentation(
-            context.processedMolecule.mg.size(),
+            context.processedMolecule.atoms.size(),
             context.universeEdges.size(),
             context.universeEdges
         ),
@@ -783,13 +784,17 @@ public:
         }
 
         parallelWorkerTaskDeque &owner = taskDeques[workerIndex];
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
         std::size_t ownerQueueSize = 0;
+#endif
         try
         {
             std::lock_guard<std::mutex> lock(owner.mutex);
             if (!owner.tasks.has_value()) owner.tasks.emplace();
             owner.tasks->push_back(std::move(task));
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
             ownerQueueSize = owner.tasks->size();
+#endif
             owner.ready.fetch_add(1, std::memory_order_release);
             readyTaskCount.value.fetch_add(1, std::memory_order_release);
         }

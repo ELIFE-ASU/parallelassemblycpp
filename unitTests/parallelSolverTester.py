@@ -137,14 +137,12 @@ LATE_REFILL_ADAPTIVE_TELEMETRY_CASE = SolverCase(
 PATHWAY_PARITY_NAME = "ketoconazole-pathway"
 PATHWAY_PARITY_SOURCE = TEST_DIRECTORY / "ketoconazole.mol"
 PATHWAY_PARITY_EXPECTED_INDEX = 22
-PATHWAY_PARITY_EXPECTED = (
-    TEST_DIRECTORY / "expected_pathways" / "ketoconazole.json"
-)
+PATHWAY_PARITY_EXPECTED = TEST_DIRECTORY / "expected_pathways" / "ketoconazole.json"
 MPI_TOPOLOGY = ParallelTopology("mpi", (1, 1))
 HYBRID_TOPOLOGY = ParallelTopology("hybrid", (2, 2))
 
 
-class TestFailure(RuntimeError):
+class TestFailureError(RuntimeError):
     """Raised when a solver result or telemetry invariant is incorrect."""
 
 
@@ -170,7 +168,7 @@ def resolve_path(path: Path) -> Path:
 
 def resolve_command_path(path: Path) -> Path:
     command = str(path)
-    if path.is_absolute() or path.parent != Path("."):
+    if path.is_absolute() or path.parent != Path():
         return resolve_path(path)
     discovered = shutil.which(command)
     return Path(discovered) if discovered is not None else resolve_path(path)
@@ -185,7 +183,7 @@ def load_cases(manifest_argument: Path) -> list[SolverCase]:
             reader = csv.DictReader(stream, delimiter="\t")
             required = {"name", "input", "expected_assembly_index"}
             if reader.fieldnames is None or not required.issubset(reader.fieldnames):
-                raise TestFailure(
+                raise TestFailureError(
                     f"invalid benchmark manifest header in {manifest}; "
                     f"required columns are {sorted(required)}"
                 )
@@ -195,12 +193,12 @@ def load_cases(manifest_argument: Path) -> list[SolverCase]:
                 if spec is None:
                     continue
                 if name in found:
-                    raise TestFailure(f"duplicate case {name!r} in {manifest}")
+                    raise TestFailureError(f"duplicate case {name!r} in {manifest}")
                 source = (manifest.parent / row["input"].strip()).resolve()
                 try:
                     expected_index = int(row["expected_assembly_index"])
                 except ValueError as error:
-                    raise TestFailure(
+                    raise TestFailureError(
                         f"invalid expected index for {name!r} in {manifest}"
                     ) from error
                 found[name] = SolverCase(
@@ -211,17 +209,19 @@ def load_cases(manifest_argument: Path) -> list[SolverCase]:
                     active_mask_words=spec.active_mask_words,
                 )
     except OSError as error:
-        raise TestFailure(
+        raise TestFailureError(
             f"cannot read benchmark manifest {manifest}: {error}"
         ) from error
 
     missing = [spec.name for spec in PARITY_CASES if spec.name not in found]
     if missing:
-        raise TestFailure(f"benchmark manifest is missing cases: {', '.join(missing)}")
+        raise TestFailureError(
+            f"benchmark manifest is missing cases: {', '.join(missing)}"
+        )
     cases = [found[spec.name] for spec in PARITY_CASES]
     absent_fixtures = [str(case.source) for case in cases if not case.source.is_file()]
     if absent_fixtures:
-        raise TestFailure(f"missing fixture(s): {', '.join(absent_fixtures)}")
+        raise TestFailureError(f"missing fixture(s): {', '.join(absent_fixtures)}")
     return cases
 
 
@@ -240,7 +240,9 @@ def executable_status(paths: Sequence[tuple[str, Path | None]]) -> int | None:
         if path is not None and not os.access(path, os.X_OK)
     ]
     if unusable:
-        raise TestFailure(f"solver target is not executable: {', '.join(unusable)}")
+        raise TestFailureError(
+            f"solver target is not executable: {', '.join(unusable)}"
+        )
     return None
 
 
@@ -378,12 +380,12 @@ def run_solver(
             )
         except subprocess.TimeoutExpired as error:
             configuration = topology.description if topology is not None else "serial"
-            raise TestFailure(
+            raise TestFailureError(
                 f"{case.name}: {executable.name} exceeded {timeout:g}s with "
                 f"{configuration} configuration"
             ) from error
         if completed.returncode != 0:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{case.name}: {executable.name} failed\n{format_completed(completed)}"
             )
 
@@ -392,13 +394,13 @@ def run_solver(
         try:
             output_text = output_path.read_text(encoding="utf-8")
         except OSError as error:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{case.name}: cannot read solver output {output_path}: {error}\n"
                 f"{format_completed(completed)}"
             ) from error
         match = ASSEMBLY_INDEX_PATTERN.search(output_text)
         if match is None:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{case.name}: assembly index is absent from {output_path}\n"
                 f"output file:\n{output_text}\n{format_completed(completed)}"
             )
@@ -410,18 +412,18 @@ def run_solver(
             try:
                 parsed = json.loads(telemetry_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
-                raise TestFailure(
+                raise TestFailureError(
                     f"{case.name}: cannot read telemetry {telemetry_path}: {error}"
                 ) from error
             if not isinstance(parsed, dict):
-                raise TestFailure(f"{case.name}: telemetry root must be an object")
+                raise TestFailureError(f"{case.name}: telemetry root must be an object")
             document = parsed
         return index, document
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
-        raise TestFailure(message)
+        raise TestFailureError(message)
 
 
 def require_nonnegative_integer(value: object, path: str) -> int:
@@ -525,9 +527,7 @@ def validate_root_enumeration_phases(
 ) -> None:
     """Require process-owned root setup to run once on each MPI rank."""
     memory = require_mapping(document.get("memory"), f"{prefix}: memory")
-    aggregate_phases = require_mapping(
-        memory.get("phases"), f"{prefix}: memory.phases"
-    )
+    aggregate_phases = require_mapping(memory.get("phases"), f"{prefix}: memory.phases")
     for phase_name in ROOT_ENUMERATION_PHASES:
         activations_per_rank = [0 for _ in range(topology.rank_count)]
         worker_activation_total = 0
@@ -606,13 +606,11 @@ def validate_parallel_telemetry(
         f"{prefix}: parallel.worker_count must be {requested_workers}",
     )
     require(
-        parallel.get("elapsed_timing_method")
-        == "parallel_region_steady_clock",
+        parallel.get("elapsed_timing_method") == "parallel_region_steady_clock",
         f"{prefix}: parallel.elapsed_timing_method is incorrect",
     )
     require(
-        parallel.get("busy_timing_method")
-        == "elapsed_minus_scheduler_idle_time",
+        parallel.get("busy_timing_method") == "elapsed_minus_scheduler_idle_time",
         f"{prefix}: parallel.busy_timing_method is incorrect",
     )
     require(
@@ -627,8 +625,7 @@ def validate_parallel_telemetry(
         f"{prefix}: legacy static shard ownership must be absent",
     )
     require(
-        branch_scheduler.get("strategy")
-        == "distributed_global_root_queue",
+        branch_scheduler.get("strategy") == "distributed_global_root_queue",
         f"{prefix}: parallel.branch_scheduler.strategy is incorrect",
     )
     lease_size = require_nonnegative_integer(
@@ -756,8 +753,7 @@ def validate_parallel_telemetry(
         )
         require(
             root_queue.get("participant_count") == topology.rank_count,
-            f"{worker_path}.root_queue.participant_count must be "
-            f"{topology.rank_count}",
+            f"{worker_path}.root_queue.participant_count must be {topology.rank_count}",
         )
 
         processed = require_mapping(
@@ -818,7 +814,7 @@ def validate_parallel_telemetry(
     worker_branch_candidates: list[int] = []
     branch_leases = 0
     branch_assignments = 0
-    scheduler_sums = {name: 0 for name in SCHEDULER_SUM_FIELDS}
+    scheduler_sums = dict.fromkeys(SCHEDULER_SUM_FIELDS, 0)
     maximum_task_queue_high_watermark = 0
     maximum_task_depth_executed = 0
     warm_starts_per_rank = [0 for _ in range(topology.rank_count)]
@@ -848,9 +844,7 @@ def validate_parallel_telemetry(
         branch_leases += leases
         branch_assignments += assignments
         scheduler_values = {
-            name: require_nonnegative_integer(
-                worker.get(name), f"{worker_path}.{name}"
-            )
+            name: require_nonnegative_integer(worker.get(name), f"{worker_path}.{name}")
             for name in SCHEDULER_SUM_FIELDS
         }
         task_queue_high_watermark = require_nonnegative_integer(
@@ -862,8 +856,7 @@ def validate_parallel_telemetry(
             f"{worker_path}.maximum_task_depth_executed",
         )
         require(
-            scheduler_values["task_steals"]
-            <= scheduler_values["task_steal_attempts"],
+            scheduler_values["task_steals"] <= scheduler_values["task_steal_attempts"],
             f"{worker_path}: successful task steals exceed attempts",
         )
         executed_tasks = (
@@ -871,8 +864,7 @@ def validate_parallel_telemetry(
             + scheduler_values["deeper_tasks_executed"]
         )
         require(
-            scheduler_values["local_task_executions"]
-            + scheduler_values["task_steals"]
+            scheduler_values["local_task_executions"] + scheduler_values["task_steals"]
             == executed_tasks,
             f"{worker_path}: local executions plus steals do not equal "
             "executed transferred tasks",
@@ -911,8 +903,7 @@ def validate_parallel_telemetry(
         require(busy <= elapsed, f"{worker_path}: busy time exceeds elapsed time")
         require(
             busy
-            == elapsed
-            - min(scheduler_values["scheduler_idle_nanoseconds"], elapsed),
+            == elapsed - min(scheduler_values["scheduler_idle_nanoseconds"], elapsed),
             f"{worker_path}: busy time does not equal elapsed time minus "
             "scheduler idle time",
         )
@@ -970,29 +961,20 @@ def validate_parallel_telemetry(
             f"{prefix}: aggregate {name} is not the worker sum",
         )
     require(
-        aggregate_task_queue_high_watermark
-        == maximum_task_queue_high_watermark,
+        aggregate_task_queue_high_watermark == maximum_task_queue_high_watermark,
         f"{prefix}: aggregate task queue high-water mark is not the worker maximum",
     )
     require(
         aggregate_maximum_task_depth == maximum_task_depth_executed,
         f"{prefix}: aggregate maximum task depth is not the worker maximum",
     )
-    aggregate_depth_two_spawned = aggregate_scheduler_values[
-        "depth_two_tasks_spawned"
-    ]
+    aggregate_depth_two_spawned = aggregate_scheduler_values["depth_two_tasks_spawned"]
     aggregate_depth_two_executed = aggregate_scheduler_values[
         "depth_two_tasks_executed"
     ]
-    aggregate_deeper_spawned = aggregate_scheduler_values[
-        "deeper_tasks_spawned"
-    ]
-    aggregate_deeper_executed = aggregate_scheduler_values[
-        "deeper_tasks_executed"
-    ]
-    aggregate_executed_tasks = (
-        aggregate_depth_two_executed + aggregate_deeper_executed
-    )
+    aggregate_deeper_spawned = aggregate_scheduler_values["deeper_tasks_spawned"]
+    aggregate_deeper_executed = aggregate_scheduler_values["deeper_tasks_executed"]
+    aggregate_executed_tasks = aggregate_depth_two_executed + aggregate_deeper_executed
     require(
         aggregate_scheduler_values["task_steals"]
         <= aggregate_scheduler_values["task_steal_attempts"],
@@ -1122,9 +1104,7 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
     environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
     if target.branch_lease_size is not None:
         require(target.branch_lease_size > 0, "branch lease size must be positive")
-        environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(
-            target.branch_lease_size
-        )
+        environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(target.branch_lease_size)
     if topology.mode in {"openmp", "hybrid"}:
         thread_text = str(threads)
         environment.update(
@@ -1139,7 +1119,7 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
             PATHWAY_PARITY_EXPECTED.read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError) as error:
-        raise TestFailure(
+        raise TestFailureError(
             f"cannot read expected pathway {PATHWAY_PARITY_EXPECTED}: {error}"
         ) from error
 
@@ -1169,16 +1149,14 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
         else:
             arguments = solver_arguments
         try:
-            completed = run_command(
-                arguments, working_directory, environment, timeout
-            )
+            completed = run_command(arguments, working_directory, environment, timeout)
         except subprocess.TimeoutExpired as error:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{PATHWAY_PARITY_NAME}: {target.label} pathway run exceeded "
                 f"{timeout:g}s"
             ) from error
         if completed.returncode != 0:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{PATHWAY_PARITY_NAME}: {target.executable.name} failed\n"
                 f"{format_completed(completed)}"
             )
@@ -1189,7 +1167,7 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
             output_text = output_path.read_text(encoding="utf-8")
             actual_pathway = json.loads(pathway_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{PATHWAY_PARITY_NAME}: cannot read parallel pathway output: "
                 f"{error}\n"
                 f"{format_completed(completed)}"
@@ -1212,9 +1190,7 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
             f"{PATHWAY_PARITY_EXPECTED}",
         )
 
-    print(
-        f"PASS pathway {PATHWAY_PARITY_NAME}: {target.label} index and JSON parity"
-    )
+    print(f"PASS pathway {PATHWAY_PARITY_NAME}: {target.label} index and JSON parity")
     return 1
 
 
@@ -1268,10 +1244,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
                 "--runtime=1000000000",
             ),
             0,
-            (
-                fallback_prefix
-                + "finite --runtime budgets require serial execution",
-            ),
+            (fallback_prefix + "finite --runtime budgets require serial execution",),
             (),
             False,
         ),
@@ -1284,8 +1257,10 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
             ),
             1,
             (
-                "error: --parallel=on cannot be honored: finite --runtime "
-                "budgets require serial execution",
+                (
+                    "error: --parallel=on cannot be honored: finite --runtime "
+                    "budgets require serial execution"
+                ),
             ),
             (),
             False,
@@ -1298,10 +1273,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
                 "--write-intermediate-mas=1",
             ),
             0,
-            (
-                fallback_prefix
-                + "--write-intermediate-mas requires serial execution",
-            ),
+            (fallback_prefix + "--write-intermediate-mas requires serial execution",),
             (),
             True,
         ),
@@ -1314,8 +1286,10 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
             ),
             1,
             (
-                "error: --parallel=on cannot be honored: "
-                "--write-intermediate-mas requires serial execution",
+                (
+                    "error: --parallel=on cannot be honored: "
+                    "--write-intermediate-mas requires serial execution"
+                ),
             ),
             (),
             False,
@@ -1350,7 +1324,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
                     timeout,
                 )
             except subprocess.TimeoutExpired as error:
-                raise TestFailure(
+                raise TestFailureError(
                     f"execution policy {name!r} exceeded {timeout:g}s"
                 ) from error
 
@@ -1377,7 +1351,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
                 try:
                     output_text = output_path.read_text(encoding="utf-8")
                 except OSError as error:
-                    raise TestFailure(
+                    raise TestFailureError(
                         f"execution policy {name!r} cannot read {output_path}: "
                         f"{error}\n{format_completed(completed)}"
                     ) from error
@@ -1429,9 +1403,8 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
                 timeout,
             )
         except subprocess.TimeoutExpired as error:
-            raise TestFailure(
-                f"{high_work_case.name}: default serial policy exceeded "
-                f"{timeout:g}s"
+            raise TestFailureError(
+                f"{high_work_case.name}: default serial policy exceeded {timeout:g}s"
             ) from error
         require(
             default_completed.returncode == 0,
@@ -1458,7 +1431,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
                 timeout,
             )
         except subprocess.TimeoutExpired as error:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{high_work_case.name}: automatic policy exceeded {timeout:g}s"
             ) from error
         require(
@@ -1475,7 +1448,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
         try:
             output_text = output_path.read_text(encoding="utf-8")
         except OSError as error:
-            raise TestFailure(
+            raise TestFailureError(
                 f"{high_work_case.name}: cannot read {output_path}: {error}\n"
                 f"{format_completed(completed)}"
             ) from error
@@ -1531,7 +1504,7 @@ def run_invalid_lease_configuration_suite(
                     timeout,
                 )
             except subprocess.TimeoutExpired as error:
-                raise TestFailure(
+                raise TestFailureError(
                     f"invalid branch lease size {value!r} exceeded {timeout:g}s"
                 ) from error
         display_value = repr(value)
@@ -1674,8 +1647,7 @@ def run_sparse_adaptive_telemetry_suite(
         require_depth_two_tasks=True,
     )
     print(
-        f"PASS telemetry {case.name}: forced-parallel depth-two work and "
-        "index parity"
+        f"PASS telemetry {case.name}: forced-parallel depth-two work and index parity"
     )
     return 2
 
@@ -2006,7 +1978,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 cases,
                 options.timeout,
             )
-    except TestFailure as error:
+    except TestFailureError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
     print(f"PASS: {runs} bounded parallel solver run(s)")

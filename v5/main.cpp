@@ -60,9 +60,9 @@ int assemblyCppMpiSize = 1;
 #endif
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 #include "activeWordMask.h"
 
 #ifdef ASSEMBLYCPP_LIBRARY_BUILD
@@ -99,23 +99,29 @@ constexpr int ceilLog2(int value)
 #include "help.h"
 
 /** Write the improved assembly indices recorded during the search. */
-bool writeoutIntermediateMAs(const string &filename)
+bool writeIntermediateAssemblyIndexFile(const string &filename)
 {
-    ofstream ofs(filename);
-    if (!ofs.is_open())
+    ofstream outputStream(filename);
+    if (!outputStream.is_open())
     {
         cerr << "error: could not open output file '" << filename << "'\n";
         return false;
     }
 
-    for (size_t i = 0; i < intermediateMAs.size(); i++)
+    for (
+        size_t entryIndex = 0;
+        entryIndex < intermediateAssemblyIndices.size();
+        entryIndex++
+    )
     {
-        ofs << intermediateMAs[i].first << ' '
-            << compensateDisjointAssemblyIndex(intermediateMAs[i].second) << '\n';
+        outputStream << intermediateAssemblyIndices[entryIndex].first << ' '
+            << compensateDisjointAssemblyIndex(
+                intermediateAssemblyIndices[entryIndex].second
+            ) << '\n';
     }
 
-    ofs.close();
-    if (!ofs)
+    outputStream.close();
+    if (!outputStream)
     {
         cerr << "error: could not write output file '" << filename << "'\n";
         return false;
@@ -218,11 +224,27 @@ constexpr uint64_t parallelAutomaticMinimumWorkUnits = UINT64_C(32768);
 
 bool configuredParallelBranchLeaseSize(size_t &leaseSize)
 {
+#if defined(_MSC_VER)
+    char *configuredBuffer = nullptr;
+    size_t configuredLength = 0;
+    const auto environmentStatus = _dupenv_s(
+        &configuredBuffer,
+        &configuredLength,
+        "ASSEMBLYCPP_BRANCH_LEASE_SIZE"
+    );
+    const unique_ptr<char, decltype(&std::free)> configuredOwner(
+        configuredBuffer,
+        &std::free
+    );
+    const char *configured = configuredOwner.get();
+    bool valid = environmentStatus == 0;
+#else
     const char *configured = std::getenv("ASSEMBLYCPP_BRANCH_LEASE_SIZE");
+    bool valid = true;
+#endif
     // Zero is the internal sentinel for the adaptive default. A user-provided
     // value must remain strictly positive.
     uint64_t parsedLeaseSize = 0;
-    bool valid = true;
     if (configured != nullptr && *configured != '\0')
     {
         const char *end = configured + std::char_traits<char>::length(configured);
@@ -366,9 +388,9 @@ bool hasMultipleParallelWorkers(int localThreads)
 
 string parallelCompatibilityFallbackReason(int localThreads)
 {
-    if (runTimeMax != std::numeric_limits<unsigned long long>::max())
+    if (maximumRuntimeTicks != std::numeric_limits<unsigned long long>::max())
         return "finite --runtime budgets require serial execution";
-    if (writeIntermediateMAs)
+    if (writeIntermediateAssemblyIndices)
         return "--write-intermediate-mas requires serial execution";
     if (!hasMultipleParallelWorkers(localThreads))
         return "only one worker is available";
@@ -381,16 +403,16 @@ bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
     constexpr size_t optionCount = 12;
     const array<unsigned long long, optionCount> local = {
         arguments.showHelp ? 1ULL : 0ULL,
-        static_cast<unsigned long long>(ENUM_MAX),
-        runTimeMax,
-        isPathway ? 1ULL : 0ULL,
+        static_cast<unsigned long long>(maximumEnumerationCount),
+        maximumRuntimeTicks,
+        pathwayOutputEnabled ? 1ULL : 0ULL,
         static_cast<unsigned long long>(parallelExecutionMode),
         static_cast<unsigned long long>(parallelThreadCount),
         removeHydrogens ? 1ULL : 0ULL,
         verbose ? 1ULL : 0ULL,
         disjointCompensation ? 1ULL : 0ULL,
-        memTest ? 1ULL : 0ULL,
-        writeIntermediateMAs ? 1ULL : 0ULL,
+        memoryReportEnabled ? 1ULL : 0ULL,
+        writeIntermediateAssemblyIndices ? 1ULL : 0ULL,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         searchTelemetryEnabled ? 1ULL : 0ULL
 #else
@@ -427,16 +449,16 @@ uint64_t parallelGraphFingerprint(const molGraph &graph)
         result *= UINT64_C(1099511628211);
     };
     mix(static_cast<uint64_t>(graph.totalBonds));
-    mix(static_cast<uint64_t>(graph.mg.size()));
-    for (const atom &entry : graph.mg)
+    mix(static_cast<uint64_t>(graph.atoms.size()));
+    for (const atom &entry : graph.atoms)
     {
-        mix(static_cast<uint64_t>(entry.type.size()));
-        for (const unsigned char value : entry.type) mix(value);
-        mix(static_cast<uint64_t>(entry.list.size()));
-        for (const bond &edge : entry.list)
+        mix(static_cast<uint64_t>(entry.atomType.size()));
+        for (const unsigned char value : entry.atomType) mix(value);
+        mix(static_cast<uint64_t>(entry.bonds.size()));
+        for (const bond &edge : entry.bonds)
         {
-            mix(static_cast<uint16_t>(edge.n));
-            mix(static_cast<uint16_t>(edge.type));
+            mix(static_cast<uint16_t>(edge.neighbourAtomIndex));
+            mix(static_cast<uint16_t>(edge.bondType));
         }
     }
     return result;
@@ -1069,7 +1091,9 @@ ParallelSearchResult runParallelSearch(
         : 0;
 #endif
     int globalWorkerCount = localThreads;
+#if defined(ASSEMBLYCPP_USE_MPI) || defined(ASSEMBLY_ENABLE_TELEMETRY)
     int globalWorkerOffset = 0;
+#endif
 #if defined(ASSEMBLYCPP_USE_MPI)
     MPI_Allreduce(
         &localThreads,
@@ -1155,7 +1179,7 @@ ParallelSearchResult runParallelSearch(
         {
             try
             {
-                serialSucceeded = isPathway
+                serialSucceeded = pathwayOutputEnabled
                     ? (runPreparedDeterministicSearch<true>(
                         searchContext,
                         output
@@ -1742,7 +1766,7 @@ ParallelSearchResult runParallelSearch(
     int pathwaySucceeded = 1;
     string pathwayError;
     if (
-        isPathway && globalSucceeded != 0 &&
+        pathwayOutputEnabled && globalSucceeded != 0 &&
         globalRuntimeLimit == 0 && globalUserInterrupt == 0
     )
     {
@@ -1935,13 +1959,13 @@ bool assemblyCalculator(const string &input)
     const bool explicitMolfile = hasMolfileExtension(input);
     const string outputBase =
         explicitMolfile ? input.substr(0, input.size() - 4) : input;
-    molGraph mol_graph;
+    molGraph molecule;
     string inputError;
 #if defined(ASSEMBLYCPP_USE_MPI)
     const bool configuredVerbose = verbose;
     if (!isPrimaryProcess()) verbose = false;
 #endif
-    int inputLoaded = loadMoleculeInput(input, mol_graph, inputError) ? 1 : 0;
+    int inputLoaded = loadMoleculeInput(input, molecule, inputError) ? 1 : 0;
 #if defined(ASSEMBLYCPP_USE_MPI)
     verbose = configuredVerbose;
     int allInputsLoaded = inputLoaded;
@@ -1991,7 +2015,7 @@ bool assemblyCalculator(const string &input)
     bool calculationSucceeded = false;
     try
     {
-        calculationSucceeded = runConfiguredSearch(mol_graph, outputFile);
+        calculationSucceeded = runConfiguredSearch(molecule, outputFile);
     }
     catch (const std::exception &exception)
     {
@@ -2003,8 +2027,8 @@ bool assemblyCalculator(const string &input)
     bool outputsSucceeded = calculationSucceeded;
 
     if (
-        isPrimaryProcess() && writeIntermediateMAs &&
-        !writeoutIntermediateMAs(outputBase + "IntermediateMAs")
+        isPrimaryProcess() && writeIntermediateAssemblyIndices &&
+        !writeIntermediateAssemblyIndexFile(outputBase + "IntermediateMAs")
     )
     {
         outputsSucceeded = false;
@@ -2044,38 +2068,40 @@ namespace
 
 class LibraryOptionScope
 {
-    int previousEnumerationLimit = ENUM_MAX;
-    unsigned long long previousRuntimeTicks = runTimeMax;
-    bool previousPathway = isPathway;
+    int previousEnumerationLimit = maximumEnumerationCount;
+    unsigned long long previousRuntimeTicks = maximumRuntimeTicks;
+    bool previousPathway = pathwayOutputEnabled;
     bool previousRemoveHydrogens = removeHydrogens;
     bool previousCompensateDisjoint = disjointCompensation;
     bool previousVerbose = verbose;
-    bool previousMemoryReport = memTest;
-    bool previousIntermediateMAs = writeIntermediateMAs;
+    bool previousMemoryReport = memoryReportEnabled;
+    bool previousWriteIntermediateAssemblyIndices =
+        writeIntermediateAssemblyIndices;
 
 public:
     explicit LibraryOptionScope(const assemblycpp::CalculationOptions &options)
     {
-        ENUM_MAX = options.enumerationLimit;
-        runTimeMax = options.runtimeTicks;
-        isPathway = false;
+        maximumEnumerationCount = options.enumerationLimit;
+        maximumRuntimeTicks = options.runtimeTicks;
+        pathwayOutputEnabled = false;
         removeHydrogens = options.removeHydrogens;
         disjointCompensation = options.compensateDisjoint;
         verbose = options.verbose;
-        memTest = false;
-        writeIntermediateMAs = false;
+        memoryReportEnabled = false;
+        writeIntermediateAssemblyIndices = false;
     }
 
     ~LibraryOptionScope()
     {
-        ENUM_MAX = previousEnumerationLimit;
-        runTimeMax = previousRuntimeTicks;
-        isPathway = previousPathway;
+        maximumEnumerationCount = previousEnumerationLimit;
+        maximumRuntimeTicks = previousRuntimeTicks;
+        pathwayOutputEnabled = previousPathway;
         removeHydrogens = previousRemoveHydrogens;
         disjointCompensation = previousCompensateDisjoint;
         verbose = previousVerbose;
-        memTest = previousMemoryReport;
-        writeIntermediateMAs = previousIntermediateMAs;
+        memoryReportEnabled = previousMemoryReport;
+        writeIntermediateAssemblyIndices =
+            previousWriteIntermediateAssemblyIndices;
     }
 };
 
@@ -2197,8 +2223,8 @@ std::vector<assemblycpp::CalculationResult> assemblycpp::calculateBatch(
 bool maxMemoryUsage(const string& outputFilename)
 {
     const string statusFilename = "/proc/self/status";
-    ifstream status_file(statusFilename);
-    if (!status_file.is_open())
+    ifstream statusFile(statusFilename);
+    if (!statusFile.is_open())
     {
         cerr << "error: could not open memory status file '"
              << statusFilename << "'\n";
@@ -2207,7 +2233,7 @@ bool maxMemoryUsage(const string& outputFilename)
 
     string line, peakMemory;
 
-    while (getline(status_file, line))
+    while (getline(statusFile, line))
     {
         if (line.rfind("VmPeak:", 0) == 0)
         {
@@ -2216,7 +2242,7 @@ bool maxMemoryUsage(const string& outputFilename)
         }
     }
 
-    if (status_file.bad())
+    if (statusFile.bad())
     {
         cerr << "error: could not read memory status file '"
              << statusFilename << "'\n";
@@ -2361,7 +2387,7 @@ int main(int argc, char** argv)
     disableInterruptHandler();
 
     #ifdef __linux__
-        if (isPrimaryProcess() && succeeded && memTest)
+        if (isPrimaryProcess() && succeeded && memoryReportEnabled)
             succeeded = maxMemoryUsage("memUsage");
     #endif
 

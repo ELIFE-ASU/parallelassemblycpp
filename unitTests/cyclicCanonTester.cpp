@@ -24,9 +24,9 @@
 #include <vector>
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 
 // Model the worker-local state used by the OpenMP executable. Each test thread
 // must have its own mask arena, canonical caches, interners, and scratch.
@@ -64,11 +64,15 @@ void require(bool condition, const string &message)
     if (!condition) fail(message);
 }
 
-vector<int> shuffledPermutation(size_t size, uint32_t seed)
+vector<int> shuffledPermutation(size_t vertexCount, uint32_t seed)
 {
-    vector<int> permutation(size);
+    require(
+        vertexCount <= static_cast<size_t>(numeric_limits<int>::max()),
+        "permutation is too large for integer vertex IDs"
+    );
+    vector<int> permutation(vertexCount);
     iota(permutation.begin(), permutation.end(), 0);
-    for (size_t remaining = size; remaining > 1; remaining--)
+    for (size_t remaining = vertexCount; remaining > 1; remaining--)
     {
         seed = seed * 1664525U + 1013904223U;
         swap(permutation[remaining - 1], permutation[seed % remaining]);
@@ -83,6 +87,10 @@ molGraph makeGraph(
     bool reverseEdges = false
 )
 {
+    require(
+        labels.size() <= static_cast<size_t>(numeric_limits<int>::max()),
+        "graph is too large for integer vertex IDs"
+    );
     vector<int> permutation = oldToNew;
     if (permutation.empty())
     {
@@ -93,17 +101,18 @@ molGraph makeGraph(
 
     vector<unsigned char> seen(labels.size(), 0);
     vector<string> permutedLabels(labels.size());
-    for (size_t old = 0; old < labels.size(); old++)
+    for (size_t oldIndex = 0; oldIndex < labels.size(); oldIndex++)
     {
-        const int replacement = permutation[old];
+        const int replacement = permutation[oldIndex];
+        const size_t replacementIndex = static_cast<size_t>(replacement);
         require(
             replacement >= 0 &&
-                static_cast<size_t>(replacement) < labels.size() &&
-                !seen[replacement],
+                replacementIndex < labels.size() &&
+                !seen[replacementIndex],
             "permutation is not a bijection"
         );
-        seen[replacement] = 1;
-        permutedLabels[replacement] = labels[old];
+        seen[replacementIndex] = 1;
+        permutedLabels[replacementIndex] = labels[oldIndex];
     }
 
     molGraph result;
@@ -111,7 +120,19 @@ molGraph makeGraph(
     const auto addOne = [&](const edgeSpec &edge)
     {
         const auto [left, right, bondType] = edge;
-        result.addBond(permutation[left], permutation[right], bondType);
+        const size_t leftIndex = static_cast<size_t>(left);
+        const size_t rightIndex = static_cast<size_t>(right);
+        require(
+            left >= 0 && right >= 0 &&
+                leftIndex < permutation.size() &&
+                rightIndex < permutation.size(),
+            "edge endpoint is outside the graph"
+        );
+        result.addBond(
+            permutation[leftIndex],
+            permutation[rightIndex],
+            bondType
+        );
     };
     if (reverseEdges)
     {
@@ -231,36 +252,39 @@ struct exactGraph
 
 exactGraph describeGraph(const molGraph &graph)
 {
-    const size_t size = graph.mg.size();
+    const size_t vertexCount = graph.atoms.size();
     exactGraph result;
-    result.labels.reserve(size);
-    result.bonds.assign(size, vector<bondLabelBag>(size));
-    result.incidentBondLabels.resize(size);
-    result.neighbourhoods.resize(size);
+    result.labels.reserve(vertexCount);
+    result.bonds.assign(vertexCount, vector<bondLabelBag>(vertexCount));
+    result.incidentBondLabels.resize(vertexCount);
+    result.neighbourhoods.resize(vertexCount);
 
-    for (const atom &vertex : graph.mg) result.labels.push_back(vertex.type);
-    for (size_t first = 0; first < size; first++)
+    for (const atom &vertex : graph.atoms)
+        result.labels.push_back(vertex.atomType);
+    for (size_t first = 0; first < vertexCount; first++)
     {
-        for (const bond &edge : graph.mg[first].list)
+        for (const bond &edge : graph.atoms[first].bonds)
         {
             require(
-                edge.n >= 0 && static_cast<size_t>(edge.n) < size,
+                edge.neighbourAtomIndex >= 0 &&
+                    static_cast<size_t>(edge.neighbourAtomIndex) < vertexCount,
                 "graph contains an out-of-range bond endpoint"
             );
-            result.incidentBondLabels[first].push_back(edge.type);
+            result.incidentBondLabels[first].push_back(edge.bondType);
 
-            const size_t second = static_cast<size_t>(edge.n);
+            const size_t second =
+                static_cast<size_t>(edge.neighbourAtomIndex);
             if (first < second)
             {
-                result.bonds[first][second].push_back(edge.type);
-                result.bonds[second][first].push_back(edge.type);
+                result.bonds[first][second].push_back(edge.bondType);
+                result.bonds[second][first].push_back(edge.bondType);
             }
             else if (first == second)
             {
                 // molGraph records both ends of a self-loop in the same list.
                 // Keeping both entries still gives an exact, consistent
                 // multiplicity for comparisons between molGraph instances.
-                result.bonds[first][first].push_back(edge.type);
+                result.bonds[first][first].push_back(edge.bondType);
             }
         }
         sort(
@@ -269,9 +293,9 @@ exactGraph describeGraph(const molGraph &graph)
         );
     }
 
-    for (size_t first = 0; first < size; first++)
+    for (size_t first = 0; first < vertexCount; first++)
     {
-        for (size_t second = 0; second < size; second++)
+        for (size_t second = 0; second < vertexCount; second++)
         {
             bondLabelBag &labels = result.bonds[first][second];
             sort(labels.begin(), labels.end());
@@ -378,15 +402,15 @@ struct exactMatcher
 
 bool exactlyIsomorphic(const molGraph &leftInput, const molGraph &rightInput)
 {
-    if (leftInput.mg.size() != rightInput.mg.size()) return false;
+    if (leftInput.atoms.size() != rightInput.atoms.size()) return false;
 
     const exactGraph left = describeGraph(leftInput);
     const exactGraph right = describeGraph(rightInput);
-    const size_t size = left.labels.size();
-    vector<vector<size_t>> candidates(size);
-    for (size_t leftVertex = 0; leftVertex < size; leftVertex++)
+    const size_t vertexCount = left.labels.size();
+    vector<vector<size_t>> candidates(vertexCount);
+    for (size_t leftVertex = 0; leftVertex < vertexCount; leftVertex++)
     {
-        for (size_t rightVertex = 0; rightVertex < size; rightVertex++)
+        for (size_t rightVertex = 0; rightVertex < vertexCount; rightVertex++)
         {
             if (sameVertexInvariant(left, leftVertex, right, rightVertex))
                 candidates[leftVertex].push_back(rightVertex);
@@ -398,18 +422,19 @@ bool exactlyIsomorphic(const molGraph &leftInput, const molGraph &rightInput)
         left,
         right,
         std::move(candidates),
-        vector<int>(size, -1),
-        vector<unsigned char>(size, 0)
+        vector<int>(vertexCount, -1),
+        vector<unsigned char>(vertexCount, 0)
     };
     return matcher.search(0);
 }
 
-vector<edgeSpec> cycleEdges(int size, short bondType = 1)
+vector<edgeSpec> cycleEdges(int vertexCount, short bondType = 1)
 {
+    require(vertexCount > 0, "cycle size must be positive");
     vector<edgeSpec> edges;
-    edges.reserve(size);
-    for (int vertex = 0; vertex < size; vertex++)
-        edges.emplace_back(vertex, (vertex + 1) % size, bondType);
+    edges.reserve(static_cast<size_t>(vertexCount));
+    for (int vertex = 0; vertex < vertexCount; vertex++)
+        edges.emplace_back(vertex, (vertex + 1) % vertexCount, bondType);
     return edges;
 }
 
@@ -698,7 +723,7 @@ void testAgainstExactMatcher()
     {
         forms.push_back(canonicaliseCyclicGraph(entry.graph));
         require(
-            entry.graph.mg.empty() || !forms.back().empty(),
+            entry.graph.atoms.empty() || !forms.back().empty(),
             entry.name + " produced an empty form"
         );
     }
@@ -809,7 +834,7 @@ void testCachedGraphHashIsSelfContained()
     second = molGraph{};
     labelled = molGraph{};
     targetMolecule = molGraph{};
-    univEdgeList.clear();
+    universeEdgeList.clear();
     clearTreeCanonInterner();
 
     require(firstHash == secondHash, "cached equal graph hashes changed with source");
@@ -842,14 +867,14 @@ EdgeMask componentMask(int firstVertex, int vertexCount)
 {
     EdgeMask result;
     const int lastVertex = firstVertex + vertexCount;
-    const vector<edgeL> &edgeList = searchUniverseEdgeList();
+    const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
     for (size_t edge = 0; edge < edgeList.size(); edge++)
     {
         if (
-            edgeList[edge].a >= firstVertex &&
-            edgeList[edge].a < lastVertex &&
-            edgeList[edge].b >= firstVertex &&
-            edgeList[edge].b < lastVertex
+            edgeList[edge].sourceAtomIndex >= firstVertex &&
+            edgeList[edge].sourceAtomIndex < lastVertex &&
+            edgeList[edge].targetAtomIndex >= firstVertex &&
+            edgeList[edge].targetAtomIndex < lastVertex
         ) result.set(edge);
     }
     return result;
@@ -870,13 +895,14 @@ void testSharedCanonicalRegistryAdversarialOrdering()
     {
         workers.emplace_back([&, worker]
         {
+            const size_t workerIndex = static_cast<size_t>(worker);
             bitsetHashTable.clear();
             graphHashMap.clear();
             clearTreeCanonInterner();
             targetMolecule = makeSharedRegistryCollisionGraph();
-            univEdgeList = targetMolecule.writeEdgeList();
-            configureCanoniseMaskDomain(univEdgeList.size());
-            prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+            universeEdgeList = targetMolecule.writeEdgeList();
+            configureCanoniseMaskDomain(universeEdgeList.size());
+            prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
             sharedCanonicalRegistry = &registry;
 
             {
@@ -894,7 +920,7 @@ void testSharedCanonicalRegistryAdversarialOrdering()
                 const flatCanonGraph &bipartiteGraph =
                     canonicalisationGraphScratch.build(
                         targetMolecule,
-                        univEdgeList,
+                        universeEdgeList,
                         bipartite,
                         bipartiteIsCyclic
                     );
@@ -904,7 +930,7 @@ void testSharedCanonicalRegistryAdversarialOrdering()
                 const flatCanonGraph &prismGraph =
                     canonicalisationGraphScratch.build(
                         targetMolecule,
-                        univEdgeList,
+                        universeEdgeList,
                         prism,
                         prismIsCyclic
                     );
@@ -924,13 +950,13 @@ void testSharedCanonicalRegistryAdversarialOrdering()
                 start.arrive_and_wait();
                 if (worker % 2 == 0)
                 {
-                    bipartiteIds[worker] = canonise(bipartite);
-                    prismIds[worker] = canonise(prism);
+                    bipartiteIds[workerIndex] = canonise(bipartite);
+                    prismIds[workerIndex] = canonise(prism);
                 }
                 else
                 {
-                    prismIds[worker] = canonise(prism);
-                    bipartiteIds[worker] = canonise(bipartite);
+                    prismIds[workerIndex] = canonise(prism);
+                    bipartiteIds[workerIndex] = canonise(bipartite);
                 }
             }
 
@@ -979,9 +1005,9 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     graphHashMap.clear();
     clearTreeCanonInterner();
     targetMolecule = makeSharedRegistryTreeInternerGraph();
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
 
     EdgeMask producerSeed = componentMask(36, 2);
     const int producerSeedId = canonise(producerSeed);
@@ -1006,7 +1032,7 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     const auto seedLeafInterner = treeCanonLeafInterner;
     const auto seedTreeInterner = treeCanonInterner;
     const molGraph sharedMolecule = std::move(targetMolecule);
-    const vector<edgeL> sharedEdgeList = std::move(univEdgeList);
+    const vector<MoleculeEdge> sharedEdgeList = std::move(universeEdgeList);
     vector<uint64_t> frozenCyclicSeedCode;
     for (const auto &entry : seedGraphHashes)
     {
@@ -1038,6 +1064,7 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     {
         workers.emplace_back([&, worker]
         {
+            const size_t workerIndex = static_cast<size_t>(worker);
             bitsetHashTable.clear();
             clearGraphHashDelta();
             clearTreeCanonInterner();
@@ -1086,13 +1113,13 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
             };
             if (worker % 2 == 0)
             {
-                singleBondSignatureIds[worker] = internBondSignature(1);
+                singleBondSignatureIds[workerIndex] = internBondSignature(1);
                 static_cast<void>(internBondSignature(2));
             }
             else
             {
                 static_cast<void>(internBondSignature(2));
-                singleBondSignatureIds[worker] = internBondSignature(1);
+                singleBondSignatureIds[workerIndex] = internBondSignature(1);
             }
 
             sharedCanonicalRegistry = &registry;
@@ -1146,22 +1173,23 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
                 start.arrive_and_wait();
                 if (worker % 2 == 0)
                 {
-                    forkedTreeIds[worker] = canonise(forkedTree);
-                    bentArmTreeIds[worker] = canonise(bentArmTree);
+                    forkedTreeIds[workerIndex] = canonise(forkedTree);
+                    bentArmTreeIds[workerIndex] = canonise(bentArmTree);
                 }
                 else
                 {
-                    bentArmTreeIds[worker] = canonise(bentArmTree);
-                    forkedTreeIds[worker] = canonise(forkedTree);
+                    bentArmTreeIds[workerIndex] = canonise(bentArmTree);
+                    forkedTreeIds[workerIndex] = canonise(forkedTree);
                 }
-                pendantCycleIds[worker] = canonise(pendantCycle);
-                producerSeedIds[worker] = canonise(seededClass);
-                cyclicProducerSeedIds[worker] = canonise(cyclicSeededClass);
+                pendantCycleIds[workerIndex] = canonise(pendantCycle);
+                producerSeedIds[workerIndex] = canonise(seededClass);
+                cyclicProducerSeedIds[workerIndex] =
+                    canonise(cyclicSeededClass);
             }
 
-            graphDeltaSizes[worker] = graphHashMap.size();
-            treeDeltaSizes[worker] = treeCanonInterner.size();
-            leafDeltaSizes[worker] = treeCanonLeafInternerDelta.size();
+            graphDeltaSizes[workerIndex] = graphHashMap.size();
+            treeDeltaSizes[workerIndex] = treeCanonInterner.size();
+            leafDeltaSizes[workerIndex] = treeCanonLeafInternerDelta.size();
 
             sharedCanonicalRegistry = nullptr;
             bitsetHashTable.clear();
@@ -1179,10 +1207,11 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     );
     for (int worker = 0; worker < workerCount; ++worker)
     {
+        const size_t workerIndex = static_cast<size_t>(worker);
         const treeCanonNodeId expected =
-            singleBondSignatureIds[worker % 2];
+            singleBondSignatureIds[workerIndex % 2];
         require(
-            singleBondSignatureIds[worker] == expected,
+            singleBondSignatureIds[workerIndex] == expected,
             "same-order workers allocated inconsistent TLS signatures"
         );
     }
@@ -1194,7 +1223,7 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         std::all_of(
             graphDeltaSizes.begin(),
             graphDeltaSizes.end(),
-            [](size_t size) {return size != 0;}
+            [](size_t deltaSize) {return deltaSize != 0;}
         ),
         "workers did not retain graph hashes in local deltas"
     );
@@ -1202,7 +1231,7 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         std::all_of(
             treeDeltaSizes.begin(),
             treeDeltaSizes.end(),
-            [](size_t size) {return size != 0;}
+            [](size_t deltaSize) {return deltaSize != 0;}
         ),
         "workers did not retain tree signatures in local deltas"
     );
@@ -1210,7 +1239,7 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
         std::all_of(
             leafDeltaSizes.begin(),
             leafDeltaSizes.end(),
-            [](size_t size) {return size != 0;}
+            [](size_t deltaSize) {return deltaSize != 0;}
         ),
         "workers did not retain leaves in local deltas"
     );
@@ -1274,10 +1303,10 @@ void testSharedCanonicalRegistryWithDivergentTreeInterners()
     bool treeSeedUnchanged = false;
     for (const auto &entry : seedGraphHashes)
     {
-        if (entry.second == pii{producerSeedId, 1})
+        if (entry.second == IntegerPair{producerSeedId, 1})
             treeSeedUnchanged = true;
         if (
-            entry.second == pii{cyclicProducerSeedId, 1} &&
+            entry.second == IntegerPair{cyclicProducerSeedId, 1} &&
             entry.first.cyclicHash.canonicalCode == frozenCyclicSeedCode
         ) cyclicSeedUnchanged = true;
     }
@@ -1304,9 +1333,9 @@ void testCanonicalSeedOverlayWithoutRegistry()
     clearGraphHashDelta();
     clearTreeCanonInterner();
     targetMolecule = makeSharedRegistryTreeInternerGraph();
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
 
     int producerSeedId;
     {
@@ -1321,7 +1350,7 @@ void testCanonicalSeedOverlayWithoutRegistry()
     const auto seedLeafInterner = treeCanonLeafInterner;
     const auto seedTreeInterner = treeCanonInterner;
     const molGraph sharedMolecule = std::move(targetMolecule);
-    const vector<edgeL> sharedEdgeList = std::move(univEdgeList);
+    const vector<MoleculeEdge> sharedEdgeList = std::move(universeEdgeList);
 
     bitsetHashTable.clear();
     clearGraphHashDelta();
@@ -1361,7 +1390,7 @@ void testCanonicalSeedOverlayWithoutRegistry()
     require(
         graphHashMap.size() == 2 && graphHashClassCount() == 3 &&
             seedGraphHashes.size() == 1 &&
-            seedGraphHashes.begin()->second == pii{producerSeedId, 1},
+            seedGraphHashes.begin()->second == IntegerPair{producerSeedId, 1},
         "no-registry overlay mutated or miscounted its shared seed"
     );
 
@@ -1389,9 +1418,9 @@ void testFlatCanoniseMaskPath()
         {6, 7, 1}, {7, 8, 2}, {8, 6, 1}
     };
     targetMolecule = makeGraph(labels, edges);
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
 
     {
         EdgeMask first = componentMask(0, 3);
@@ -1419,9 +1448,9 @@ void testFlatCanoniseMaskPath()
             {5, 6, 1}, {6, 4, 2}, {4, 5, 1}, {4, 7, 1}
         }
     );
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     {
         EdgeMask first = componentMask(0, 4);
         EdgeMask intervening = componentMask(0, 3);
@@ -1448,9 +1477,9 @@ void testFlatCanoniseMaskPath()
             {6, 7, 1}, {7, 5, 2}, {5, 6, 1}, {8, 9, 1}
         }
     );
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     {
         EdgeMask first = componentMask(0, 5);
         EdgeMask intervening = componentMask(3, 2);
@@ -1471,9 +1500,9 @@ void testFlatCanoniseMaskPath()
         {"C", "N"},
         {{0, 1, 1}, {0, 1, 2}}
     );
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     int parallelBondId;
     {
         EdgeMask parallelBonds;
@@ -1485,8 +1514,8 @@ void testFlatCanoniseMaskPath()
         {"N", "C"},
         {{0, 1, 1}, {0, 1, 3}}
     );
-    univEdgeList = targetMolecule.writeEdgeList();
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     {
         EdgeMask changedParallelBond;
         changedParallelBond.set();
@@ -1503,15 +1532,15 @@ void testFlatCanoniseMaskPath()
         {"C", "X", "C"},
         {{0, 1, 1}, {1, 2, 1}}
     );
-    univEdgeList = targetMolecule.writeEdgeList();
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     {
         EdgeMask legacyPath;
         legacyPath.set();
         bool isCyclic = false;
         const flatCanonGraph &flat = canonicalisationGraphScratch.build(
             targetMolecule,
-            univEdgeList,
+            universeEdgeList,
             legacyPath,
             isCyclic
         );
@@ -1533,9 +1562,9 @@ void testFlatCanoniseMaskPath()
     for (int edge = 0; edge < 66; edge++)
         pathEdges.emplace_back(edge, edge + 1, 1);
     targetMolecule = makeGraph(pathLabels, pathEdges);
-    univEdgeList = targetMolecule.writeEdgeList();
-    configureCanoniseMaskDomain(univEdgeList.size());
-    prepareCanonicalisationGraph(targetMolecule, univEdgeList);
+    universeEdgeList = targetMolecule.writeEdgeList();
+    configureCanoniseMaskDomain(universeEdgeList.size());
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
 
     {
         EdgeMask lowEdge;

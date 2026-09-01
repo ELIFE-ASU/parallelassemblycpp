@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NoReturn, TypeGuard, cast
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent
@@ -166,24 +167,24 @@ class ExecutionConfig:
 
 
 def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
+    parsed_value = int(value)
+    if parsed_value < 1:
         raise argparse.ArgumentTypeError("must be at least one")
-    return parsed
+    return parsed_value
 
 
 def non_negative_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0:
+    parsed_value = int(value)
+    if parsed_value < 0:
         raise argparse.ArgumentTypeError("must be zero or greater")
-    return parsed
+    return parsed_value
 
 
 def positive_float(value: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed) or parsed <= 0:
+    parsed_value = float(value)
+    if not math.isfinite(parsed_value) or parsed_value <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
-    return parsed
+    return parsed_value
 
 
 def environment_assignment(value: str) -> tuple[str, str]:
@@ -285,10 +286,9 @@ def execution_configs_alias(
     """Return whether two configurations launch with identical semantics."""
     candidate = candidate or ExecutionConfig()
     baseline = baseline or ExecutionConfig()
-    return (
-        candidate.launcher == baseline.launcher
-        and dict(candidate.environment) == dict(baseline.environment)
-    )
+    return candidate.launcher == baseline.launcher and dict(
+        candidate.environment
+    ) == dict(baseline.environment)
 
 
 def ensure_distinct_executables(
@@ -313,10 +313,9 @@ def ensure_distinct_execution_identities(
     baseline_execution: ExecutionConfig | None,
 ) -> None:
     """Reject byte-identical binaries only when their configurations also alias."""
-    if (
-        candidate_metadata.get("sha256") == baseline_metadata.get("sha256")
-        and execution_configs_alias(candidate_execution, baseline_execution)
-    ):
+    if candidate_metadata.get("sha256") == baseline_metadata.get(
+        "sha256"
+    ) and execution_configs_alias(candidate_execution, baseline_execution):
         raise BenchmarkError(
             "candidate and baseline use the same binary fingerprint and execution "
             "configuration"
@@ -442,17 +441,17 @@ def cpu_description() -> str:
 
 
 def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
-    manifest = resolve_file(path, "benchmark manifest")
+    manifest_path = resolve_file(path, "benchmark manifest")
     cases: list[BenchmarkCase] = []
     names: set[str] = set()
 
     try:
-        with manifest.open(encoding="utf-8", newline="") as stream:
+        with manifest_path.open(encoding="utf-8", newline="") as stream:
             reader = csv.reader(stream, delimiter="\t")
             header = tuple(next(reader, ()))
             if header != MANIFEST_HEADER:
                 raise BenchmarkError(
-                    f"invalid header in {manifest}: expected {MANIFEST_HEADER}, "
+                    f"invalid header in {manifest_path}: expected {MANIFEST_HEADER}, "
                     f"got {header}"
                 )
 
@@ -461,7 +460,7 @@ def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
                     continue
                 if len(row) != len(MANIFEST_HEADER):
                     raise BenchmarkError(
-                        f"invalid row in {manifest}:{line_number}: expected "
+                        f"invalid row in {manifest_path}:{line_number}: expected "
                         f"{len(MANIFEST_HEADER)} columns"
                     )
 
@@ -475,11 +474,12 @@ def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
                 ) = (value.strip() for value in row)
                 if not CASE_NAME_PATTERN.fullmatch(name):
                     raise BenchmarkError(
-                        f"invalid benchmark name in {manifest}:{line_number}: {name!r}"
+                        f"invalid benchmark name in {manifest_path}:{line_number}: "
+                        f"{name!r}"
                     )
                 if name in names:
                     raise BenchmarkError(
-                        f"duplicate benchmark name in {manifest}:{line_number}: "
+                        f"duplicate benchmark name in {manifest_path}:{line_number}: "
                         f"{name!r}"
                     )
                 names.add(name)
@@ -488,13 +488,13 @@ def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
                     expected = int(expected_text)
                 except ValueError as error:
                     raise BenchmarkError(
-                        f"invalid assembly index in {manifest}:{line_number}: "
+                        f"invalid assembly index in {manifest_path}:{line_number}: "
                         f"{expected_text!r}"
                     ) from error
 
                 if expectation not in KNOWN_EXPECTATIONS:
                     raise BenchmarkError(
-                        f"invalid expectation in {manifest}:{line_number}: "
+                        f"invalid expectation in {manifest_path}:{line_number}: "
                         f"{expectation!r}"
                     )
 
@@ -503,18 +503,21 @@ def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
                 )
                 if not suites or len(set(suites)) != len(suites):
                     raise BenchmarkError(
-                        f"invalid suites in {manifest}:{line_number}: {suites_text!r}"
+                        f"invalid suites in {manifest_path}:{line_number}: "
+                        f"{suites_text!r}"
                     )
                 unknown_suites = sorted(set(suites) - set(KNOWN_SUITES))
                 if unknown_suites:
                     raise BenchmarkError(
-                        f"unknown suites in {manifest}:{line_number}: "
+                        f"unknown suites in {manifest_path}:{line_number}: "
                         f"{', '.join(unknown_suites)}"
                     )
                 if not workload:
-                    raise BenchmarkError(f"empty workload in {manifest}:{line_number}")
+                    raise BenchmarkError(
+                        f"empty workload in {manifest_path}:{line_number}"
+                    )
 
-                source = resolve_manifest_input(Path(input_text), manifest)
+                source = resolve_manifest_input(Path(input_text), manifest_path)
                 cases.append(
                     BenchmarkCase(
                         name=name,
@@ -526,11 +529,11 @@ def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
                     )
                 )
     except OSError as error:
-        raise BenchmarkError(f"could not read {manifest}: {error}") from error
+        raise BenchmarkError(f"could not read {manifest_path}: {error}") from error
 
     if not cases:
-        raise BenchmarkError(f"benchmark manifest is empty: {manifest}")
-    return manifest, cases
+        raise BenchmarkError(f"benchmark manifest is empty: {manifest_path}")
+    return manifest_path, cases
 
 
 def select_cases(
@@ -652,9 +655,7 @@ def prepare_cases(
         input_path = working_directory / case.source.name
         shutil.copy2(case.source, input_path)
         output_name = f"{input_path.name.removesuffix('.mol')}Out"
-        telemetry_name = (
-            f"{input_path.name.removesuffix('.mol')}Telemetry.json"
-        )
+        telemetry_name = f"{input_path.name.removesuffix('.mol')}Telemetry.json"
         prepared.append(
             PreparedCase(
                 case=case,
@@ -783,10 +784,10 @@ def run_once(
 
 
 def parse_search_telemetry(path: Path) -> dict[str, object]:
-    def is_nonnegative_integer(value: object) -> bool:
+    def is_nonnegative_integer(value: object) -> TypeGuard[int]:
         return type(value) is int and value >= 0
 
-    def invalid_parallel(detail: str) -> None:
+    def invalid_parallel(detail: str) -> NoReturn:
         raise BenchmarkError(f"invalid parallel telemetry in {path.name}: {detail}")
 
     def parallel_counters(
@@ -795,14 +796,13 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     ) -> dict[str, object]:
         if (
             not isinstance(value, dict)
-            or not PARALLEL_TELEMETRY_COUNTERS <= value.keys()
+            or not PARALLEL_TELEMETRY_COUNTERS.issubset(value)
             or any(
                 not is_nonnegative_integer(value.get(name))
                 for name in PARALLEL_TELEMETRY_COUNTERS
             )
         ):
             invalid_parallel(f"invalid {context} counters")
-        assert isinstance(value, dict)
         if value["retained_mask_attempts"] != (
             value["retained_masks"]
             + value["duplicate_mask_attempts"]
@@ -817,8 +817,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         ):
             invalid_parallel(f"inconsistent {context} canonical counters")
         if value["canonicalisation_mask_cache_misses"] != (
-            value["canonical_class_insertions"]
-            + value["canonical_class_reuses"]
+            value["canonical_class_insertions"] + value["canonical_class_reuses"]
         ):
             invalid_parallel(f"inconsistent {context} canonical-class counters")
         if value["residual_cache_lookups"] != (
@@ -845,8 +844,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         ):
             invalid_parallel(f"inconsistent {context} assembly-cache counters")
         if value["assembly_cache_hits"] != (
-            value["assembly_cache_pruned_hits"]
-            + value["assembly_cache_updated_hits"]
+            value["assembly_cache_pruned_hits"] + value["assembly_cache_updated_hits"]
         ):
             invalid_parallel(f"inconsistent {context} assembly-cache hits")
         if value["pair_bound_cache_lookups"] != (
@@ -873,7 +871,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             not is_nonnegative_integer(value.get(name)) for name in names
         ):
             invalid_parallel("invalid shared assembly-cache counters")
-        assert isinstance(value, dict)
         if value["table_count"] > rank_count:
             invalid_parallel("shared assembly-cache table count exceeds ranks")
         if value["lock_acquisitions"] != value["hits"] + value["misses"]:
@@ -940,10 +937,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     counters = telemetry.get("counters")
     if not isinstance(counters, dict) or not required_counters <= counters.keys():
         raise BenchmarkError(f"missing search counters in {path.name}")
-    if any(
-        not is_nonnegative_integer(counters[name])
-        for name in required_counters
-    ):
+    if any(not is_nonnegative_integer(counters[name]) for name in required_counters):
         raise BenchmarkError(f"invalid search counter in {path.name}")
     if counters["retained_mask_attempts"] != sum(
         counters[name]
@@ -1017,29 +1011,17 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         ),
         (pair_bound_cache, ("lookups", "hits", "misses")),
     ):
-        if any(
-            not is_nonnegative_integer(cache.get(name))
-            for name in names
-        ):
+        if any(not is_nonnegative_integer(cache.get(name)) for name in names):
             raise BenchmarkError(f"invalid cache counter in {path.name}")
-    if counters["canonicalisation_calls"] != (
-        canonical["hits"] + canonical["misses"]
-    ):
+    if counters["canonicalisation_calls"] != (canonical["hits"] + canonical["misses"]):
         raise BenchmarkError(f"inconsistent canonical cache counters in {path.name}")
-    if residual["lookups"] != (
-        residual["hits"] + residual["misses"]
-    ):
+    if residual["lookups"] != (residual["hits"] + residual["misses"]):
         raise BenchmarkError(f"inconsistent residual cache counters in {path.name}")
     if type(residual.get("eligible_for_processed_graph")) is not bool:
         raise BenchmarkError(f"invalid residual cache eligibility in {path.name}")
-    expected_residual_cache_eligibility = 31 <= processed_graph["edges"]
-    if (
-        residual["eligible_for_processed_graph"]
-        != expected_residual_cache_eligibility
-    ):
-        raise BenchmarkError(
-            f"inconsistent residual cache eligibility in {path.name}"
-        )
+    expected_residual_cache_eligibility = processed_graph["edges"] >= 31
+    if residual["eligible_for_processed_graph"] != expected_residual_cache_eligibility:
+        raise BenchmarkError(f"inconsistent residual cache eligibility in {path.name}")
     if residual["requests"] != (
         residual["eligible_requests"]
         + residual["small_molecule_bypasses"]
@@ -1055,8 +1037,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             raise BenchmarkError(f"inconsistent residual eligibility in {path.name}")
     elif (
         residual["eligible_requests"] != 0
-        or residual["small_molecule_bypasses"]
-        + residual["wide_molecule_bypasses"]
+        or residual["small_molecule_bypasses"] + residual["wide_molecule_bypasses"]
         != residual["requests"]
     ):
         raise BenchmarkError(f"inconsistent residual bypasses in {path.name}")
@@ -1078,9 +1059,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         ("pair-bound", pair_bound_cache),
     ):
         if cache["lookups"] != cache["hits"] + cache["misses"]:
-            raise BenchmarkError(
-                f"inconsistent {label} cache counters in {path.name}"
-            )
+            raise BenchmarkError(f"inconsistent {label} cache counters in {path.name}")
     if (
         assembly_cache["pruned_hits"] + assembly_cache["updated_hits"]
         != assembly_cache["hits"]
@@ -1211,7 +1190,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     parallel = telemetry["parallel"]
     if not isinstance(parallel, dict):
         invalid_parallel("expected an object")
-    assert isinstance(parallel, dict)
 
     if (
         memory["method"] != "disabled_parallel"
@@ -1232,10 +1210,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("invalid mode")
     if scope not in {"process", "all_mpi_ranks"}:
         invalid_parallel("invalid aggregation scope")
-    if (
-        parallel.get("busy_timing_method")
-        != "elapsed_minus_scheduler_idle_time"
-    ):
+    if parallel.get("busy_timing_method") != "elapsed_minus_scheduler_idle_time":
         invalid_parallel("invalid busy timing method")
     if parallel.get("elapsed_timing_method") != "parallel_region_steady_clock":
         invalid_parallel("invalid elapsed timing method")
@@ -1248,8 +1223,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("invalid rank count")
     if not is_nonnegative_integer(worker_count) or worker_count == 0:
         invalid_parallel("invalid worker count")
-    assert isinstance(rank_count, int)
-    assert isinstance(worker_count, int)
     if mode == "openmp":
         if scope != "process" or rank_count != 1:
             invalid_parallel("OpenMP telemetry must describe one process")
@@ -1269,9 +1242,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("inconsistent local thread counts")
     if mode == "mpi" and any(threads != 1 for threads in threads_per_rank):
         invalid_parallel("MPI telemetry must report one thread per rank")
-    uniform_threads = (
-        threads_per_rank[0] if len(set(threads_per_rank)) == 1 else None
-    )
+    uniform_threads = threads_per_rank[0] if len(set(threads_per_rank)) == 1 else None
     local_threads = parallel.get("local_threads")
     if (
         local_threads is not None and not is_nonnegative_integer(local_threads)
@@ -1290,10 +1261,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         shard_ownership = parallel["shard_ownership"]
         if not isinstance(shard_ownership, dict):
             invalid_parallel("missing shard ownership")
-        assert isinstance(shard_ownership, dict)
         if (
-            shard_ownership.get("strategy")
-            != "root_branch_ordinal_modulo_worker_count"
+            shard_ownership.get("strategy") != "root_branch_ordinal_modulo_worker_count"
             or type(shard_ownership.get("complete")) is not bool
             or not shard_ownership["complete"]
             or shard_ownership.get("shard_count") != worker_count
@@ -1303,7 +1272,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         branch_scheduler = parallel["branch_scheduler"]
         if not isinstance(branch_scheduler, dict):
             invalid_parallel("missing branch scheduler")
-        assert isinstance(branch_scheduler, dict)
         strategy = branch_scheduler.get("strategy")
         lease_size = branch_scheduler.get("lease_size")
         scheduler_complete = branch_scheduler.get("complete")
@@ -1322,9 +1290,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             )
         elif uses_legacy_rank_partition:
             scheduling_metadata_valid = (
-                is_nonnegative_integer(
-                    branch_scheduler.get("rank_partition_count")
-                )
+                is_nonnegative_integer(branch_scheduler.get("rank_partition_count"))
                 and branch_scheduler.get("rank_partition_count") == rank_count
             )
         if (
@@ -1350,7 +1316,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     aggregate = parallel.get("aggregate")
     if not isinstance(aggregate, dict):
         invalid_parallel("missing aggregate")
-    assert isinstance(aggregate, dict)
     aggregate_counters = parallel_counters(
         aggregate.get("counters"),
         "aggregate",
@@ -1391,9 +1356,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("worker count does not match worker records")
     worker_counters = []
     worker_branch_candidates = []
-    rank_local_ids: dict[int, set[int]] = {
-        rank: set() for rank in range(rank_count)
-    }
+    rank_local_ids: list[set[int]] = [set() for _ in range(rank_count)]
     global_ids = set()
     shard_ids = set()
     rank_branch_assignments = [0] * rank_count
@@ -1402,9 +1365,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     total_elapsed = 0
     total_busy = 0
     maximum_elapsed = 0
-    scheduler_sums = {
-        name: 0 for name in PARALLEL_SCHEDULER_SUM_FIELDS
-    }
+    scheduler_sums = dict.fromkeys(PARALLEL_SCHEDULER_SUM_FIELDS, 0)
     maximum_task_queue_high_watermark = 0
     maximum_task_depth_executed = 0
     rank_offsets = []
@@ -1448,13 +1409,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 root_queue = worker.get("root_queue")
                 if (
                     not isinstance(root_queue, dict)
-                    or not is_nonnegative_integer(
-                        root_queue.get("participant_rank")
-                    )
+                    or not is_nonnegative_integer(root_queue.get("participant_rank"))
                     or root_queue.get("participant_rank") != rank
-                    or not is_nonnegative_integer(
-                        root_queue.get("participant_count")
-                    )
+                    or not is_nonnegative_integer(root_queue.get("participant_count"))
                     or root_queue.get("participant_count") != rank_count
                 ):
                     invalid_parallel(
@@ -1499,7 +1456,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         ):
             invalid_parallel(f"invalid worker measurement at record {worker_index}")
         if branch_assignments > branch_candidates:
-            invalid_parallel(f"worker assignments exceed branches at record {worker_index}")
+            invalid_parallel(
+                f"worker assignments exceed branches at record {worker_index}"
+            )
         if has_dynamic_leases and (
             (branch_assignments == 0 and branch_leases != 0)
             or (
@@ -1511,16 +1470,14 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 )
             )
         ):
-            invalid_parallel(
-                f"inconsistent worker leases at record {worker_index}"
-            )
+            invalid_parallel(f"inconsistent worker leases at record {worker_index}")
         if busy > elapsed:
-            invalid_parallel(f"worker busy time exceeds elapsed time at record {worker_index}")
+            invalid_parallel(
+                f"worker busy time exceeds elapsed time at record {worker_index}"
+            )
         task_steal_attempts = worker_scheduler_values["task_steal_attempts"]
         task_steals = worker_scheduler_values["task_steals"]
-        local_task_executions = worker_scheduler_values[
-            "local_task_executions"
-        ]
+        local_task_executions = worker_scheduler_values["local_task_executions"]
         transferred_tasks_executed = (
             worker_scheduler_values["depth_two_tasks_executed"]
             + worker_scheduler_values["deeper_tasks_executed"]
@@ -1538,9 +1495,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             (transferred_tasks_executed == 0 and task_depth == 0)
             or (
                 transferred_tasks_executed > 0
-                and 2
-                <= task_depth
-                <= ADAPTIVE_SPLITTING_POLICY["maximum_depth"]
+                and 2 <= task_depth <= ADAPTIVE_SPLITTING_POLICY["maximum_depth"]
             )
         ):
             invalid_parallel(
@@ -1553,9 +1508,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         if busy != elapsed - min(
             worker_scheduler_values["scheduler_idle_nanoseconds"], elapsed
         ):
-            invalid_parallel(
-                f"inconsistent worker busy time at record {worker_index}"
-            )
+            invalid_parallel(f"inconsistent worker busy time at record {worker_index}")
         worker_branch_candidates.append(branch_candidates)
         rank_branch_assignments[rank] += branch_assignments
         total_branch_leases += branch_leases
@@ -1577,10 +1530,13 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         graph = worker.get("processed_graph")
         if not isinstance(graph, dict):
             invalid_parallel(f"missing worker graph at record {worker_index}")
-        if any(
-            not is_nonnegative_integer(graph.get(name))
-            for name in ("atoms", "edges", "active_mask_words")
-        ) or type(graph.get("residual_cache_eligible")) is not bool:
+        if (
+            any(
+                not is_nonnegative_integer(graph.get(name))
+                for name in ("atoms", "edges", "active_mask_words")
+            )
+            or type(graph.get("residual_cache_eligible")) is not bool
+        ):
             invalid_parallel(f"invalid worker graph at record {worker_index}")
         if (
             graph["atoms"] != processed_graph["atoms"]
@@ -1604,7 +1560,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             ):
                 invalid_parallel(f"invalid worker phase at record {worker_index}")
             if phase["activations"] == 0 and phase["wall_nanoseconds"] != 0:
-                invalid_parallel(f"inactive worker phase has time at record {worker_index}")
+                invalid_parallel(
+                    f"inactive worker phase has time at record {worker_index}"
+                )
 
         worker_counters.append(
             parallel_counters(worker.get("counters"), f"worker {worker_index}")
@@ -1631,20 +1589,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("aggregate elapsed time is shorter than a worker")
     for name, worker_sum in scheduler_sums.items():
         if aggregate[name] != worker_sum:
-            invalid_parallel(
-                f"aggregate scheduler field {name} does not match workers"
-            )
-    if (
-        aggregate["task_queue_high_watermark"]
-        != maximum_task_queue_high_watermark
-    ):
-        invalid_parallel(
-            "aggregate task queue high-water mark does not match workers"
-        )
-    if (
-        aggregate["maximum_task_depth_executed"]
-        != maximum_task_depth_executed
-    ):
+            invalid_parallel(f"aggregate scheduler field {name} does not match workers")
+    if aggregate["task_queue_high_watermark"] != maximum_task_queue_high_watermark:
+        invalid_parallel("aggregate task queue high-water mark does not match workers")
+    if aggregate["maximum_task_depth_executed"] != maximum_task_depth_executed:
         invalid_parallel("aggregate maximum task depth does not match workers")
     aggregate_depth_two_spawned = aggregate["depth_two_tasks_spawned"]
     aggregate_depth_two_executed = aggregate["depth_two_tasks_executed"]
@@ -1700,13 +1648,12 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     ):
         invalid_parallel("complete branch scan has incomplete assignments")
     if uses_legacy_rank_partition and parallel["branch_scan_complete"]:
-        assert expected_branch_candidates is not None
+        expected_branch_candidates = cast(int, expected_branch_candidates)
         for rank, assignments in enumerate(rank_branch_assignments):
             expected_assignments = (
                 0
                 if expected_branch_candidates <= rank
-                else 1
-                + (expected_branch_candidates - 1 - rank) // rank_count
+                else 1 + (expected_branch_candidates - 1 - rank) // rank_count
             )
             if assignments != expected_assignments:
                 invalid_parallel(
@@ -1727,15 +1674,9 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         "vf2_matches": counters["vf2_matches"],
         "residual_decomposition_requests": residual["requests"],
         "residual_cache_eligible_requests": residual["eligible_requests"],
-        "residual_cache_small_molecule_bypasses": residual[
-            "small_molecule_bypasses"
-        ],
-        "residual_cache_wide_molecule_bypasses": residual[
-            "wide_molecule_bypasses"
-        ],
-        "residual_cache_small_residual_bypasses": residual[
-            "small_residual_bypasses"
-        ],
+        "residual_cache_small_molecule_bypasses": residual["small_molecule_bypasses"],
+        "residual_cache_wide_molecule_bypasses": residual["wide_molecule_bypasses"],
+        "residual_cache_small_residual_bypasses": residual["small_residual_bypasses"],
         "residual_cache_first_occurrence_bypasses": residual[
             "first_occurrence_bypasses"
         ],
@@ -2167,7 +2108,7 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
             result.baseline_measurements,
             "clock_ticks",
         )
-        assert wall_speedup is not None
+        wall_speedup = cast(MetricSummary, wall_speedup)
         clock_text = "n/a"
         if clock_speedup is not None:
             clock_text = f"{clock_speedup.median:.4f}x"
@@ -2182,8 +2123,8 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
     round_clock = aggregate_paired_speedup_summary(results, "clock_ticks")
     equal_wall = equal_weight_paired_speedup_summary(results, "wall_seconds")
     equal_clock = equal_weight_paired_speedup_summary(results, "clock_ticks")
-    assert round_wall is not None
-    assert equal_wall is not None
+    round_wall = cast(MetricSummary, round_wall)
+    equal_wall = cast(MetricSummary, equal_wall)
     print("\nCorpus comparison")
     print(
         f"  paired suite wall (primary):       {round_wall.median:.4f}x "
@@ -2223,13 +2164,13 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
         counters = telemetry["counters"]
         caches = telemetry["caches"]
         memory = telemetry["memory"]
-        assert isinstance(counters, dict)
-        assert isinstance(caches, dict)
-        assert isinstance(memory, dict)
+        counters = cast(dict[str, object], counters)
+        caches = cast(dict[str, object], caches)
+        memory = cast(dict[str, object], memory)
         canonical = caches["canonical_mask"]
         residual = caches["residual_decomposition"]
-        assert isinstance(canonical, dict)
-        assert isinstance(residual, dict)
+        canonical = cast(dict[str, object], canonical)
+        residual = cast(dict[str, object], residual)
 
         def rate_text(value: object) -> str:
             return "n/a" if value is None else f"{float(value):.1%}"
@@ -2263,13 +2204,12 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
     )
     print("  " + "-" * (name_width + 71))
     for result in parallel_results:
-        assert result.telemetry is not None
-        parallel = result.telemetry["parallel"]
-        assert isinstance(parallel, dict)
+        telemetry = cast(dict[str, object], result.telemetry)
+        parallel = cast(dict[str, object], telemetry["parallel"])
         aggregate = parallel["aggregate"]
         workers = parallel["workers"]
-        assert isinstance(aggregate, dict)
-        assert isinstance(workers, list)
+        aggregate = cast(dict[str, object], aggregate)
+        workers = cast(list[object], workers)
         elapsed_values = [
             int(worker["elapsed_nanoseconds"])
             for worker in workers
@@ -2324,6 +2264,8 @@ def write_json_report(
 
     cases = []
     for result in results:
+        candidate_report = measurement_report(result.measurements)
+        candidate_report["telemetry"] = result.telemetry
         case_report: dict[str, object] = {
             "name": result.case.name,
             "input": str(result.case.source),
@@ -2331,12 +2273,10 @@ def write_json_report(
             "expectation": result.case.expectation,
             "workload": result.case.workload,
             "suites": list(result.case.suites),
-            "candidate": measurement_report(result.measurements),
+            "candidate": candidate_report,
             "baseline": None,
             "comparison": None,
         }
-        assert isinstance(case_report["candidate"], dict)
-        case_report["candidate"]["telemetry"] = result.telemetry
         if result.baseline_measurements:
             wall_speedup = paired_speedup_summary(
                 result.measurements,
@@ -2462,10 +2402,7 @@ def write_json_report(
 
 
 def print_case_list(cases: Sequence[BenchmarkCase]) -> None:
-    print(
-        f"{'Case':<24} {'Suites':<20} {'Index':>8} "
-        f"{'Expectation':<12}  Workload"
-    )
+    print(f"{'Case':<24} {'Suites':<20} {'Index':>8} {'Expectation':<12}  Workload")
     print("-" * 95)
     for case in cases:
         print(
@@ -2492,18 +2429,14 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--baseline-executable",
         type=Path,
-        help=(
-            "baseline executable for paired comparisons "
-            "(candidate: --executable)"
-        ),
+        help=("baseline executable for paired comparisons (candidate: --executable)"),
     )
     parser.add_argument(
         "--candidate-launcher",
         type=launcher_prefix,
         metavar="COMMAND",
         help=(
-            "command prefix for the candidate executable "
-            "(for example, 'mpirun -n 2')"
+            "command prefix for the candidate executable (for example, 'mpirun -n 2')"
         ),
     )
     parser.add_argument(
@@ -2604,10 +2537,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--telemetry-executable",
         type=Path,
-        help=(
-            "instrumented executable for telemetry; required unless --build "
-            "is used"
-        ),
+        help=("instrumented executable for telemetry; required unless --build is used"),
     )
     parser.add_argument(
         "--build",
@@ -2637,8 +2567,12 @@ def resolve_requested_cases(
 
     if corpus_requested:
         manifest_path = arguments.manifest or DEFAULT_MANIFEST
-        manifest, cases = load_manifest(manifest_path)
-        return manifest, select_cases(cases, arguments.suite, arguments.case)
+        resolved_manifest, cases = load_manifest(manifest_path)
+        return resolved_manifest, select_cases(
+            cases,
+            arguments.suite,
+            arguments.case,
+        )
 
     source = resolve_file(arguments.input or DEFAULT_INPUT, "benchmark input")
     expected = arguments.expected
@@ -2672,7 +2606,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         runs = 6 if arguments.baseline_executable is not None else 5
 
     try:
-        manifest, cases = resolve_requested_cases(arguments)
+        manifest_path, cases = resolve_requested_cases(arguments)
         if arguments.list_cases:
             print_case_list(cases)
             return 0
@@ -2690,8 +2624,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.baseline_launcher or arguments.baseline_environment
         ):
             raise BenchmarkError(
-                "--baseline-launcher and --baseline-env require "
-                "--baseline-executable"
+                "--baseline-launcher and --baseline-env require --baseline-executable"
             )
         baseline_execution = create_execution_config(
             arguments.baseline_launcher,
@@ -2700,9 +2633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         if arguments.telemetry_executable is not None and not arguments.telemetry:
-            raise BenchmarkError(
-                "--telemetry-executable requires --telemetry"
-            )
+            raise BenchmarkError("--telemetry-executable requires --telemetry")
 
         telemetry_path = None
         if arguments.telemetry:
@@ -2753,7 +2684,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         executable = resolve_executable(executable_path)
         telemetry_executable = None
         if arguments.telemetry:
-            assert telemetry_path is not None
+            telemetry_path = cast(Path, telemetry_path)
             if arguments.build:
                 telemetry_path = build_executable(
                     telemetry_path,
@@ -2787,7 +2718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate=executable,
                 baseline=baseline_executable,
                 telemetry=telemetry_executable,
-                manifest=manifest,
+                manifest=manifest_path,
                 cases=cases,
             )
         candidate_metadata = executable_metadata(executable)
@@ -2811,7 +2742,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         corpus_metadata = (
             None
             if arguments.json_output is None
-            else benchmark_corpus_metadata(manifest, cases)
+            else benchmark_corpus_metadata(manifest_path, cases)
         )
 
         if baseline_executable is None:
@@ -2821,14 +2752,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Baseline executable: {baseline_executable}")
         if telemetry_executable is not None:
             print(f"Telemetry executable: {telemetry_executable}")
-        if manifest is None:
+        if manifest_path is None:
             print(f"Input: {cases[0].source}")
             if cases[0].expected_assembly_index is None:
                 print("Assembly index: present but not validated")
             else:
                 print(f"Expected assembly index: {cases[0].expected_assembly_index}")
         else:
-            print(f"Manifest: {manifest}")
+            print(f"Manifest: {manifest_path}")
             print(f"Suite: {arguments.suite or 'all'}")
             print(f"Cases: {len(cases)}")
             provisional = [
@@ -2865,12 +2796,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         verify_executable_unchanged(executable, candidate_metadata, "candidate")
         if baseline_executable is not None:
-            assert baseline_metadata is not None
+            baseline_metadata = cast(dict[str, object], baseline_metadata)
             verify_executable_unchanged(
                 baseline_executable, baseline_metadata, "baseline"
             )
         if telemetry_executable is not None:
-            assert telemetry_metadata is not None
+            telemetry_metadata = cast(dict[str, object], telemetry_metadata)
             verify_executable_unchanged(
                 telemetry_executable,
                 telemetry_metadata,
@@ -2878,7 +2809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if (
             corpus_metadata is not None
-            and benchmark_corpus_metadata(manifest, cases) != corpus_metadata
+            and benchmark_corpus_metadata(manifest_path, cases) != corpus_metadata
         ):
             raise BenchmarkError(
                 "benchmark manifest or selected input changed during measurement"
@@ -2886,14 +2817,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print_summary(results)
         print_telemetry_summary(results)
         if arguments.json_output is not None:
-            assert corpus_metadata is not None
+            corpus_metadata = cast(dict[str, object], corpus_metadata)
             write_json_report(
                 path=arguments.json_output,
                 candidate_metadata=candidate_metadata,
                 baseline_metadata=baseline_metadata,
                 telemetry_metadata=telemetry_metadata,
                 corpus_metadata=corpus_metadata,
-                manifest=manifest,
+                manifest=manifest_path,
                 suite=arguments.suite,
                 runs=runs,
                 warmup=arguments.warmup,

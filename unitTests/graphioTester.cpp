@@ -22,9 +22,9 @@
 #include <vector>
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 
 #include "../v5/activeWordMask.h"
 
@@ -62,22 +62,29 @@ namespace
     {
         if (
             left.totalBonds != right.totalBonds ||
-            left.mg.size() != right.mg.size()
+            left.atoms.size() != right.atoms.size()
         ) return false;
 
-        for (size_t vertex = 0; vertex < left.mg.size(); vertex++)
+        for (size_t vertex = 0; vertex < left.atoms.size(); vertex++)
         {
             if (
-                left.mg[vertex].type != right.mg[vertex].type ||
-                left.mg[vertex].list.size() != right.mg[vertex].list.size()
+                left.atoms[vertex].atomType !=
+                    right.atoms[vertex].atomType ||
+                left.atoms[vertex].bonds.size() !=
+                    right.atoms[vertex].bonds.size()
             ) return false;
-            for (size_t edge = 0; edge < left.mg[vertex].list.size(); edge++)
+            for (
+                size_t edge = 0;
+                edge < left.atoms[vertex].bonds.size();
+                edge++
+            )
             {
-                const bond &leftBond = left.mg[vertex].list[edge];
-                const bond &rightBond = right.mg[vertex].list[edge];
+                const bond &leftBond = left.atoms[vertex].bonds[edge];
+                const bond &rightBond = right.atoms[vertex].bonds[edge];
                 if (
-                    leftBond.n != rightBond.n ||
-                    leftBond.type != rightBond.type
+                    leftBond.neighbourAtomIndex !=
+                        rightBond.neighbourAtomIndex ||
+                    leftBond.bondType != rightBond.bondType
                 ) return false;
             }
         }
@@ -116,17 +123,17 @@ int main()
     verbose = false;
 
     molGraph graph = parse(validGraph);
-    assert(graph.mg.size() == 3);
+    assert(graph.atoms.size() == 3);
     assert(graph.totalBonds == 2);
-    assert(graph.mg[0].type == "C");
-    assert(graph.mg[1].type == "N");
-    assert(graph.mg[2].type == "O");
-    assert(graph.mg[0].list.size() == 1);
-    assert(graph.mg[1].list.size() == 2);
-    assert(graph.mg[2].list.size() == 1);
-    assert(graph.mg[0].list[0].n == 1);
-    assert(graph.mg[1].list[0].type == 1);
-    assert(graph.mg[1].list[1].type == 2);
+    assert(graph.atoms[0].atomType == "C");
+    assert(graph.atoms[1].atomType == "N");
+    assert(graph.atoms[2].atomType == "O");
+    assert(graph.atoms[0].bonds.size() == 1);
+    assert(graph.atoms[1].bonds.size() == 2);
+    assert(graph.atoms[2].bonds.size() == 1);
+    assert(graph.atoms[0].bonds[0].neighbourAtomIndex == 1);
+    assert(graph.atoms[1].bonds[0].bondType == 1);
+    assert(graph.atoms[1].bonds[1].bondType == 2);
 
     molGraph replacementTarget = sentinelGraph();
     istringstream validInput(validGraph);
@@ -134,15 +141,15 @@ int main()
     assert(sameGraph(replacementTarget, graph));
 
     const molGraph empty = parse("empty\n0\n\n\n\n");
-    assert(empty.mg.empty());
+    assert(empty.atoms.empty());
     assert(empty.totalBonds == 0);
 
     const molGraph explicitlyPositive = parse(
         "positive signs\n+2\n+1 +2\nC C\n+1\n"
     );
-    assert(explicitlyPositive.mg.size() == 2);
+    assert(explicitlyPositive.atoms.size() == 2);
     assert(explicitlyPositive.totalBonds == 1);
-    assert(explicitlyPositive.mg[0].list[0].type == 1);
+    assert(explicitlyPositive.atoms[0].bonds[0].bondType == 1);
 
     expectRejected(
         "truncated\n2\n1 2\nC C\n",
@@ -215,11 +222,14 @@ int main()
 
     molGraph longestSupportedPath;
     const size_t vertexCount = static_cast<size_t>(numeric_limits<short>::max());
-    longestSupportedPath.mg.reserve(vertexCount);
+    longestSupportedPath.atoms.reserve(vertexCount);
     for (size_t vertex = 0; vertex < vertexCount; vertex++)
         longestSupportedPath.addAtom("C");
     for (size_t vertex = 1; vertex < vertexCount; vertex++)
-        longestSupportedPath.addBond(vertex - 1, vertex, 1);
+    {
+        const int secondVertex = static_cast<int>(vertex);
+        longestSupportedPath.addBond(secondVertex - 1, secondVertex, 1);
+    }
     assert(longestSupportedPath.disjointFragments() == 1);
 
     return 0;

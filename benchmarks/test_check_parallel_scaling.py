@@ -112,8 +112,7 @@ class CheckParallelScalingTests(unittest.TestCase):
             "corpus": {
                 "manifest": {"sha256": manifest_hash},
                 "inputs": [
-                    {"name": name, "sha256": f"input-{name}"}
-                    for name in case_walls
+                    {"name": name, "sha256": f"input-{name}"} for name in case_walls
                 ],
             },
             "cases": cases,
@@ -176,9 +175,7 @@ class CheckParallelScalingTests(unittest.TestCase):
                     "environment": {},
                 },
             )
-            status, stdout, _ = self.run_main(
-                ["--require-all-faster", f"mpi:8:{path}"]
-            )
+            status, stdout, _ = self.run_main(["--require-all-faster", f"mpi:8:{path}"])
 
         self.assertEqual(status, 1)
         self.assertIn("mpi/8 case slow: 1.000x", stdout)
@@ -242,9 +239,7 @@ class CheckParallelScalingTests(unittest.TestCase):
                 directory = Path(temp_directory)
                 first = self.write_result(directory / "first.json")
                 second = self.write_result(directory / "second.json", **overrides)
-                status, _, stderr = self.run_main(
-                    [f"omp:4:{first}", f"mpi:4:{second}"]
-                )
+                status, _, stderr = self.run_main([f"omp:4:{first}", f"mpi:4:{second}"])
 
             self.assertEqual(status, 2)
             self.assertIn(expected_error, stderr)
@@ -264,9 +259,7 @@ class CheckParallelScalingTests(unittest.TestCase):
                     "environment": {"OMP_NUM_THREADS": "8"},
                 },
             )
-            status, _, stderr = self.run_main(
-                [f"omp:4:{first}", f"omp:8:{second}"]
-            )
+            status, _, stderr = self.run_main([f"omp:4:{first}", f"omp:8:{second}"])
 
         self.assertEqual(status, 2)
         self.assertIn("incompatible candidate fingerprint", stderr)
@@ -287,9 +280,7 @@ class CheckParallelScalingTests(unittest.TestCase):
             directory = Path(temp_directory)
             first = self.write_result(directory / "first.json")
             second = self.write_result(directory / "second.json")
-            status, _, stderr = self.run_main(
-                [f"OMP:4:{first}", f"omp:4:{second}"]
-            )
+            status, _, stderr = self.run_main([f"OMP:4:{first}", f"omp:4:{second}"])
         self.assertEqual(status, 2)
         self.assertIn("duplicate topology worker count", stderr)
 
@@ -298,6 +289,7 @@ class CheckParallelScalingTests(unittest.TestCase):
             ("summary", "inconsistent paired wall median"),
             ("wall", "candidate wall sample"),
             ("round", "candidate round order"),
+            ("round type", "candidate round order"),
             ("assembly", "wrong candidate assembly index"),
         )
         for scenario, expected_error in scenarios:
@@ -314,6 +306,8 @@ class CheckParallelScalingTests(unittest.TestCase):
                     first_case["candidate"]["measurements"][0]["wall_seconds"] = 0
                 elif scenario == "round":
                     first_case["candidate"]["measurements"][0]["round"] = 2
+                elif scenario == "round type":
+                    first_case["candidate"]["measurements"][0]["round"] = 1.0
                 else:
                     first_case["candidate"]["measurements"][0]["assembly_index"] = 99
                 path.write_text(json.dumps(document), encoding="utf-8")
@@ -321,6 +315,17 @@ class CheckParallelScalingTests(unittest.TestCase):
 
             self.assertEqual(status, 2)
             self.assertIn(expected_error, stderr)
+
+    def test_rejects_noninteger_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            path = self.write_result(Path(temp_directory) / "result.json")
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["schema_version"] = 2.0
+            path.write_text(json.dumps(document), encoding="utf-8")
+            status, _, stderr = self.run_main([f"omp:4:{path}"])
+
+        self.assertEqual(status, 2)
+        self.assertIn("schema_version 2", stderr)
 
     def test_derives_omp_mpi_and_hybrid_worker_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

@@ -29,7 +29,10 @@ foreach(archive_entry IN LISTS archive_entries)
         GROUP_READ GROUP_EXECUTE
         WORLD_READ WORLD_EXECUTE
     )
-  elseif(archive_entry MATCHES "/bin/AssemblyCpp$")
+  elseif(
+    archive_entry MATCHES "/bin/AssemblyCpp$"
+    OR archive_entry MATCHES "/output/benchmarks/.+/run_benchmark\\.py$"
+  )
     file(
       CHMOD "${archive_entry}"
       PERMISSIONS

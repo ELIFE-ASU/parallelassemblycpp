@@ -172,21 +172,21 @@ namespace graphioDetail
 /**
  * @brief Parse AssemblyCpp's five-line native graph format transactionally.
  *
- * @param ifs input stream
- * @param mg output molGraph, replaced only after the complete input is valid
+ * @param inputStream input stream
+ * @param molecule output molGraph, replaced only after the complete input is valid
  */
-inline void graphio(std::istream &ifs, molGraph &mg)
+inline void graphio(std::istream &inputStream, molGraph &molecule)
 {
     std::string nameLine;
     std::string sizeLine;
     std::string endpointLine;
     std::string atomLine;
     std::string bondLine;
-    graphioDetail::readLine(ifs, nameLine, "graph name line");
-    graphioDetail::readLine(ifs, sizeLine, "graph size line");
-    graphioDetail::readLine(ifs, endpointLine, "edge endpoint line");
-    graphioDetail::readLine(ifs, atomLine, "atom label line");
-    graphioDetail::readLine(ifs, bondLine, "bond label line");
+    graphioDetail::readLine(inputStream, nameLine, "graph name line");
+    graphioDetail::readLine(inputStream, sizeLine, "graph size line");
+    graphioDetail::readLine(inputStream, endpointLine, "edge endpoint line");
+    graphioDetail::readLine(inputStream, atomLine, "atom label line");
+    graphioDetail::readLine(inputStream, bondLine, "bond label line");
 
     const std::size_t vertexCount = graphioDetail::graphSize(sizeLine);
     const std::vector<std::pair<int, int>> edgeList =
@@ -225,7 +225,7 @@ inline void graphio(std::istream &ifs, molGraph &mg)
     }
 
     molGraph parsed;
-    parsed.mg.reserve(vertexCount);
+    parsed.atoms.reserve(vertexCount);
     for (std::string &label : atomLabels) parsed.addAtom(label);
     for (std::size_t edge = 0; edge < edgeList.size(); edge++)
     {
@@ -243,5 +243,5 @@ inline void graphio(std::istream &ifs, molGraph &mg)
         std::cout << "Native graph: " << graphName << '\n';
         parsed.printToCout();
     }
-    mg = std::move(parsed);
+    molecule = std::move(parsed);
 }

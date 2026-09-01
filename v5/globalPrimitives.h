@@ -1,11 +1,6 @@
 #include <atomic>
 
-template <typename T1, typename T2, typename T3>
-struct triple
-{
-    T1 a; T2 b; T3 c;
-    triple(T1 &_a, T2 &_b, T3 &_c): a(_a), b(_b), c(_c) {}
-};
+#include "compilerAttributes.h"
 
 constexpr int unknownCanonicalId = -1;
 
@@ -20,29 +15,29 @@ struct assemblyFragment
     assemblyFragment() = default;
 
     assemblyFragment(
-        const EdgeMask &_mask,
-        int _edgeCount,
-        int _canonicalId = unknownCanonicalId,
-        bool _connected = false
+        const EdgeMask &fragmentMask,
+        int fragmentEdgeCount,
+        int fragmentCanonicalId = unknownCanonicalId,
+        bool isConnected = false
     ):
-        mask(_mask),
-        canonicalId(_canonicalId),
-        edgeCount(static_cast<uint32_t>(_edgeCount)),
-        connected(_connected) {}
+        mask(fragmentMask),
+        canonicalId(fragmentCanonicalId),
+        edgeCount(static_cast<uint32_t>(fragmentEdgeCount)),
+        connected(isConnected) {}
 
     assemblyFragment(
-        EdgeMask &&_mask,
-        int _edgeCount,
-        int _canonicalId = unknownCanonicalId,
-        bool _connected = false
+        EdgeMask &&fragmentMask,
+        int fragmentEdgeCount,
+        int fragmentCanonicalId = unknownCanonicalId,
+        bool isConnected = false
     ):
-        mask(std::move(_mask)),
-        canonicalId(_canonicalId),
-        edgeCount(static_cast<uint32_t>(_edgeCount)),
-        connected(_connected) {}
+        mask(std::move(fragmentMask)),
+        canonicalId(fragmentCanonicalId),
+        edgeCount(static_cast<uint32_t>(fragmentEdgeCount)),
+        connected(isConnected) {}
 
     /** Retain allowed edges, invalidating metadata only when the mask changes. */
-    [[gnu::always_inline]] bool retainEdges(const EdgeMask &allowedMask)
+    ASSEMBLYCPP_ALWAYS_INLINE bool retainEdges(const EdgeMask &allowedMask)
     {
         if (allowedMask.contains(mask)) return false;
         mask &= allowedMask;
@@ -53,7 +48,7 @@ struct assemblyFragment
     }
 
     /** Retain aggregate-mask words without materialising an owning wide mask. */
-    [[gnu::always_inline]] bool retainEdges(
+    ASSEMBLYCPP_ALWAYS_INLINE bool retainEdges(
         const EdgeMaskAccumulator &allowedMask
     )
     {
@@ -68,7 +63,7 @@ struct assemblyFragment
 
 static_assert(sizeof(assemblyFragment) == 2 * sizeof(uint64_t));
 
-int ENUM_MAX = 50000000;
+int maximumEnumerationCount = 50000000;
 
 ASSEMBLYCPP_SEARCH_LOCAL string moleculeName;
 ASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
@@ -83,7 +78,8 @@ ASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
 // signal handlers retain sig_atomic_t flags and never write this object.
 std::atomic_bool searchCancellationFlag = false;
 ASSEMBLYCPP_SEARCH_LOCAL clock_t startTime = 0;
-unsigned long long runTimeMax = std::numeric_limits<unsigned long long>::max();
+unsigned long long maximumRuntimeTicks =
+    std::numeric_limits<unsigned long long>::max();
 ASSEMBLYCPP_SEARCH_LOCAL bool runtimeLimitReached = false;
 ASSEMBLYCPP_SEARCH_LOCAL bool enumerationLimitReached = false;
 
@@ -122,31 +118,48 @@ ASSEMBLYCPP_SEARCH_LOCAL distributedSearchController
 ASSEMBLYCPP_SEARCH_LOCAL bool ownsDistributedSearchProgress = false;
 ASSEMBLYCPP_SEARCH_LOCAL size_t distributedSearchProgressCountdown = 0;
 
-using edgeL = triple<short, short, short>;
+/** One molecule edge and its position in the source atom's adjacency list. */
+struct MoleculeEdge
+{
+    short sourceAtomIndex;
+    short targetAtomIndex;
+    short sourceBondIndex;
+
+    constexpr MoleculeEdge(
+        short sourceAtomIndexValue,
+        short targetAtomIndexValue,
+        short sourceBondIndexValue
+    ) noexcept:
+        sourceAtomIndex(sourceAtomIndexValue),
+        targetAtomIndex(targetAtomIndexValue),
+        sourceBondIndex(sourceBondIndexValue) {}
+};
+
 ASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
-ASSEMBLYCPP_SEARCH_LOCAL vector<edgeL> originalEdgeList, univEdgeList;
+ASSEMBLYCPP_SEARCH_LOCAL vector<MoleculeEdge> originalEdgeList, universeEdgeList;
 
 // Parallel workers borrow the process-owned edge universe instead of copying
 // it into their otherwise thread-local search globals. Serial searches and
-// the one parallel producer continue to use univEdgeList directly.
-inline ASSEMBLYCPP_SEARCH_LOCAL const vector<edgeL>
+// the one parallel producer continue to use universeEdgeList directly.
+inline ASSEMBLYCPP_SEARCH_LOCAL const vector<MoleculeEdge>
     *sharedUniverseEdgeList = nullptr;
 
-[[nodiscard]] inline const vector<edgeL> &searchUniverseEdgeList() noexcept
+[[nodiscard]] inline const vector<MoleculeEdge> &searchUniverseEdgeList() noexcept
 {
     return sharedUniverseEdgeList == nullptr
-        ? univEdgeList : *sharedUniverseEdgeList;
+        ? universeEdgeList : *sharedUniverseEdgeList;
 }
 
 /// Hash table for edgelists for pathway algorithm
-ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, pii> bitsetHashTable;
+ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, IntegerPair>
+    bitsetHashTable;
 
-bool isPathway = true;
+bool pathwayOutputEnabled = true;
 bool removeHydrogens = true;
 bool verbose = false;
 bool disjointCompensation = false;
-bool memTest = false;
-bool writeIntermediateMAs = false;
+bool memoryReportEnabled = false;
+bool writeIntermediateAssemblyIndices = false;
 
 /** User policy for selecting the parallel search implementation. */
 enum class parallelMode
@@ -161,7 +174,8 @@ parallelMode parallelExecutionMode = parallelMode::off;
 size_t parallelThreadCount = 0;
 ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
 ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
-ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>> intermediateMAs;
+ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>>
+    intermediateAssemblyIndices;
 
 // These fields describe the worker's MPI topology for telemetry and retain the
 // serial/OpenMP fallback mapping. Multi-rank searches receive root indices from
@@ -253,7 +267,10 @@ bool searchShouldStop()
         }
         else --distributedSearchProgressCountdown;
     }
-    if (runTimeMax == std::numeric_limits<unsigned long long>::max()) return false;
+    if (
+        maximumRuntimeTicks ==
+        std::numeric_limits<unsigned long long>::max()
+    ) return false;
 
     if (searchStopPollCountdown != 0)
     {
@@ -262,7 +279,7 @@ bool searchShouldStop()
     }
 
     searchStopPollCountdown = searchStopPollInterval - 1;
-    if (elapsedClockTicks() < runTimeMax) return false;
+    if (elapsedClockTicks() < maximumRuntimeTicks) return false;
 
     runtimeLimitReached = true;
     searchStopPollCountdown = 0;

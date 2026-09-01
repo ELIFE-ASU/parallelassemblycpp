@@ -77,7 +77,7 @@ namespace molfileParserDetail
 }
 
 /** Parse a V2000 molfile into a molecular graph. */
-void molfileParser(std::istream &molfile, molGraph &mg)
+void molfileParser(std::istream &molfile, molGraph &molecule)
 {
     std::string currLine;
     molGraph parsed;
@@ -113,9 +113,9 @@ void molfileParser(std::istream &molfile, molGraph &mg)
         std::cout << "Molfile: " << atomCount << " atoms, " << bondCount
                   << " bonds\n";
     }
-    parsed.mg.reserve(static_cast<std::size_t>(atomCount));
+    parsed.atoms.reserve(static_cast<std::size_t>(atomCount));
 
-    for (int i = 0; i < atomCount; i++)
+    for (int atomIndex = 0; atomIndex < atomCount; atomIndex++)
     {
         molfileParserDetail::readLine(molfile, currLine, "atom line");
         const std::string_view atomField = molfileParserDetail::trimSpaces(
@@ -129,7 +129,7 @@ void molfileParser(std::istream &molfile, molGraph &mg)
         std::string atomType(atomField);
         parsed.addAtom(std::move(atomType));
     }
-    for (int i = 0; i < bondCount; i++)
+    for (int bondIndex = 0; bondIndex < bondCount; bondIndex++)
     {
         molfileParserDetail::readLine(molfile, currLine, "bond line");
         const int atomA = molfileParserDetail::integerField(
@@ -166,12 +166,12 @@ void molfileParser(std::istream &molfile, molGraph &mg)
     }
     if (removeHydrogens)
     {
-        for (size_t i = 0; i < parsed.mg.size(); i++)
+        for (size_t atomIndex = 0; atomIndex < parsed.atoms.size(); atomIndex++)
         {
-            if (parsed.atype(i) == "H") parsed.removeAtom(i);
+            if (parsed.atomType(atomIndex) == "H") parsed.removeAtom(atomIndex);
         }
         parsed.removeAndCollapse();
     }
     if (verbose) parsed.printToCout();
-    mg = std::move(parsed);
+    molecule = std::move(parsed);
 }

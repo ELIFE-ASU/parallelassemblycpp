@@ -22,7 +22,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-
 TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
 DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "AssemblyCpp"
@@ -185,9 +184,7 @@ def parse_pathway_document(path: Path) -> dict[str, object]:
     return document
 
 
-def load_pathway_manifest(
-    path: Path, cases: Sequence[TestCase]
-) -> list[TestCase]:
+def load_pathway_manifest(path: Path, cases: Sequence[TestCase]) -> list[TestCase]:
     manifest = resolve_test_path(path)
     case_names = {case.name for case in cases}
     pathways: dict[str, Path] = {}
@@ -214,8 +211,7 @@ def load_pathway_manifest(
                 name, relative_path = (value.strip() for value in row)
                 if name in pathways:
                     raise TestConfigurationError(
-                        f"duplicate pathway case {name!r} in "
-                        f"{manifest}:{line_number}"
+                        f"duplicate pathway case {name!r} in {manifest}:{line_number}"
                     )
                 if name not in case_names:
                     raise TestConfigurationError(
@@ -275,11 +271,17 @@ def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) ->
 
     graph_cases = sum(case.source.suffix.lower() != ".mol" for case in cases)
     print(f"Manifest: {manifest}")
-    print(f"Regression cases: {len(cases)} ({len(cases) - graph_cases} mol, {graph_cases} graph)")
+    print(
+        f"Regression cases: {len(cases)} ({len(cases) - graph_cases} mol, {graph_cases} graph)"
+    )
     print(f"Molecule fixtures: {len(mol_fixtures)}")
     print(f"Fixture-only molecules: {len(fixture_only)}")
-    print(f"Shared-content case groups: {len(shared_content)} (consistent expectations)")
-    print(f"Pathway golden cases: {sum(case.expected_pathway is not None for case in cases)}")
+    print(
+        f"Shared-content case groups: {len(shared_content)} (consistent expectations)"
+    )
+    print(
+        f"Pathway golden cases: {sum(case.expected_pathway is not None for case in cases)}"
+    )
 
     if verbose and fixture_only:
         print("Fixture-only molecule names:")
@@ -423,9 +425,7 @@ def run_cli_checks(executable: Path) -> int:
         working_directory = Path(directory)
 
         for help_option in ("--help", "-h"):
-            completed = run_cli_command(
-                executable, [help_option], working_directory
-            )
+            completed = run_cli_command(executable, [help_option], working_directory)
             require_cli(
                 completed.returncode == 0,
                 f"{help_option} should exit successfully",
@@ -443,9 +443,7 @@ def run_cli_checks(executable: Path) -> int:
                 ("--telemetry=<0|1>",) if telemetry_supported else ()
             )
             missing_tokens = [
-                token
-                for token in expected_help_tokens
-                if token not in completed.stdout
+                token for token in expected_help_tokens if token not in completed.stdout
             ]
             require_cli(
                 not missing_tokens,
@@ -568,13 +566,9 @@ def run_cli_checks(executable: Path) -> int:
             (["first-input", "second-input"], "expected one INPUT"),
         ]
         if telemetry_supported:
-            invalid_cases.append(
-                (["input", "--telemetry=2"], "expected 0 or 1")
-            )
+            invalid_cases.append((["input", "--telemetry=2"], "expected 0 or 1"))
         else:
-            invalid_cases.append(
-                (["input", "--telemetry=1"], "unknown option")
-            )
+            invalid_cases.append((["input", "--telemetry=1"], "unknown option"))
         for arguments, error_text in invalid_cases:
             completed = run_cli_command(executable, arguments, working_directory)
             require_cli(
@@ -669,10 +663,7 @@ def run_cli_checks(executable: Path) -> int:
             completed,
         )
         require_cli(
-            read_first_line_assembly_index(
-                precedence_directory / "inputOut"
-            )
-            == 5,
+            read_first_line_assembly_index(precedence_directory / "inputOut") == 5,
             "an exact native input should take precedence over its .mol sibling",
             completed,
         )
@@ -813,26 +804,23 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
-        explicit_hydrogen_mol = "\n".join(
-            (
-                "Explicit hydrogens",
-                "AssemblyCpp CLI test",
-                "",
-                "  6  5  0  0  0  0  0  0  0  0999 V2000",
-                "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
-                "    0.0000    1.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
-                "    1.0000    0.5000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
-                "    2.0000    0.5000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
-                "    3.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
-                "    3.0000    1.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
-                "  1  3  1  0  0  0  0",
-                "  2  3  1  0  0  0  0",
-                "  3  4  1  0  0  0  0",
-                "  4  5  1  0  0  0  0",
-                "  4  6  1  0  0  0  0",
-                "M  END",
-                "",
-            )
+        explicit_hydrogen_mol = (
+            "Explicit hydrogens\n"
+            "AssemblyCpp CLI test\n"
+            "\n"
+            "  6  5  0  0  0  0  0  0  0  0999 V2000\n"
+            "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "    0.0000    1.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "    1.0000    0.5000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "    2.0000    0.5000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "    3.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "    3.0000    1.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "  1  3  1  0  0  0  0\n"
+            "  2  3  1  0  0  0  0\n"
+            "  3  4  1  0  0  0  0\n"
+            "  4  5  1  0  0  0  0\n"
+            "  4  6  1  0  0  0  0\n"
+            "M  END\n"
         )
         hydrogen_cases = (
             ("hydrogens-default", [], ["C", "C"], 1),
@@ -885,16 +873,7 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
-        native_hydrogen_graph = "\n".join(
-            (
-                "native-hydrogens",
-                "4",
-                "1 3 2 3 3 4",
-                "H H C C",
-                "1 1 1",
-                "",
-            )
-        )
+        native_hydrogen_graph = "native-hydrogens\n4\n1 3 2 3 3 4\nH H C C\n1 1 1\n"
         expected_native_graph = None
         for name, hydrogen_option in (
             ("native-hydrogens-on", "--remove-hydrogens=1"),
@@ -937,18 +916,15 @@ def run_cli_checks(executable: Path) -> int:
                 )
             scenarios += 1
 
-        all_hydrogen_mol = "\n".join(
-            (
-                "Hydrogen",
-                "AssemblyCpp CLI test",
-                "",
-                "  2  1  0  0  0  0  0  0  0  0999 V2000",
-                "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
-                "    1.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0",
-                "  1  2  1  0  0  0  0",
-                "M  END",
-                "",
-            )
+        all_hydrogen_mol = (
+            "Hydrogen\n"
+            "AssemblyCpp CLI test\n"
+            "\n"
+            "  2  1  0  0  0  0  0  0  0  0999 V2000\n"
+            "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "    1.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+            "  1  2  1  0  0  0  0\n"
+            "M  END\n"
         )
         empty_graph_results: list[tuple[int, int]] = []
         for name, compensation_option in (
@@ -991,16 +967,7 @@ def run_cli_checks(executable: Path) -> int:
             "disjoint compensation should not change an empty processed graph",
         )
 
-        disconnected_graph = "\n".join(
-            (
-                "disconnected",
-                "4",
-                "1 2 3 4",
-                "C C C C",
-                "1 1",
-                "",
-            )
-        )
+        disconnected_graph = "disconnected\n4\n1 2 3 4\nC C C C\n1 1\n"
         compensation_cases = (
             (
                 "canonical-off",
@@ -1061,7 +1028,8 @@ def run_cli_checks(executable: Path) -> int:
             )
             output_match = ASSEMBLY_INDEX_PATTERN.search(output_path.read_text())
             require_cli(
-                output_match is not None and int(output_match.group(1)) == expected_index,
+                output_match is not None
+                and int(output_match.group(1)) == expected_index,
                 f"disjoint-compensation scenario {name!r} returned the wrong final index",
                 completed,
             )
@@ -1105,20 +1073,9 @@ def run_cli_checks(executable: Path) -> int:
             )
             scenarios += 1
 
-        connected_graph = "\n".join(
-            (
-                "connected",
-                "3",
-                "1 2 2 3",
-                "C C C",
-                "1 1",
-                "",
-            )
-        )
+        connected_graph = "connected\n3\n1 2 2 3\nC C C\n1 1\n"
         for enum_limit, expect_limit_status in ((2, True), (3, False)):
-            case_directory = (
-                working_directory / f"enum-connected-boundary-{enum_limit}"
-            )
+            case_directory = working_directory / f"enum-connected-boundary-{enum_limit}"
             case_directory.mkdir()
             (case_directory / "input").write_text(connected_graph)
             completed = run_cli_command(
@@ -1148,9 +1105,7 @@ def run_cli_checks(executable: Path) -> int:
             (86, 12, True),
             (87, 8, False),
         ):
-            case_directory = (
-                working_directory / f"enum-deep-boundary-{enum_limit}"
-            )
+            case_directory = working_directory / f"enum-deep-boundary-{enum_limit}"
             case_directory.mkdir()
             shutil.copy2(
                 TEST_DIRECTORY / "113.mol",
@@ -1215,8 +1170,7 @@ def run_cli_checks(executable: Path) -> int:
                     "wide-path",
                     str(edge_count + 1),
                     " ".join(
-                        f"{vertex} {vertex + 1}"
-                        for vertex in range(1, edge_count + 1)
+                        f"{vertex} {vertex + 1}" for vertex in range(1, edge_count + 1)
                     ),
                     " ".join("C" for _ in range(edge_count + 1)),
                     " ".join("1" for _ in range(edge_count)),
@@ -1248,9 +1202,7 @@ def run_cli_checks(executable: Path) -> int:
             if not telemetry_supported:
                 scenarios += 1
                 continue
-            telemetry = json.loads(
-                (wide_directory / "inputTelemetry.json").read_text()
-            )
+            telemetry = json.loads((wide_directory / "inputTelemetry.json").read_text())
             counters = telemetry["counters"]
             graph = telemetry["processed_graph"]
             residual = telemetry["caches"]["residual_decomposition"]
@@ -1281,8 +1233,7 @@ def run_cli_checks(executable: Path) -> int:
                 completed,
             )
             require_cli(
-                residual["lookups"]
-                == residual["hits"] + residual["misses"],
+                residual["lookups"] == residual["hits"] + residual["misses"],
                 f"the {edge_count}-edge residual-cache counters are inconsistent",
                 completed,
             )
@@ -1376,8 +1327,7 @@ def run_cli_checks(executable: Path) -> int:
             (513, 513, [4] * 127 + [5]),
         ):
             capacity_directory = (
-                working_directory
-                / f"dynamic-mask-capacity-{atom_count}a-{edge_count}e"
+                working_directory / f"dynamic-mask-capacity-{atom_count}a-{edge_count}e"
             )
             capacity_directory.mkdir()
             capacity_graph = make_mask_capacity_graph(component_sizes)
@@ -1421,7 +1371,8 @@ def run_cli_checks(executable: Path) -> int:
                 graph = telemetry["processed_graph"]
                 counters = telemetry["counters"]
                 require_cli(
-                    graph == {
+                    graph
+                    == {
                         "atoms": atom_count,
                         "edges": edge_count,
                         "active_mask_words": (edge_count + 63) // 64,
@@ -1538,9 +1489,7 @@ def run_cli_checks(executable: Path) -> int:
         ("-memTest=1", True),
         ("-testMemory=1", True),
     ):
-        with tempfile.TemporaryDirectory(
-            prefix="assemblycpp-memory-"
-        ) as directory:
+        with tempfile.TemporaryDirectory(prefix="assemblycpp-memory-") as directory:
             working_directory = Path(directory)
             shutil.copy2(TEST_DIRECTORY / "butane.mol", working_directory / "input.mol")
             arguments = ["input.mol", "--pathway=0"]
@@ -1612,7 +1561,9 @@ def run_mask_unit_tests(compiler: str) -> None:
 
 def run_tree_canon_unit_tests(compiler: str) -> None:
     command_prefix = compiler_command(compiler)
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-tree-canon-tests-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="assemblycpp-tree-canon-tests-"
+    ) as directory:
         test_executable = Path(directory) / "treeCanonTester"
         command = [
             *command_prefix,
@@ -1631,7 +1582,7 @@ def run_tree_canon_unit_tests(compiler: str) -> None:
                 f"tree canon test build failed with exit code {completed.returncode}"
             )
 
-        run_options: dict[str, object] = {"check": False}
+        run_options: dict[str, object] = {}
         if sys.platform.startswith("linux"):
             import resource
 
@@ -1640,7 +1591,7 @@ def run_tree_canon_unit_tests(compiler: str) -> None:
                 resource.setrlimit(resource.RLIMIT_STACK, (stack_limit, stack_limit))
 
             run_options["preexec_fn"] = limit_stack
-        completed = subprocess.run([str(test_executable)], **run_options)
+        completed = subprocess.run([str(test_executable)], check=False, **run_options)
         if completed.returncode != 0:
             raise TestConfigurationError(
                 f"tree canon tests failed with exit code {completed.returncode}"
@@ -1650,7 +1601,9 @@ def run_tree_canon_unit_tests(compiler: str) -> None:
 
 def run_cyclic_canon_unit_tests(compiler: str) -> None:
     command_prefix = compiler_command(compiler)
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-cyclic-canon-tests-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="assemblycpp-cyclic-canon-tests-"
+    ) as directory:
         test_executable = Path(directory) / "cyclicCanonTester"
         command = [
             *command_prefix,
@@ -1665,15 +1618,13 @@ def run_cyclic_canon_unit_tests(compiler: str) -> None:
         completed = subprocess.run(command, check=False)
         if completed.returncode != 0:
             raise TestConfigurationError(
-                "cyclic canon test build failed with exit code "
-                f"{completed.returncode}"
+                f"cyclic canon test build failed with exit code {completed.returncode}"
             )
 
         completed = subprocess.run([str(test_executable)], check=False)
         if completed.returncode != 0:
             raise TestConfigurationError(
-                "cyclic canon tests failed with exit code "
-                f"{completed.returncode}"
+                f"cyclic canon tests failed with exit code {completed.returncode}"
             )
         print("Cyclic canon tests: passed", flush=True)
 
@@ -1750,7 +1701,9 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
     started = time.perf_counter()
 
     try:
-        with tempfile.TemporaryDirectory(prefix=f"assemblycpp-{safe_name}-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix=f"assemblycpp-{safe_name}-"
+        ) as directory:
             working_directory = Path(directory)
             copied_input = working_directory / case.source.name
             shutil.copy2(case.source, copied_input)
@@ -1861,10 +1814,7 @@ def run_test_cases(
 
 def print_result_header() -> None:
     print()
-    print(
-        f"{'Molecule':<32} {'Expected':>8} {'Actual':>8} "
-        f"{'Time (s)':>10}  Status"
-    )
+    print(f"{'Molecule':<32} {'Expected':>8} {'Actual':>8} {'Time (s)':>10}  Status")
     print("-" * 78)
 
 

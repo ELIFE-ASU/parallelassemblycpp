@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "compilerAttributes.h"
+
 #ifndef ASSEMBLYCPP_SEARCH_LOCAL
     #define ASSEMBLYCPP_SEARCH_LOCAL
 #endif
@@ -85,7 +87,7 @@ public:
         }
     }
 
-    [[gnu::always_inline]] ~ActiveWordMask()
+    ASSEMBLYCPP_ALWAYS_INLINE ~ActiveWordMask()
     {
         if (!isSmall() && storage_.tail != nullptr) [[unlikely]]
         {
@@ -169,7 +171,7 @@ public:
         return storage_.tail == nullptr ? 0 : storage_.tail->data()[index];
     }
 
-    [[gnu::always_inline]] ActiveWordMask &set(
+    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &set(
         std::size_t position,
         bool value = true
     )
@@ -190,7 +192,7 @@ public:
     }
 
     /** Return this mask with one bit set, avoiding a COW retain/detach pair. */
-    [[nodiscard, gnu::always_inline]] ActiveWordMask withBitSet(
+    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask withBitSet(
         std::size_t position
     ) const
     {
@@ -204,7 +206,7 @@ public:
         return withBitSetWide(position);
     }
 
-    [[nodiscard, gnu::noinline]] ActiveWordMask withBitSetWide(
+    [[nodiscard]] ASSEMBLYCPP_NOINLINE ActiveWordMask withBitSetWide(
         std::size_t position
     ) const
     {
@@ -324,7 +326,7 @@ public:
         return (*this)[position];
     }
 
-    [[nodiscard, gnu::always_inline]] std::size_t count() const noexcept
+    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE std::size_t count() const noexcept
     {
         if (isSmall()) [[likely]]
         {
@@ -333,7 +335,7 @@ public:
         return countWide();
     }
 
-    [[nodiscard, gnu::noinline]] std::size_t countWide() const noexcept
+    [[nodiscard]] ASSEMBLYCPP_NOINLINE std::size_t countWide() const noexcept
     {
         if (storage_.tail == nullptr) return 0;
         std::size_t result = 0;
@@ -395,7 +397,7 @@ public:
         return word;
     }
 
-    [[nodiscard, gnu::always_inline]] bool intersects(
+    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE bool intersects(
         const ActiveWordMask &other
     ) const noexcept
     {
@@ -406,7 +408,7 @@ public:
         return intersectsWide(other);
     }
 
-    [[nodiscard, gnu::noinline]] bool intersectsWide(
+    [[nodiscard]] ASSEMBLYCPP_NOINLINE bool intersectsWide(
         const ActiveWordMask &other
     ) const noexcept
     {
@@ -535,7 +537,7 @@ public:
 
     /** Intersect with any word-oriented view without materialising a mask. */
     template<typename WordSource>
-    [[gnu::always_inline]] ActiveWordMask &intersectWords(
+    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &intersectWords(
         const WordSource &other
     )
     {
@@ -553,7 +555,7 @@ public:
         return *this;
     }
 
-    [[gnu::always_inline]] ActiveWordMask &operator|=(
+    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &operator|=(
         const ActiveWordMask &other
     )
     {
@@ -565,7 +567,7 @@ public:
         return orAssignWide(other);
     }
 
-    [[gnu::noinline]] ActiveWordMask &orAssignWide(
+    ASSEMBLYCPP_NOINLINE ActiveWordMask &orAssignWide(
         const ActiveWordMask &other
     )
     {
@@ -581,7 +583,7 @@ public:
         return *this;
     }
 
-    [[gnu::always_inline]] ActiveWordMask &operator^=(
+    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &operator^=(
         const ActiveWordMask &other
     )
     {
@@ -593,7 +595,7 @@ public:
         return xorAssignWide(other);
     }
 
-    [[gnu::noinline]] ActiveWordMask &xorAssignWide(
+    ASSEMBLYCPP_NOINLINE ActiveWordMask &xorAssignWide(
         const ActiveWordMask &other
     )
     {
@@ -708,7 +710,7 @@ public:
         return result;
     }
 
-    [[gnu::always_inline]] friend bool operator==(
+    ASSEMBLYCPP_ALWAYS_INLINE friend bool operator==(
         const ActiveWordMask &left,
         const ActiveWordMask &right
     ) noexcept
@@ -717,7 +719,7 @@ public:
         return equalsWide(left, right);
     }
 
-    [[gnu::noinline]] static bool equalsWide(
+    ASSEMBLYCPP_NOINLINE static bool equalsWide(
         const ActiveWordMask &left,
         const ActiveWordMask &right
     ) noexcept
@@ -735,7 +737,7 @@ public:
         return true;
     }
 
-    [[gnu::always_inline]] friend bool operator==(
+    ASSEMBLYCPP_ALWAYS_INLINE friend bool operator==(
         const ActiveWordMask &mask,
         unsigned long long value
     ) noexcept
@@ -760,7 +762,7 @@ public:
         return mask == value;
     }
 
-    [[nodiscard, gnu::always_inline]] std::size_t hash() const noexcept
+    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE std::size_t hash() const noexcept
     {
         if (activeWordCount_ == 0) return 0;
         if (isSmall()) [[likely]]
@@ -770,7 +772,7 @@ public:
         return hashWide();
     }
 
-    [[nodiscard, gnu::noinline]] std::size_t hashWide() const noexcept
+    [[nodiscard]] ASSEMBLYCPP_NOINLINE std::size_t hashWide() const noexcept
     {
         std::size_t result = std::hash<word_type>{}(activeWord(0));
         for (std::size_t i = 1; i < activeWordCount_; i++)
@@ -948,7 +950,7 @@ private:
         }
     }
 
-    [[gnu::noinline]] static void destroyWide(WideWords *words) noexcept
+    ASSEMBLYCPP_NOINLINE static void destroyWide(WideWords *words) noexcept
     {
         release(words);
     }
@@ -994,7 +996,7 @@ private:
         return storage_.tail;
     }
 
-    [[gnu::noinline]] ActiveWordMask &setWideChanged(
+    ASSEMBLYCPP_NOINLINE ActiveWordMask &setWideChanged(
         std::size_t wordIndex,
         word_type bit,
         bool value

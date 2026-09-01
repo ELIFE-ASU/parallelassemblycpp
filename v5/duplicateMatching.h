@@ -1,3 +1,5 @@
+#include "compilerAttributes.h"
+
 enum class initialDagInsertionResult
 {
     existing,
@@ -44,7 +46,8 @@ initialDagInsertion tryRetainInitialDagMask(
         return {initialDagInsertionResult::existing, insertion->second};
     }
 
-    const size_t limit = ENUM_MAX > 0 ? static_cast<size_t>(ENUM_MAX) : 0;
+    const size_t limit = maximumEnumerationCount > 0
+        ? static_cast<size_t>(maximumEnumerationCount) : 0;
     if (retainedStateCount >= limit)
     {
         level.maskIndices.erase(insertion);
@@ -74,12 +77,19 @@ struct potentialDuplicate
 {
     /// @brief mask representing edge list of potential duplicate
     EdgeMask mask;
-    /// @brief the index from the canonise function and index of the fragment
-    int idx, fragment;
+    /// @brief DAG node index and parent-fragment index
+    int duplicateIndex;
+    int fragmentIndex;
     potentialDuplicate() = default;
 
-    potentialDuplicate(EdgeMask _mask, int _fragment, int _idx):
-        mask(std::move(_mask)), idx(_idx), fragment(_fragment) {}
+    potentialDuplicate(
+        EdgeMask duplicateMask,
+        int sourceFragmentIndex,
+        int sourceDuplicateIndex
+    ):
+        mask(std::move(duplicateMask)),
+        duplicateIndex(sourceDuplicateIndex),
+        fragmentIndex(sourceFragmentIndex) {}
 };
 
 /**
@@ -97,7 +107,7 @@ struct initialIncidentEdgeIndex
 
     initialIncidentEdgeIndex(): offsets(AtomMask::size() + 1, 0)
     {
-        const vector<edgeL> &edgeList = searchUniverseEdgeList();
+        const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
         if (
             edgeList.size() >
             static_cast<size_t>(numeric_limits<int>::max())
@@ -116,23 +126,23 @@ struct initialIncidentEdgeIndex
                  edgeIndex < edgeList.size();
                  edgeIndex++)
             {
-                const edgeL &edge = edgeList[edgeIndex];
-                validateEndpoint(edge.a);
-                validateEndpoint(edge.b);
-                singleWordMasks[edge.a].set(edgeIndex);
-                if (edge.b != edge.a)
-                    singleWordMasks[edge.b].set(edgeIndex);
+                const MoleculeEdge &edge = edgeList[edgeIndex];
+                validateEndpoint(edge.sourceAtomIndex);
+                validateEndpoint(edge.targetAtomIndex);
+                singleWordMasks[edge.sourceAtomIndex].set(edgeIndex);
+                if (edge.targetAtomIndex != edge.sourceAtomIndex)
+                    singleWordMasks[edge.targetAtomIndex].set(edgeIndex);
             }
             return;
         }
 
-        for (const edgeL &edge : edgeList)
+        for (const MoleculeEdge &edge : edgeList)
         {
-            validateEndpoint(edge.a);
-            validateEndpoint(edge.b);
-            ++offsets[static_cast<size_t>(edge.a) + 1];
-            if (edge.b != edge.a)
-                ++offsets[static_cast<size_t>(edge.b) + 1];
+            validateEndpoint(edge.sourceAtomIndex);
+            validateEndpoint(edge.targetAtomIndex);
+            ++offsets[static_cast<size_t>(edge.sourceAtomIndex) + 1];
+            if (edge.targetAtomIndex != edge.sourceAtomIndex)
+                ++offsets[static_cast<size_t>(edge.targetAtomIndex) + 1];
         }
         for (size_t atom = 1; atom < offsets.size(); atom++)
             offsets[atom] += offsets[atom - 1];
@@ -141,16 +151,16 @@ struct initialIncidentEdgeIndex
         vector<size_t> next = offsets;
         for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
         {
-            const edgeL &edge = edgeList[edgeIndex];
-            const size_t atomA = static_cast<size_t>(edge.a);
-            const size_t atomB = static_cast<size_t>(edge.b);
+            const MoleculeEdge &edge = edgeList[edgeIndex];
+            const size_t atomA = static_cast<size_t>(edge.sourceAtomIndex);
+            const size_t atomB = static_cast<size_t>(edge.targetAtomIndex);
             edgeIndices[next[atomA]++] = static_cast<uint32_t>(edgeIndex);
-            if (edge.b != edge.a)
+            if (edge.targetAtomIndex != edge.sourceAtomIndex)
                 edgeIndices[next[atomB]++] = static_cast<uint32_t>(edgeIndex);
         }
     }
 
-    [[gnu::noinline]] void addEligibleEdges(
+    ASSEMBLYCPP_NOINLINE void addEligibleEdges(
         size_t atomA,
         size_t atomB,
         const EdgeMask &fragmentMask,
@@ -217,22 +227,22 @@ struct initialPotentialDuplicate : potentialDuplicate
      * @param x edge to be set
      * @param fragmentMask Edge mask of the fragment containing the duplicate
      * @param incidentEdges Precomputed compact atom-to-edge incidence index
-     * @param _fragment Index of the fragment in its assembly state
+     * @param fragmentIndex Index of the fragment in its assembly state
      */
     initialPotentialDuplicate(
         int x,
         const EdgeMask &fragmentMask,
         const initialIncidentEdgeIndex &incidentEdges,
-        size_t _fragment,
-        int _idx
+        size_t sourceFragmentIndex,
+        int index
     )
     {
-        fragment = static_cast<int>(_fragment);
-        idx = _idx;
+        fragmentIndex = static_cast<int>(sourceFragmentIndex);
+        duplicateIndex = index;
         mask.set(x);
-        const vector<edgeL> &edgeList = searchUniverseEdgeList();
-        const size_t atomA = edgeList[x].a;
-        const size_t atomB = edgeList[x].b;
+        const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
+        const size_t atomA = edgeList[x].sourceAtomIndex;
+        const size_t atomB = edgeList[x].targetAtomIndex;
         incidentEdges.addEligibleEdges(
             atomA,
             atomB,
@@ -246,12 +256,12 @@ struct initialPotentialDuplicate : potentialDuplicate
         const initialPotentialDuplicate &parent,
         EdgeMask childMask,
         EdgeMask childFrontier,
-        int _idx
+        int index
     ):
         potentialDuplicate(
             std::move(childMask),
-            parent.fragment,
-            _idx
+            parent.fragmentIndex,
+            index
         ),
         frontier(std::move(childFrontier))
     {}
@@ -271,7 +281,7 @@ struct initialPotentialDuplicate : potentialDuplicate
         const initialIncidentEdgeIndex &incidentEdges
     )
     {
-        const vector<edgeL> &edgeList = searchUniverseEdgeList();
+        const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
         const size_t childLevelIndex = mask.count();
         initialDagLevel &childLevel = tempDag[childLevelIndex];
         initialDagLevel &parentLevel = tempDag[childLevelIndex - 1];
@@ -289,8 +299,8 @@ struct initialPotentialDuplicate : potentialDuplicate
                     static_cast<size_t>(std::countr_zero(frontierWord));
                 frontierWord &= frontierWord - 1;
                 if (searchShouldStopPeriodically()) return false;
-                const size_t atomA = edgeList[i].a;
-                const size_t atomB = edgeList[i].b;
+                const size_t atomA = edgeList[i].sourceAtomIndex;
+                const size_t atomB = edgeList[i].targetAtomIndex;
                 EdgeMask tempMask = mask.withBitSet(i);
                 const initialDagInsertion insertion =
                     tryRetainInitialDagMask(
@@ -325,13 +335,14 @@ struct initialPotentialDuplicate : potentialDuplicate
                 if (parentNode == nullptr)
                 {
                     if (
-                        idx < 0 ||
-                        static_cast<size_t>(idx) >= parentLevel.nodes.size()
+                        duplicateIndex < 0 ||
+                        static_cast<size_t>(duplicateIndex) >=
+                            parentLevel.nodes.size()
                     )
                     {
                         throw logic_error("initial DAG parent is missing");
                     }
-                    parentNode = &parentLevel.nodes[idx];
+                    parentNode = &parentLevel.nodes[duplicateIndex];
                     if (
                         parentNode->transitionOffset !=
                         unassignedDagTransitionOffset
@@ -379,17 +390,22 @@ struct validMatchings
 {
     /// @brief first and second duplicate masks
     const EdgeMask &first, &second;
-    /// @brief frag1 and frag2 index first and second; maxFragSize is their maximum size
-    int frag1, frag2, maxFragSize;
+    /// @brief Parent fragment indices and the selected duplicate size
+    int firstFragmentIndex;
+    int secondFragmentIndex;
+    int maximumFragmentSize;
     validMatchings(
-        const EdgeMask &_first,
-        const EdgeMask &_second,
-        int _frag1,
-        int _frag2,
-        int _maxFragSize
+        const EdgeMask &firstMask,
+        const EdgeMask &secondMask,
+        int firstFragment,
+        int secondFragment,
+        int selectedFragmentSize
     ):
-    first(_first), second(_second), frag1(_frag1), frag2(_frag2),
-    maxFragSize(_maxFragSize) {}
+        first(firstMask),
+        second(secondMask),
+        firstFragmentIndex(firstFragment),
+        secondFragmentIndex(secondFragment),
+        maximumFragmentSize(selectedFragmentSize) {}
 };
 
 template<typename PotentialDuplicate>
@@ -414,7 +430,7 @@ struct duplicateSet
     {
         return valid;
     }
-    
+
     /**
      * @brief Visit pairable duplicates in reverse lexicographic order
      *
@@ -427,7 +443,7 @@ struct duplicateSet
      * @return false if the visitor stopped iteration or the search should stop
     */
     template<typename Filter, typename Visitor>
-    [[gnu::noinline]] bool visitMatchingsInReverse(
+    ASSEMBLYCPP_NOINLINE bool visitMatchingsInReverse(
         Filter &&filter,
         Visitor &&visitor
     )
@@ -438,22 +454,22 @@ struct duplicateSet
         {
             --firstIndex;
             if (searchShouldStop()) return false;
-            int frag = list[firstIndex].fragment;
+            const int fragmentIndex = list[firstIndex].fragmentIndex;
             for (size_t secondIndex = list.size();
                  secondIndex > firstIndex + 1;)
             {
                 --secondIndex;
                 if (searchShouldStopPeriodically()) return false;
                 if (
-                    frag == list[secondIndex].fragment &&
+                    fragmentIndex == list[secondIndex].fragmentIndex &&
                     !list[firstIndex].mask.disjoint(list[secondIndex].mask)
                 ) continue;
 
                 validMatchings matching(
                     list[firstIndex].mask,
                     list[secondIndex].mask,
-                    frag,
-                    list[secondIndex].fragment,
+                    fragmentIndex,
+                    list[secondIndex].fragmentIndex,
                     size
                 );
                 if (filter(matching, firstIndex, secondIndex)) continue;
@@ -468,7 +484,7 @@ struct duplicateSet
     }
 
     template<typename Visitor>
-    [[gnu::always_inline]] bool visitMatchingsInReverse(Visitor &&visitor)
+    ASSEMBLYCPP_ALWAYS_INLINE bool visitMatchingsInReverse(Visitor &&visitor)
     {
         if (list.size() < 2) return true;
 
@@ -476,22 +492,22 @@ struct duplicateSet
         {
             --firstIndex;
             if (searchShouldStop()) return false;
-            int frag = list[firstIndex].fragment;
+            const int fragmentIndex = list[firstIndex].fragmentIndex;
             for (size_t secondIndex = list.size();
                  secondIndex > firstIndex + 1;)
             {
                 --secondIndex;
                 if (searchShouldStopPeriodically()) return false;
                 if (
-                    frag == list[secondIndex].fragment &&
+                    fragmentIndex == list[secondIndex].fragmentIndex &&
                     !list[firstIndex].mask.disjoint(list[secondIndex].mask)
                 ) continue;
 
                 validMatchings matching(
                     list[firstIndex].mask,
                     list[secondIndex].mask,
-                    frag,
-                    list[secondIndex].fragment,
+                    fragmentIndex,
+                    list[secondIndex].fragmentIndex,
                     size
                 );
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -512,16 +528,16 @@ struct duplicateSet
      * Unexpected interleaving, or a block layout too sparse to amortise the
      * extra dispatch, should retain legacy occurrence-pair traversal.
      */
-    [[gnu::noinline]] bool hasDenseFragmentRuns() const
+    ASSEMBLYCPP_NOINLINE bool hasDenseFragmentRuns() const
     {
         if (list.size() < 2) return false;
 
-        int previousFragment = list.front().fragment;
+        int previousFragment = list.front().fragmentIndex;
         size_t fragmentRunCount = 1;
         for (size_t occurrence = 1; occurrence < list.size(); ++occurrence)
         {
             if (searchShouldStopPeriodically()) return false;
-            const int fragment = list[occurrence].fragment;
+            const int fragment = list[occurrence].fragmentIndex;
             if (fragment < previousFragment) return false;
             fragmentRunCount += fragment != previousFragment;
             previousFragment = fragment;
@@ -547,7 +563,7 @@ struct duplicateSet
      * accidentally depend on a representative occurrence's masks.
     */
     template<typename FragmentPairFilter, typename Visitor>
-    [[gnu::noinline]] bool visitMatchingsByFragmentPairInReverse(
+    ASSEMBLYCPP_NOINLINE bool visitMatchingsByFragmentPairInReverse(
         FragmentPairFilter &&fragmentPairFilter,
         Visitor &&visitor
     )
@@ -558,11 +574,11 @@ struct duplicateSet
         while (firstEnd > 0)
         {
             if (searchShouldStop()) return false;
-            const int firstFragment = list[firstEnd - 1].fragment;
+            const int firstFragment = list[firstEnd - 1].fragmentIndex;
             size_t firstBegin = firstEnd - 1;
             while (
                 firstBegin > 0 &&
-                list[firstBegin - 1].fragment == firstFragment
+                list[firstBegin - 1].fragmentIndex == firstFragment
             )
             {
                 if (searchShouldStopPeriodically()) return false;
@@ -573,11 +589,11 @@ struct duplicateSet
             while (secondEnd > firstBegin)
             {
                 if (searchShouldStopPeriodically()) return false;
-                const int secondFragment = list[secondEnd - 1].fragment;
+                const int secondFragment = list[secondEnd - 1].fragmentIndex;
                 size_t secondBegin = secondEnd - 1;
                 while (
                     secondBegin > firstBegin &&
-                    list[secondBegin - 1].fragment == secondFragment
+                    list[secondBegin - 1].fragmentIndex == secondFragment
                 )
                 {
                     if (searchShouldStopPeriodically()) return false;
@@ -699,14 +715,14 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
     using duplicateSet::duplicateSet;
     /**
      * @brief Generate size + 1 matchings from the current set and populate the DAG during the initial enumeration
-     * 
+     *
      * @param q list of potential duplicates
      * @param retainedStateCount Number of unique masks currently held in tempDag
      * @param tempDag the temporary DAG
      * @return true if any valid matchings exist
      * @return false otherwise
      */
-    bool dagPopulator(vector<initialPotentialDuplicate> &q, 
+    bool dagPopulator(vector<initialPotentialDuplicate> &q,
     size_t &retainedStateCount,
     vector<initialDagLevel> &tempDag,
     const vector<assemblyFragment> &fragments,
@@ -723,7 +739,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
                 q,
                 retainedStateCount,
                 tempDag,
-                fragments[duplicate.fragment].mask,
+                fragments[duplicate.fragmentIndex].mask,
                 incidentEdges
             );
             // Each retained initial occurrence is expanded at most once. Its
@@ -748,11 +764,11 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
         for (size_t i = 0; i < list.size(); i++)
         {
             if (searchShouldStop()) return output;
-            int frag = list[i].fragment;
+            const int fragmentIndex = list[i].fragmentIndex;
             for (size_t j = i + 1; j < list.size(); j++)
             {
                 if (searchShouldStopPeriodically()) return output;
-                if (frag == list[j].fragment)
+                if (fragmentIndex == list[j].fragmentIndex)
                 {
                     if (list[i].mask.disjoint(list[j].mask))
                     {
@@ -845,15 +861,15 @@ public:
         friend class duplicateFragmentMaskList;
 
         iterator(
-            span<const duplicateFragmentMaskRow> _rows,
-            const EdgeMaskAccumulatorBuffer *_accumulators,
-            size_t _accumulatorOffset,
-            size_t _position
+            span<const duplicateFragmentMaskRow> sourceRows,
+            const EdgeMaskAccumulatorBuffer *sourceAccumulators,
+            size_t sourceAccumulatorOffset,
+            size_t sourcePosition
         ):
-            rows(_rows),
-            accumulators(_accumulators),
-            accumulatorOffset(_accumulatorOffset),
-            position(_position) {}
+            rows(sourceRows),
+            accumulators(sourceAccumulators),
+            accumulatorOffset(sourceAccumulatorOffset),
+            position(sourcePosition) {}
 
         span<const duplicateFragmentMaskRow> rows;
         const EdgeMaskAccumulatorBuffer *accumulators = nullptr;
@@ -901,15 +917,15 @@ private:
     template<typename> friend struct duplicateClassLevel;
 
     duplicateFragmentMaskList(
-        size_t _fragmentCount,
-        span<const duplicateFragmentMaskRow> _rows,
-        const EdgeMaskAccumulatorBuffer &_accumulators,
-        size_t _accumulatorOffset
+        size_t sourceFragmentCount,
+        span<const duplicateFragmentMaskRow> sourceRows,
+        const EdgeMaskAccumulatorBuffer &sourceAccumulators,
+        size_t sourceAccumulatorOffset
     ):
-        fragmentCount(_fragmentCount),
-        rows(_rows),
-        accumulators(&_accumulators),
-        accumulatorOffset(_accumulatorOffset) {}
+        fragmentCount(sourceFragmentCount),
+        rows(sourceRows),
+        accumulators(&sourceAccumulators),
+        accumulatorOffset(sourceAccumulatorOffset) {}
 
     span<const duplicateFragmentMaskRow> rows;
     const EdgeMaskAccumulatorBuffer *accumulators = nullptr;
@@ -923,7 +939,8 @@ struct duplicateClassEntry
     int canonicalId;
     DuplicateSetType duplicates;
 
-    explicit duplicateClassEntry(int _canonicalId): canonicalId(_canonicalId) {}
+    explicit duplicateClassEntry(int classCanonicalId):
+        canonicalId(classCanonicalId) {}
 
 private:
     template<typename> friend struct duplicateClassLevel;
@@ -962,8 +979,8 @@ struct duplicateClassLevel
     private:
         friend struct duplicateClassLevel;
 
-        appender(duplicateClassLevel &_level, uint32_t _position):
-            level(&_level), position(_position) {}
+        appender(duplicateClassLevel &classLevel, uint32_t classPosition):
+            level(&classLevel), position(classPosition) {}
 
         duplicateClassLevel *level;
         uint32_t position;
@@ -1074,8 +1091,8 @@ private:
         occurrence_type occurrence;
         uint32_t next = entry_type::noOccurrence;
 
-        explicit stagedOccurrence(occurrence_type _occurrence):
-            occurrence(std::move(_occurrence)) {}
+        explicit stagedOccurrence(occurrence_type sourceOccurrence):
+            occurrence(std::move(sourceOccurrence)) {}
     };
 
     vector<stagedOccurrence> stagedOccurrences;
@@ -1097,8 +1114,8 @@ private:
         if (classPosition >= classes.size())
             throw logic_error("duplicate-class position is outside its level");
         if (
-            occurrence.fragment < 0 ||
-            static_cast<size_t>(occurrence.fragment) >= fragmentCountValue
+            occurrence.fragmentIndex < 0 ||
+            static_cast<size_t>(occurrence.fragmentIndex) >= fragmentCountValue
         )
         {
             throw logic_error("duplicate occurrence fragment is outside its level");
@@ -1172,7 +1189,7 @@ private:
                  ++occurrence)
             {
                 const size_t fragment = static_cast<size_t>(
-                    sealedOccurrences[occurrence].fragment
+                    sealedOccurrences[occurrence].fragmentIndex
                 );
                 if (fragmentPositions[fragment] != noPosition) continue;
                 fragmentPositions[fragment] = maskRows.size();
@@ -1211,7 +1228,9 @@ private:
             {
                 const occurrence_type &candidate = sealedOccurrences[occurrence];
                 maskAccumulators[
-                    fragmentPositions[static_cast<size_t>(candidate.fragment)]
+                    fragmentPositions[
+                        static_cast<size_t>(candidate.fragmentIndex)
+                    ]
                 ].add(candidate.mask);
             }
             for (size_t row = maskBegin; row < maskEnd; ++row)
@@ -1313,7 +1332,7 @@ struct duplicateClassIndexWorkspace
 
 private:
     template<typename DuplicateSetType>
-    [[gnu::noinline]]
+    ASSEMBLYCPP_NOINLINE
     typename duplicateClassLevel<DuplicateSetType>::appender create(
         duplicateClassLevel<DuplicateSetType> &level,
         int canonicalId
@@ -1337,57 +1356,57 @@ private:
 };
 
 /**
- * @brief Generate the next set of duplicates from the duplicate d
- * 
+ * @brief Generate the next set of duplicates from one duplicate
+ *
  * @param dag Runtime DAG used to enumerate child masks
- * @param d the duplicate from which the next set of duplicates is to be generated
- * @param stmap maps an integer corresponding to a unique index of each non-isomorphic graph to a set of potential duplicates
- * @param fragment the bitset corresponding to the fragment d is a part of
- * @param size the maximum allowed size of a duplicate
+ * @param duplicate the duplicate from which children are generated
+ * @param duplicateLevel canonical classes receiving potential duplicates
+ * @param fragmentMask the mask of the duplicate's parent fragment
+ * @param duplicateSize the maximum allowed size of a duplicate
  * @param ordinal the maximum allowed index of a duplicate
- * @param frags the number of fragments in the assembly state
+ * @param fragmentCount the number of fragments in the assembly state
  * @return true if the canonical index of any duplicate is greater than the ordinal
  * @return false otherwise
  */
 bool dagGenerate(
     const vector<dagLevel> &dag,
-    potentialDuplicate &d,
-    dagDuplicateClassLevel &stmap,
+    potentialDuplicate &duplicate,
+    dagDuplicateClassLevel &duplicateLevel,
     duplicateClassIndexWorkspace &classIndex,
-    const EdgeMask &fragment,
-    size_t size,
+    const EdgeMask &fragmentMask,
+    size_t duplicateSize,
     int ordinal,
-    size_t frags
+    size_t fragmentCount
 )
 {
     bool overweight = 0;
-    const dagLevel &parentLevel = dag[size - 1];
-    const dagNode &parent = parentLevel.nodes[d.idx];
+    const dagLevel &parentLevel = dag[duplicateSize - 1];
+    const dagNode &parent = parentLevel.nodes[duplicate.duplicateIndex];
     if (parent.transitionCount == 0) return overweight;
     const dagTransition *transition =
         parentLevel.transitions.data() + parent.transitionOffset;
     const dagTransition *const transitionEnd =
         transition + parent.transitionCount;
-    const dagNode *const childNodes = dag[size].nodes.data();
+    const dagNode *const childNodes = dag[duplicateSize].nodes.data();
     for (; transition != transitionEnd; ++transition)
     {
         if (searchShouldStopPeriodically()) return overweight;
-        if (fragment[transition->addedEdge])
+        if (fragmentMask[transition->addedEdge])
         {
-            const dagNode &dn = childNodes[transition->childIndex];
-            if (dn.ix <= ordinal)
+            const dagNode &childNode = childNodes[transition->childIndex];
+            if (childNode.canonicalIndex <= ordinal)
             {
                 potentialDuplicate child(
-                    d.mask.withBitSet(transition->addedEdge),
-                    d.fragment,
-                    d.idx
+                    duplicate.mask.withBitSet(transition->addedEdge),
+                    duplicate.fragmentIndex,
+                    duplicate.duplicateIndex
                 );
-                child.idx = transition->childIndex;
+                child.duplicateIndex = transition->childIndex;
                 classIndex.getOrCreate(
-                    stmap,
-                    dn.ix,
-                    size + 1,
-                    frags
+                    duplicateLevel,
+                    childNode.canonicalIndex,
+                    duplicateSize + 1,
+                    fragmentCount
                 ).insert(std::move(child));
             }
             else overweight = 1;
@@ -1397,23 +1416,23 @@ bool dagGenerate(
 }
 
 /**
- * @brief Generate the next set of duplicates from the duplicate set ds using the function dagGenerate
- * 
+ * @brief Generate the next set of duplicates from one duplicate class
+ *
  * @param dag Runtime DAG used to enumerate child masks
- * @param ds the duplicate set from which the next set is to be generated
- * @param stmap maps an integer corresponding to a unique index of each non-isomorphic graph to a set of potential duplicates
+ * @param duplicates the duplicate set from which the next set is generated
+ * @param duplicateLevel canonical classes receiving potential duplicates
  * @param takenMasks bitsets of all edges which could be part of a duplicate
  * @param stateMasks the bitsets of the original assembly state
  * @param ordinal the maximum allowed index of a duplicate
  * @param overweight true if the generation function has reached states which are larger than the ordinal
  * @param last true if this is to be the final iteration (previous iteration was overweight)
  * @return true if any valid duplicatable subgraphs found and not the final iteration
- * @return false 
+ * @return false
  */
 bool dagDuplicateGenerator(
     const vector<dagLevel> &dag,
-    dagDuplicateSet &ds,
-    dagDuplicateClassLevel &stmap,
+    dagDuplicateSet &duplicates,
+    dagDuplicateClassLevel &duplicateLevel,
     duplicateClassIndexWorkspace &classIndex,
     span<EdgeMaskAccumulator> takenMasks,
     const vector<assemblyFragment> &stateFragments,
@@ -1424,25 +1443,25 @@ bool dagDuplicateGenerator(
 )
     {
         bool output = 0;
-        const bool allAlive = ds.occurrencesSpanMultipleFragments();
+        const bool allAlive = duplicates.occurrencesSpanMultipleFragments();
         if (searchShouldStop()) return output;
 
         auto generateFromDuplicate = [&](potentialDuplicate &duplicate)
         {
-            const int frag = duplicate.fragment;
-            takenMasks[frag].add(duplicate.mask);
-            ds.dead = 0;
+            const int fragmentIndex = duplicate.fragmentIndex;
+            takenMasks[fragmentIndex].add(duplicate.mask);
+            duplicates.dead = 0;
             if (!last)
             {
                 overweight |= dagGenerate(
                     dag,
                     duplicate,
-                    stmap,
+                    duplicateLevel,
                     classIndex,
-                    stateFragments[frag].mask,
-                    ds.size,
+                    stateFragments[fragmentIndex].mask,
+                    duplicates.size,
                     ordinal,
-                    ds.fragmentCount
+                    duplicates.fragmentCount
                 );
                 if (searchShouldStop()) return false;
                 output = 1;
@@ -1451,7 +1470,7 @@ bool dagDuplicateGenerator(
         };
         if (allAlive)
         {
-            for (potentialDuplicate &duplicate : ds.list)
+            for (potentialDuplicate &duplicate : duplicates.list)
             {
                 if (searchShouldStop()) return output;
                 if (!generateFromDuplicate(duplicate)) return output;
@@ -1459,17 +1478,21 @@ bool dagDuplicateGenerator(
             return output;
         }
 
-        aliveScratch.assign(ds.list.size(), 0);
-        for (size_t i = 0; i < ds.list.size(); i++)
+        aliveScratch.assign(duplicates.list.size(), 0);
+        for (size_t i = 0; i < duplicates.list.size(); i++)
         {
             if (searchShouldStop()) return output;
-            int frag = ds.list[i].fragment;
-            for (size_t j = i + 1; j < ds.list.size(); j++)
+            const int fragmentIndex = duplicates.list[i].fragmentIndex;
+            for (size_t j = i + 1; j < duplicates.list.size(); j++)
             {
                 if (searchShouldStopPeriodically()) return output;
-                if (frag == ds.list[j].fragment)
+                if (fragmentIndex == duplicates.list[j].fragmentIndex)
                 {
-                    if (ds.list[i].mask.disjoint(ds.list[j].mask))
+                    if (
+                        duplicates.list[i].mask.disjoint(
+                            duplicates.list[j].mask
+                        )
+                    )
                     {
                         aliveScratch[i] = 1;
                         aliveScratch[j] = 1;
@@ -1483,7 +1506,7 @@ bool dagDuplicateGenerator(
             }
             if (aliveScratch[i])
             {
-                if (!generateFromDuplicate(ds.list[i])) return output;
+                if (!generateFromDuplicate(duplicates.list[i])) return output;
             }
         }
         return output;

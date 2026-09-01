@@ -354,9 +354,9 @@ class PgoTrainingTests(unittest.TestCase):
             weights.write_bytes(pgo_training.DEFAULT_WEIGHTS.read_bytes())
 
             def fake_train(
-                executable_path: Path,
+                _executable_path: Path,
                 weighted_cases: list[pgo_training.WeightedCase],
-                timeout: float,
+                _timeout: float,
             ) -> int:
                 weights.write_text("changed\n", encoding="utf-8")
                 (profiles / "fresh.gcda").write_text("fresh", encoding="utf-8")
@@ -381,9 +381,7 @@ class PgoTrainingTests(unittest.TestCase):
 
             self.assertEqual(status, 1)
             self.assertIn("weights changed during training", stderr.getvalue())
-            self.assertFalse(
-                (profiles / pgo_training.COMPLETION_FILENAME).exists()
-            )
+            self.assertFalse((profiles / pgo_training.COMPLETION_FILENAME).exists())
 
 
 if __name__ == "__main__":

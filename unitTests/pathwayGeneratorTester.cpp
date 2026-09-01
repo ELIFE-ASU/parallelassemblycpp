@@ -3,8 +3,8 @@
 #define ASSEMBLYCPP_NO_MAIN
 #include "../v5/main.cpp"
 
-#include <climits>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
 
 void requireEqual(const string &actual, const string &expected)
@@ -59,7 +59,10 @@ void testJsonStringEscaping()
 
 void testBondColoursAreAlwaysJsonValues()
 {
-    requireEqual(bondColour(SHRT_MIN), "\"error\"");
+    requireEqual(
+        bondColour(numeric_limits<short>::min()),
+        "\"error\""
+    );
     requireEqual(bondColour(-1), "\"error\"");
     requireEqual(bondColour(0), "\"error\"");
     requireEqual(bondColour(1), "\"single\"");
@@ -67,8 +70,8 @@ void testBondColoursAreAlwaysJsonValues()
     requireEqual(bondColour(3), "\"triple\"");
     requireEqual(bondColour(4), "\"4\"");
     requireEqual(
-        bondColour(SHRT_MAX),
-        "\"" + to_string(static_cast<int>(SHRT_MAX)) + "\""
+        bondColour(numeric_limits<short>::max()),
+        "\"" + to_string(numeric_limits<short>::max()) + "\""
     );
 }
 

@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "compilerAttributes.h"
+
 /**
  * @brief Compact score-only transposition table for canonical assembly keys.
  *
@@ -248,7 +250,7 @@ private:
         return header;
     }
 
-    [[gnu::noinline]] result insertMiss(
+    ASSEMBLYCPP_NOINLINE result insertMiss(
         std::span<const int> key,
         std::uint32_t hash,
         int sumDupBonds,

@@ -317,13 +317,13 @@ treeCanonNodeId internTreeCanonNode(
 }
 
 inline treeCanonNodeId internTreeCanonNode(
-    molGraph &mg,
+    molGraph &graph,
     int node,
     std::vector<treeCanonChild> children
 )
 {
     return internTreeCanonNode(
-        internTreeCanonAtom(mg.mg[node].type),
+        internTreeCanonAtom(graph.atoms[node].atomType),
         std::move(children)
     );
 }
@@ -332,7 +332,7 @@ inline treeCanonNodeId internTreeCanonNode(
     const molGraph &graph
 ) noexcept
 {
-    return graph.mg.size();
+    return graph.atoms.size();
 }
 
 [[nodiscard]] inline std::size_t canonGraphVertexCount(
@@ -362,9 +362,9 @@ inline treeCanonNodeId internTreeCanonNode(
 [[nodiscard]] inline bool canonGraphHasLegacyX(const molGraph &graph)
 {
     return std::any_of(
-        graph.mg.begin(),
-        graph.mg.end(),
-        [](const atom &vertex) {return vertex.type == "X";}
+        graph.atoms.begin(),
+        graph.atoms.end(),
+        [](const atom &vertex) {return vertex.atomType == "X";}
     );
 }
 
@@ -378,9 +378,9 @@ inline treeCanonNodeId internTreeCanonNode(
 [[nodiscard]] inline bool canonGraphHasPendantVertex(const molGraph &graph)
 {
     return std::any_of(
-        graph.mg.begin(),
-        graph.mg.end(),
-        [](const atom &vertex) {return vertex.list.size() <= 1;}
+        graph.atoms.begin(),
+        graph.atoms.end(),
+        [](const atom &vertex) {return vertex.bonds.size() <= 1;}
     );
 }
 
@@ -396,7 +396,7 @@ inline treeCanonNodeId internTreeCanonNode(
     std::size_t vertex
 )
 {
-    return internTreeCanonAtom(graph.mg[vertex].type);
+    return internTreeCanonAtom(graph.atoms[vertex].atomType);
 }
 
 [[nodiscard]] inline treeCanonAtomId canonGraphAtomType(
@@ -412,7 +412,7 @@ inline treeCanonNodeId internTreeCanonNode(
     std::size_t vertex
 ) noexcept
 {
-    return graph.mg[vertex].list;
+    return graph.atoms[vertex].bonds;
 }
 
 [[nodiscard]] inline std::span<const flatCanonAdjacentEdge> canonGraphNeighbours(
@@ -425,7 +425,7 @@ inline treeCanonNodeId internTreeCanonNode(
 
 [[nodiscard]] inline int canonGraphNeighbour(const bond &edge) noexcept
 {
-    return edge.n;
+    return edge.neighbourAtomIndex;
 }
 
 [[nodiscard]] inline int canonGraphNeighbour(
@@ -437,7 +437,7 @@ inline treeCanonNodeId internTreeCanonNode(
 
 [[nodiscard]] inline std::uint16_t canonGraphBondType(const bond &edge) noexcept
 {
-    return static_cast<std::uint16_t>(edge.type);
+    return static_cast<std::uint16_t>(edge.bondType);
 }
 
 [[nodiscard]] inline std::uint16_t canonGraphBondType(
@@ -456,7 +456,7 @@ inline treeCanonNodeId internTreeCanonNode(
  * centroids, so no recursive traversal or subtree-string concatenation is
  * required.
  *
- * @param mg Acyclic, connected molGraph
+ * @param graph Acyclic, connected molGraph
  * @param n Retained for API compatibility; centroid selection is root-free.
  */
 template<typename Graph>
@@ -559,9 +559,9 @@ treeCanonForm centroidTreeCanonImpl(const Graph &graph, int n)
     return {second, first, centralBond};
 }
 
-inline treeCanonForm centroidTreeCanon(molGraph &mg, int n)
+inline treeCanonForm centroidTreeCanon(molGraph &graph, int n)
 {
-    return centroidTreeCanonImpl(mg, n);
+    return centroidTreeCanonImpl(graph, n);
 }
 
 inline treeCanonForm centroidTreeCanon(const flatCanonGraph &graph, int n)

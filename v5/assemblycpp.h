@@ -10,7 +10,10 @@
 namespace assemblycpp
 {
 
-#if defined(ASSEMBLYCPP_LIBRARY_BUILD) && defined(__GNUC__)
+#if \
+    defined(ASSEMBLYCPP_LIBRARY_BUILD) && \
+    defined(__GNUC__) && \
+    !defined(__clang__)
 #define ASSEMBLYCPP_PUBLIC __attribute__((externally_visible))
 #else
 #define ASSEMBLYCPP_PUBLIC

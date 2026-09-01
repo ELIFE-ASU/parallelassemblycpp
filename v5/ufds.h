@@ -1,3 +1,5 @@
+#include "compilerAttributes.h"
+
 /**
  * @brief Return the low machine word of a bitset, masked below a limit
  */
@@ -129,17 +131,17 @@ struct disjointSet
 {
     /// nodes
     vector<disjointSetNode> elements;
-    
+
     disjointSet(size_t size){elements.resize(size);}
 
     /// standard disjoint set function
-    size_t find(size_t idx)
+    size_t find(size_t index)
     {
-        if (elements[idx].parent != static_cast<int>(idx))
+        if (elements[index].parent != static_cast<int>(index))
         {
-            elements[idx].parent = find(elements[idx].parent);
+            elements[index].parent = find(elements[index].parent);
         }
-        return elements[idx].parent;
+        return elements[index].parent;
     }
 
     /// standard disjoint set function
@@ -165,7 +167,7 @@ struct disjointSet
         return false;
     }
 };
- 
+
 /**
  * @brief for UFDS split node - variant on textbook UFDS
  */
@@ -177,10 +179,10 @@ struct ufdsSplitNode
     uint32_t generation = 0;
 
     ufdsSplitNode() = default;
-    ufdsSplitNode(int _parent, int _val, uint32_t _generation):
-        parent(static_cast<int16_t>(_parent)),
-        val(_val),
-        generation(_generation)
+    ufdsSplitNode(int parentIndex, int edgeIndex, uint32_t currentGeneration):
+        parent(static_cast<int16_t>(parentIndex)),
+        val(edgeIndex),
+        generation(currentGeneration)
     {
     }
 };
@@ -202,7 +204,7 @@ struct ufdsSplit
         inlineAtomBitCount / atomWordBits;
 
     vector<ufdsSplitNode> elements;
-    vector<pii> extraVals;
+    vector<IntegerPair> extraVals;
     array<uint64_t, inlineAtomWordCount> touchedAtomWords{};
     uint64_t touchedAtomWordMask = 0;
     vector<uint64_t> wideTouchedAtomWords;
@@ -211,7 +213,7 @@ struct ufdsSplit
     // Keep the active generation distinct from default-constructed nodes even
     // before the first reset.
     uint32_t generation = 1;
-    
+
     void reset()
     {
         generation++;
@@ -240,7 +242,7 @@ struct ufdsSplit
         extraVals.clear();
     }
 
-    [[gnu::always_inline]] void markTouched(size_t index)
+    ASSEMBLYCPP_ALWAYS_INLINE void markTouched(size_t index)
     {
         const size_t wordIndex = index / atomWordBits;
         const uint64_t bit = uint64_t{1} << (index % atomWordBits);
@@ -254,7 +256,7 @@ struct ufdsSplit
         markTouchedWide(wordIndex, bit);
     }
 
-    [[gnu::noinline]] void markTouchedWide(size_t wordIndex, uint64_t bit)
+    ASSEMBLYCPP_NOINLINE void markTouchedWide(size_t wordIndex, uint64_t bit)
     {
         const size_t wideWordIndex = wordIndex - inlineAtomWordCount;
         if (wideWordIndex >= wideTouchedAtomWords.size())
@@ -272,13 +274,13 @@ struct ufdsSplit
     }
 
     /// standard disjoint set function
-    size_t find(size_t idx)
+    size_t find(size_t index)
     {
-        if (elements[idx].parent != static_cast<int>(idx))
+        if (elements[index].parent != static_cast<int>(index))
         {
-            elements[idx].parent = find(elements[idx].parent);
+            elements[index].parent = find(elements[index].parent);
         }
-        return elements[idx].parent;
+        return elements[index].parent;
     }
 
     /**
@@ -290,7 +292,7 @@ struct ufdsSplit
         markTouched(target);
         elements[target] = ufdsSplitNode(parent, val, generation);
     }
-    
+
     /**
      * @brief Used if both atoms have not been seen before
      *
@@ -302,9 +304,9 @@ struct ufdsSplit
         {
             markTouched(parent);
         }
-        ufdsSplitNode u(parent, val, generation);
-        elements[target] = u;
-        elements[parent] = u;
+        const ufdsSplitNode node(parent, val, generation);
+        elements[target] = node;
+        elements[parent] = node;
     }
 
     /**
@@ -314,7 +316,7 @@ struct ufdsSplit
     void merge(size_t x, size_t y, int yval)
     {
         size_t rootx = find(x), rooty = find(y);
-        extraVals.push_back(pii(rooty, yval));
+        extraVals.push_back(IntegerPair(rooty, yval));
         if (rootx != rooty)
         {
             if (elements[rootx].rank > elements[rooty].rank)
@@ -336,7 +338,7 @@ struct ufdsSplit
      * @param tempMaskList Reusable component-mask buffer; must not alias
      * fragmentList
      */
-    [[gnu::noinline]] void splitSmallWithBuffers(
+    ASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -398,7 +400,7 @@ struct ufdsSplit
                 }
             }
         }
-        for (const pii &extra : extraVals)
+        for (const IntegerPair &extra : extraVals)
         {
             const size_t root = find(extra.first);
             componentMaskWords[elements[root].component] |=
@@ -406,7 +408,7 @@ struct ufdsSplit
         }
         for (const uint64_t word : componentMaskWords)
         {
-            const int edgeCount = static_cast<int>(std::popcount(word));
+            const int edgeCount = std::popcount(word);
             if (edgeCount > 1)
             {
                 fragmentList.emplace_back(
@@ -419,7 +421,7 @@ struct ufdsSplit
         }
     }
 
-    [[gnu::always_inline]] void splitWithBuffers(
+    ASSEMBLYCPP_ALWAYS_INLINE void splitWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -437,7 +439,7 @@ struct ufdsSplit
         splitWideWithBuffers(fragmentList, tempMaskList);
     }
 
-    [[gnu::noinline]] void splitTwoWordWithBuffers(
+    ASSEMBLYCPP_NOINLINE void splitTwoWordWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -503,7 +505,7 @@ struct ufdsSplit
                 }
             }
         }
-        for (const pii &extra : extraVals)
+        for (const IntegerPair &extra : extraVals)
         {
             const size_t root = find(extra.first);
             setComponentEdge(elements[root].component, extra.second);
@@ -513,9 +515,8 @@ struct ufdsSplit
              offset += 2)
         {
             const uint64_t *words = componentMaskWords.data() + offset;
-            const int edgeCount = static_cast<int>(
-                std::popcount(words[0]) + std::popcount(words[1])
-            );
+            const int edgeCount =
+                std::popcount(words[0]) + std::popcount(words[1]);
             if (edgeCount > 1)
             {
                 fragmentList.emplace_back(
@@ -528,7 +529,7 @@ struct ufdsSplit
         }
     }
 
-    [[gnu::noinline]] void splitWideWithBuffers(
+    ASSEMBLYCPP_NOINLINE void splitWideWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -616,7 +617,7 @@ struct ufdsSplit
             int edgeCount = 0;
             for (size_t wordIndex = 0; wordIndex < edgeWordCount; wordIndex++)
             {
-                edgeCount += static_cast<int>(std::popcount(words[wordIndex]));
+                edgeCount += std::popcount(words[wordIndex]);
             }
             if (edgeCount > 1)
             {

@@ -106,8 +106,8 @@ void testScratchCopyAndHitAllocations()
     assemblyTranspositionTable table(8, &resource);
 
     std::vector<int> scratch(4096);
-    for (std::size_t i = 0; i < scratch.size(); i++)
-        scratch[i] = static_cast<int>(i * 17 + 3);
+    for (std::size_t index = 0; index < scratch.size(); index++)
+        scratch[index] = static_cast<int>(index * 17 + 3);
     const std::vector<int> original = scratch;
 
     assert(table.consider(scratch, 10) == tableResult::inserted);

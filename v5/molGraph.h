@@ -1,13 +1,17 @@
 #include <span>
 
+#include "compilerAttributes.h"
+
 /**
  * @brief Bond struct for molGraph
  */
 struct bond
 {
-    short n;
-    short type;
-    bond(short _n, short _type): n(_n), type(_type){}
+    short neighbourAtomIndex;
+    short bondType;
+
+    bond(short neighbourIndex, short bondTypeValue):
+        neighbourAtomIndex(neighbourIndex), bondType(bondTypeValue) {}
 };
 
 /**
@@ -15,10 +19,11 @@ struct bond
  */
 struct atom
 {
-    string type;
-    vector<bond> list;
+    string atomType;
+    vector<bond> bonds;
 
-    explicit atom(string _type): type(std::move(_type)){}
+    explicit atom(string atomTypeValue):
+        atomType(std::move(atomTypeValue)) {}
 
 };
 
@@ -57,7 +62,7 @@ struct molGraph
     /**
      * @brief Vector of atoms representing nodes in the graph.
      */
-    vector<atom> mg;
+    vector<atom> atoms;
     /**
      * @brief Total number of bonds (edges) in the graph.
      */
@@ -65,69 +70,73 @@ struct molGraph
 
     /**
      * @brief Use this function to add atoms/nodes
-     * @param _type Type is atom type/node labelling.
+     * @param atomType Type is atom type/node labelling.
      */
-    void addAtom(string _type)
+    void addAtom(string atomType)
     {
-        mg.emplace_back(std::move(_type));
+        atoms.emplace_back(std::move(atomType));
     }
 
     /**
      * @brief Use this function to add bonds/edges.
-     * @param a Index of first atom/node
-     * @param b Index of second atom/node
-     * @param type Type is bond order/edge labelling.
+     * @param firstAtom Index of first atom/node
+     * @param secondAtom Index of second atom/node
+     * @param bondType Type is bond order/edge labelling.
      */
-    void addBond(int a, int b, short type)
+    void addBond(int firstAtom, int secondAtom, short bondType)
     {
-        bond b1(b, type), b2(a, type);
-        mg[a].list.push_back(b1);
-        mg[b].list.push_back(b2);
+        const bond forwardBond(secondAtom, bondType);
+        const bond reverseBond(firstAtom, bondType);
+        atoms[firstAtom].bonds.push_back(forwardBond);
+        atoms[secondAtom].bonds.push_back(reverseBond);
         totalBonds++;
     }
-    
+
     /** Print the graph summary and adjacency list. */
     void printToCout()
     {
-        cout << "Graph: " << mg.size() << " atoms, " << totalBonds << " bonds\n";
-        for (size_t i = 0; i < mg.size(); i++)
+        cout << "Graph: " << atoms.size() << " atoms, " << totalBonds << " bonds\n";
+        for (size_t i = 0; i < atoms.size(); i++)
         {
-            cout << "  Atom " << i + 1 << " (" << mg[i].type << "): ";
+            cout << "  Atom " << i + 1 << " (" << atoms[i].atomType << "): ";
             for (size_t j = 0; j < degree(i); j++)
             {
                 if (j > 0) cout << ", ";
-                cout << elem(i, j) + 1 << '[' << btypeS(i, j) << ']';
+                cout << elem(i, j) + 1 << '[' << bondType(i, j) << ']';
             }
             cout << '\n';
         }
     }
 
     /**
-     * @brief Get the degree (number of bonds) of atom at index x
+     * @brief Get the degree (number of bonds) of an atom.
      */
-    size_t degree(size_t x) const
+    size_t degree(size_t atomIndex) const
     {
-        return mg[x].list.size();
+        return atoms[atomIndex].bonds.size();
     }
 
-    short elem(size_t a, size_t b) const
+    short elem(size_t atomIndex, size_t bondIndex) const
     {
-        return mg[a].list[b].n;
+        return atoms[atomIndex].bonds[bondIndex].neighbourAtomIndex;
     }
 
     /**
      * @brief Get atom type for index i
      */
-    const string &atype(size_t i) const {return mg[i].type;}
+    const string &atomType(size_t atomIndex) const
+    {
+        return atoms[atomIndex].atomType;
+    }
 
     /**
      * @brief Get bond type as short
-     * @param a Index of first atom/node
-     * @param b Index of bond
+     * @param atomIndex Index of atom/node
+     * @param bondIndex Index of bond
      */
-    short btypeS(size_t a, size_t b) const
+    short bondType(size_t atomIndex, size_t bondIndex) const
     {
-        return mg[a].list[b].type;
+        return atoms[atomIndex].bonds[bondIndex].bondType;
     }
 
 private:
@@ -136,18 +145,18 @@ private:
      */
     void rebuild(bool removeMarkedAtoms)
     {
-        const size_t removed = mg.size();
-        vector<size_t> reverseMap(mg.size(), removed);
+        const size_t removed = atoms.size();
+        vector<size_t> reverseMap(atoms.size(), removed);
         molGraph output;
 
-        for (size_t i = 0; i < mg.size(); i++)
+        for (size_t i = 0; i < atoms.size(); i++)
         {
-            if (removeMarkedAtoms && mg[i].type == "COLLAPSE") continue;
-            reverseMap[i] = output.mg.size();
-            output.addAtom(mg[i].type);
+            if (removeMarkedAtoms && atoms[i].atomType == "COLLAPSE") continue;
+            reverseMap[i] = output.atoms.size();
+            output.addAtom(atoms[i].atomType);
         }
 
-        for (size_t source = 0; source < mg.size(); source++)
+        for (size_t source = 0; source < atoms.size(); source++)
         {
             if (reverseMap[source] == removed) continue;
 
@@ -156,14 +165,14 @@ private:
                 const size_t target = static_cast<size_t>(elem(source, bondIndex));
                 if (
                     reverseMap[target] != removed &&
-                    btypeS(source, bondIndex) != 0 &&
+                    bondType(source, bondIndex) != 0 &&
                     reverseMap[source] < reverseMap[target]
                 )
                 {
                     output.addBond(
                         static_cast<int>(reverseMap[source]),
                         static_cast<int>(reverseMap[target]),
-                        btypeS(source, bondIndex)
+                        bondType(source, bondIndex)
                     );
                 }
             }
@@ -184,17 +193,17 @@ public:
 
     /**
      * @brief For explicit hydrogen removal
-     * 
+     *
      */
     void removeAtom(size_t i)
     {
-        if (i >= mg.size()) return;
-        mg[i].type = "COLLAPSE";
+        if (i >= atoms.size()) return;
+        atoms[i].atomType = "COLLAPSE";
     }
 
     /**
      * @brief For explicit hydrogen removal
-     * 
+     *
      */
     void removeAndCollapse()
     {
@@ -203,12 +212,12 @@ public:
 
     /**
      * @brief Turns molGraph (adjacency list) into equivalent edgelist
-     * @return std::vector<edgeL>
+     * @return std::vector<MoleculeEdge>
      */
-    vector<edgeL> writeEdgeList() const
+    vector<MoleculeEdge> writeEdgeList() const
     {
-        vector<edgeL> out;
-        for (size_t i = 0; i < mg.size(); i++)
+        vector<MoleculeEdge> output;
+        for (size_t i = 0; i < atoms.size(); i++)
         {
             for (size_t j = 0; j < degree(i); j++)
             {
@@ -217,44 +226,43 @@ public:
                 {
                     short source = static_cast<short>(i);
                     short bondIndex = static_cast<short>(j);
-                    edgeL t(source, k, bondIndex);
-                    out.push_back(t);
+                    output.emplace_back(source, k, bondIndex);
                 }
             }
         }
-        return out;
+        return output;
     }
-    
+
     /**
      * @brief For preprocessing, writes edgeList as hash map to detect duplicated bonds
      */
     void writeEdgeList(
         std::unordered_map<
             bondClassKey,
-            pair<int, edgeL>,
+            pair<int, MoleculeEdge>,
             bondClassKeyHash
-        > &ht
+        > &edgeClasses
     ) const
     {
-        for (size_t i = 0; i < mg.size(); i++)
+        for (size_t i = 0; i < atoms.size(); i++)
         {
             for (size_t j = 0; j < degree(i); j++)
             {
                 short k = elem(i, j);
                 if (i < static_cast<size_t>(k))
                 {
-                    const string &sourceType = atype(i);
-                    const string &targetType = atype(k);
+                    const string &sourceType = atomType(i);
+                    const string &targetType = atomType(k);
                     bondClassKey key = sourceType < targetType
-                        ? bondClassKey{sourceType, targetType, btypeS(i, j)}
-                        : bondClassKey{targetType, sourceType, btypeS(i, j)};
+                        ? bondClassKey{sourceType, targetType, bondType(i, j)}
+                        : bondClassKey{targetType, sourceType, bondType(i, j)};
                     short source = static_cast<short>(i);
                     short bondIndex = static_cast<short>(j);
-                    edgeL t(source, k, bondIndex);
-                    auto [entry, inserted] = ht.try_emplace(
+                    MoleculeEdge edge(source, k, bondIndex);
+                    auto [entry, inserted] = edgeClasses.try_emplace(
                         std::move(key),
                         1,
-                        t
+                        edge
                     );
                     if (!inserted) entry->second.first++;
                 }
@@ -265,32 +273,34 @@ public:
     /**
      * @brief Used in preprocessing, removes edges in edgelist
      */
-    void negativeEdgeCollapse(vector<edgeL> &edgeList)
+    void negativeEdgeCollapse(vector<MoleculeEdge> &edgeList)
     {
         for (size_t i = 0; i < edgeList.size(); i++)
         {
-            edgeL &el = edgeList[i];
-            mg[el.a].list[el.c].type = 0;
+            const MoleculeEdge &edge = edgeList[i];
+            atoms[edge.sourceAtomIndex]
+                .bonds[edge.sourceBondIndex]
+                .bondType = 0;
         }
         collapse();
     }
 
     /**
      * @brief For compensating for disjoint fragments in the JAI
-     * 
+     *
      */
     /**
      * @brief For compensating for disjoint fragments in the JAI
-     * 
+     *
      * @return int number of disjoint fragments
      */
     int disjointFragments() const
     {
-        vb visited(mg.size(), 0);
+        BooleanVector visited(atoms.size(), 0);
         vector<size_t> pending;
-        pending.reserve(mg.size());
+        pending.reserve(atoms.size());
         int count = 0;
-        for (size_t i = 0; i < mg.size(); i++)
+        for (size_t i = 0; i < atoms.size(); i++)
         {
             if (visited[i]) continue;
             count++;
@@ -300,9 +310,10 @@ public:
             {
                 const size_t vertex = pending.back();
                 pending.pop_back();
-                for (const bond &edge : mg[vertex].list)
+                for (const bond &edge : atoms[vertex].bonds)
                 {
-                    const size_t neighbour = static_cast<size_t>(edge.n);
+                    const size_t neighbour =
+                        static_cast<size_t>(edge.neighbourAtomIndex);
                     if (visited[neighbour]) continue;
                     visited[neighbour] = true;
                     pending.push_back(neighbour);
@@ -315,40 +326,45 @@ public:
 
 /**
  * @brief Preprocesses the graph by removing all unique edges for the pathway algorithm
- * @param mg The input molGraph
+ * @param graph The input molGraph
  * @param writeback Edges removed during preprocessing
  * @return molGraph (the final output)
  */
-molGraph preprocessWriteback(const molGraph &mg, vector<edgeL> &writeback)
+molGraph preprocessWriteback(
+    const molGraph &graph,
+    vector<MoleculeEdge> &writeback
+)
 {
     std::unordered_map<
         bondClassKey,
-        pair<int, edgeL>,
+        pair<int, MoleculeEdge>,
         bondClassKeyHash
-    > ht;
-    molGraph out = mg;
-    mg.writeEdgeList(ht);
-    vector<edgeL> v;
-    for (auto it = ht.begin(); it != ht.end(); ++it)
+    > edgeClasses;
+    molGraph output = graph;
+    graph.writeEdgeList(edgeClasses);
+    vector<MoleculeEdge> uniqueEdges;
+    for (const auto &entry : edgeClasses)
     {
-        if (it->second.first == 1)
+        if (entry.second.first == 1)
         {
-            v.push_back(it->second.second);
+            uniqueEdges.push_back(entry.second.second);
         }
     }
     std::sort(
-        v.begin(),
-        v.end(),
-        [](const edgeL &left, const edgeL &right)
+        uniqueEdges.begin(),
+        uniqueEdges.end(),
+        [](const MoleculeEdge &left, const MoleculeEdge &right)
         {
-            if (left.a != right.a) return left.a < right.a;
-            if (left.b != right.b) return left.b < right.b;
-            return left.c < right.c;
+            if (left.sourceAtomIndex != right.sourceAtomIndex)
+                return left.sourceAtomIndex < right.sourceAtomIndex;
+            if (left.targetAtomIndex != right.targetAtomIndex)
+                return left.targetAtomIndex < right.targetAtomIndex;
+            return left.sourceBondIndex < right.sourceBondIndex;
         }
     );
-    out.negativeEdgeCollapse(v);
-    writeback = v;
-    return out;
+    output.negativeEdgeCollapse(uniqueEdges);
+    writeback = uniqueEdges;
+    return output;
 }
 
 /// Global variable for the molGraph before and after preprocessing
@@ -466,7 +482,7 @@ struct ufdsMaskWorkspace
 
     ufdsSplit sets;
     vector<EdgeMask> components;
-    vi boundTotals;
+    IntegerVector boundTotals;
     vector<lowResidualDecompositionCacheEntry> lowDecompositionCache;
     vector<wideResidualDecompositionCacheEntry> wideDecompositionCache;
     vector<uint16_t> wideDecompositionCacheSlots;
@@ -475,7 +491,7 @@ struct ufdsMaskWorkspace
     unique_ptr<uint64_t[]> wideDecompositionSeenFingerprints;
     vector<uint64_t> wideDecompositionSeenOccupied;
     vector<residualCanonicalIdBinding> residualCanonicalIdBindings;
-    const vector<edgeL> *universeEdges;
+    const vector<MoleculeEdge> *universeEdges;
     size_t edgeCount;
     size_t decompositionCacheKeyWordCount;
     bool reuseResidualDecompositions;
@@ -506,23 +522,25 @@ struct ufdsMaskWorkspace
 
     ufdsMaskWorkspace(
         size_t atomCount,
-        size_t _edgeCount,
-        const vector<edgeL> &_universeEdges = searchUniverseEdgeList()
+        size_t moleculeEdgeCount,
+        const vector<MoleculeEdge> &moleculeEdges = searchUniverseEdgeList()
     ):
-        universeEdges(std::addressof(_universeEdges)),
-        edgeCount(_edgeCount),
+        universeEdges(std::addressof(moleculeEdges)),
+        edgeCount(moleculeEdgeCount),
         decompositionCacheKeyWordCount(
-            (_edgeCount + numeric_limits<uint64_t>::digits - 1) /
+            (moleculeEdgeCount + numeric_limits<uint64_t>::digits - 1) /
             numeric_limits<uint64_t>::digits
         ),
-        reuseResidualDecompositions(decompositionCacheEligible(_edgeCount))
+        reuseResidualDecompositions(
+            decompositionCacheEligible(moleculeEdgeCount)
+        )
     {
-        if (_universeEdges.size() != _edgeCount)
+        if (moleculeEdges.size() != moleculeEdgeCount)
             throw logic_error("fragmentation edge universe size mismatch");
         sets.elements.resize(atomCount);
-        sets.extraVals.reserve(_edgeCount);
+        sets.extraVals.reserve(moleculeEdgeCount);
         components.reserve(atomCount);
-        boundTotals.reserve(_edgeCount);
+        boundTotals.reserve(moleculeEdgeCount);
         residualCanonicalIdBindings.reserve(4);
         if (reuseResidualDecompositions)
         {
@@ -550,7 +568,7 @@ struct ufdsMaskWorkspace
         return decompositionCacheGeneration;
     }
 
-    [[gnu::always_inline]] void beginFragmentation()
+    ASSEMBLYCPP_ALWAYS_INLINE void beginFragmentation()
     {
         if (!residualCanonicalIdBindings.empty()) [[unlikely]]
             residualCanonicalIdBindings.clear();
@@ -716,7 +734,7 @@ struct ufdsMaskWorkspace
     }
 
     /** Cache IDs resolved only after the raw child survives its bounds. */
-    [[gnu::always_inline]] void cacheCanonicalIds(
+    ASSEMBLYCPP_ALWAYS_INLINE void cacheCanonicalIds(
         const vector<assemblyFragment> &output
     )
     {
@@ -724,7 +742,7 @@ struct ufdsMaskWorkspace
         cacheCanonicalIdsSlow(output);
     }
 
-    [[gnu::noinline]] void cacheCanonicalIdsSlow(
+    ASSEMBLYCPP_NOINLINE void cacheCanonicalIdsSlow(
         const vector<assemblyFragment> &output
     )
     {
@@ -858,26 +876,28 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
     uint64_t lowMaskWord
 )
 {
-    const vector<edgeL> &edgeList = *workspace.universeEdges;
-    ufdsSplit &u = workspace.sets;
+    const vector<MoleculeEdge> &edgeList = *workspace.universeEdges;
+    ufdsSplit &sets = workspace.sets;
     auto processEdge = [&](size_t i) {
-        int a = edgeList[i].a, b = edgeList[i].b;
-        const bool containsA = u.contains(a), containsB = u.contains(b);
+        const int sourceAtom = edgeList[i].sourceAtomIndex;
+        const int targetAtom = edgeList[i].targetAtomIndex;
+        const bool containsA = sets.contains(sourceAtom);
+        const bool containsB = sets.contains(targetAtom);
         if (!containsA && !containsB)
         {
-            u.doubleInsert(b, a, i);
+            sets.doubleInsert(targetAtom, sourceAtom, i);
         }
         else if (!containsA)
         {
-            u.insert(a, b, i);
+            sets.insert(sourceAtom, targetAtom, i);
         }
         else if (!containsB)
         {
-            u.insert(b, a, i);
+            sets.insert(targetAtom, sourceAtom, i);
         }
         else
         {
-            u.merge(a, b, i);
+            sets.merge(sourceAtom, targetAtom, i);
         }
     };
 
@@ -891,7 +911,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
         }
         if (!initialised)
         {
-            u.reset();
+            sets.reset();
             processEdge(firstEdge);
             initialised = true;
         }
@@ -909,14 +929,14 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
     }
     else forEachSetBitWithWideLimit(mask, edgeList.size(), visitEdge);
     if (!initialised) return;
-    u.splitWithBuffers(fragmentList, workspace.components);
+    sets.splitWithBuffers(fragmentList, workspace.components);
 }
 
 /**
  * @brief Append a residual mask's connected components, reusing prior results
  *
  * The cache belongs to the per-calculation workspace because an edge mask is
- * meaningful only for the molecule that produced univEdgeList.
+ * meaningful only for the molecule that produced universeEdgeList.
  */
 void ufdsMaskConstructWithLowCacheWithWorkspace(
     const EdgeMask &mask,

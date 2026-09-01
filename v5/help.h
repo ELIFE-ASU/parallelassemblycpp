@@ -68,10 +68,11 @@ Legacy options:
     {
         if (definition.aliases.empty()) continue;
         cout << "  --" << definition.name << ": ";
-        for (size_t i = 0; i < definition.aliases.size(); i++)
+        for (size_t aliasIndex = 0; aliasIndex < definition.aliases.size(); aliasIndex++)
         {
-            if (i > 0) cout << ", ";
-            cout << "-" << definition.aliases[i] << "=<" << definition.valueName << ">";
+            if (aliasIndex > 0) cout << ", ";
+            cout << "-" << definition.aliases[aliasIndex] << "=<"
+                << definition.valueName << ">";
         }
         cout << '\n';
     }

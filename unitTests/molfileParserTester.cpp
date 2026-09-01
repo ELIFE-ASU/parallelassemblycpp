@@ -22,9 +22,9 @@
 #include <vector>
 
 using namespace std;
-using vi = vector<int>;
-using vb = vector<bool>;
-using pii = pair<int, int>;
+using IntegerVector = vector<int>;
+using BooleanVector = vector<bool>;
+using IntegerPair = pair<int, int>;
 
 #include "../v5/activeWordMask.h"
 
@@ -101,15 +101,15 @@ int main(int argc, char **argv)
     cout.rdbuf(originalOutput);
 
     assert(diagnostics.str().empty());
-    assert(graph.mg.size() == 5);
+    assert(graph.atoms.size() == 5);
     assert(graph.totalBonds == 4);
-    assert(graph.mg[0].type == "C");
-    assert(graph.mg[1].type == "Cl");
-    assert(graph.mg[2].type == "Si");
-    assert(graph.mg[3].type == "Br");
-    assert(graph.mg[4].type == "H");
-    assert(graph.btypeS(1, 1) == 2);
-    assert(graph.btypeS(2, 1) == 3);
+    assert(graph.atoms[0].atomType == "C");
+    assert(graph.atoms[1].atomType == "Cl");
+    assert(graph.atoms[2].atomType == "Si");
+    assert(graph.atoms[3].atomType == "Br");
+    assert(graph.atoms[4].atomType == "H");
+    assert(graph.bondType(1, 1) == 2);
+    assert(graph.bondType(2, 1) == 3);
 
     verbose = true;
     diagnostics.str("");
@@ -122,9 +122,9 @@ int main(int argc, char **argv)
 
     verbose = false;
     string invalidBond = validMolfile;
-    const size_t bond = invalidBond.find("  4  5  1");
-    assert(bond != string::npos);
-    invalidBond.replace(bond, 9, "  4  6  1");
+    const size_t invalidBondPosition = invalidBond.find("  4  5  1");
+    assert(invalidBondPosition != string::npos);
+    invalidBond.replace(invalidBondPosition, 9, "  4  6  1");
     bool rejected = false;
     try
     {
@@ -173,8 +173,10 @@ int main(int argc, char **argv)
         ) != string::npos;
     }
     assert(rejected);
-    assert(zeroOrderDestination.mg.size() == 1);
-    assert(zeroOrderDestination.mg.front().type == zeroOrderSentinel);
+    assert(zeroOrderDestination.atoms.size() == 1);
+    assert(
+        zeroOrderDestination.atoms.front().atomType == zeroOrderSentinel
+    );
     assert(zeroOrderDestination.totalBonds == 0);
 
     string negativeBondOrder = validMolfile;
@@ -205,8 +207,8 @@ int main(int argc, char **argv)
     catch (const runtime_error &)
     {
     }
-    assert(unchanged.mg.size() == 1);
-    assert(unchanged.mg.front().type == sentinel);
+    assert(unchanged.atoms.size() == 1);
+    assert(unchanged.atoms.front().atomType == sentinel);
 
     string unsupportedVersion = validMolfile;
     const size_t version = unsupportedVersion.find("V2000");

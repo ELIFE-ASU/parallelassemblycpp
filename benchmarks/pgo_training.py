@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import hashlib
 import json
-import os
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -39,8 +39,8 @@ def load_training_weights(
     """Load a strict, complete weight mapping for the benchmark corpus."""
     weights_path = benchmark.resolve_file(path, "PGO training weights")
     cases_by_name = {case.name: case for case in cases}
-    entries: list[WeightedCase] = []
-    names: set[str] = set()
+    weighted_cases: list[WeightedCase] = []
+    seen_names: set[str] = set()
 
     try:
         with weights_path.open(encoding="utf-8", newline="") as stream:
@@ -67,12 +67,12 @@ def load_training_weights(
                         f"invalid benchmark name in {weights_path}:{line_number}: "
                         f"{name!r}"
                     )
-                if name in names:
+                if name in seen_names:
                     raise benchmark.BenchmarkError(
                         f"duplicate benchmark name in {weights_path}:{line_number}: "
                         f"{name!r}"
                     )
-                names.add(name)
+                seen_names.add(name)
 
                 try:
                     repetitions = int(repetitions_text)
@@ -87,29 +87,29 @@ def load_training_weights(
                         "must be a positive integer"
                     )
 
-                case = cases_by_name.get(name)
-                if case is None:
+                benchmark_case = cases_by_name.get(name)
+                if benchmark_case is None:
                     raise benchmark.BenchmarkError(
                         f"unknown benchmark name in {weights_path}:{line_number}: "
                         f"{name!r}"
                     )
-                entries.append(WeightedCase(case, repetitions))
+                weighted_cases.append(WeightedCase(benchmark_case, repetitions))
     except OSError as error:
         raise benchmark.BenchmarkError(
             f"could not read PGO training weights {weights_path}: {error}"
         ) from error
 
-    missing = [case.name for case in cases if case.name not in names]
-    if missing:
+    missing_names = [case.name for case in cases if case.name not in seen_names]
+    if missing_names:
         raise benchmark.BenchmarkError(
             f"PGO training weights do not cover benchmark case(s): "
-            f"{', '.join(missing)}"
+            f"{', '.join(missing_names)}"
         )
-    if not entries:
+    if not weighted_cases:
         raise benchmark.BenchmarkError(
             f"PGO training weights are empty: {weights_path}"
         )
-    return weights_path, entries
+    return weights_path, weighted_cases
 
 
 def prepare_profile_directory(path: Path) -> tuple[Path, int]:
@@ -138,7 +138,7 @@ def prepare_profile_directory(path: Path) -> tuple[Path, int]:
             f"PGO profile path is not a directory: {profile_directory}"
         )
 
-    removed = 0
+    removed_profile_count = 0
     try:
         directory_marker = profile_directory / DIRECTORY_MARKER_FILENAME
         if directory_marker.is_symlink() or directory_marker.is_dir():
@@ -162,15 +162,15 @@ def prepare_profile_directory(path: Path) -> tuple[Path, int]:
             raise benchmark.BenchmarkError(
                 f"PGO completion path is not a file: {completion_file}"
             )
-        for profile in sorted(profile_directory.rglob("*.gcda")):
-            if profile.is_file() or profile.is_symlink():
-                profile.unlink()
-                removed += 1
+        for profile_path in sorted(profile_directory.rglob("*.gcda")):
+            if profile_path.is_file() or profile_path.is_symlink():
+                profile_path.unlink()
+                removed_profile_count += 1
     except OSError as error:
         raise benchmark.BenchmarkError(
             f"could not clear GCC profile data in {profile_directory}: {error}"
         ) from error
-    return profile_directory, removed
+    return profile_directory, removed_profile_count
 
 
 def file_sha256(path: Path) -> str:
@@ -223,13 +223,13 @@ def write_completion_record(
     weights_sha256: str,
     training_corpus: dict[str, object],
     executable_metadata: dict[str, object],
-    completed: int,
-    profiles: Sequence[Path],
+    completed_repetitions: int,
+    profile_files: Sequence[Path],
 ) -> Path:
     """Atomically mark a fully completed training corpus."""
     completion_path = profile_directory / COMPLETION_FILENAME
     temporary_path = profile_directory / f".{COMPLETION_FILENAME}.tmp"
-    record = {
+    record: dict[str, object] = {
         "schema_version": COMPLETION_SCHEMA_VERSION,
         "executable": executable_metadata,
         "weights": {
@@ -237,21 +237,20 @@ def write_completion_record(
             "sha256": weights_sha256,
         },
         "corpus": training_corpus,
-        "completed_repetitions": completed,
+        "completed_repetitions": completed_repetitions,
         "profile_files": [
-            str(profile.relative_to(profile_directory)) for profile in profiles
+            str(profile_path.relative_to(profile_directory))
+            for profile_path in profile_files
         ],
     }
     try:
         with temporary_path.open("w", encoding="utf-8") as stream:
             json.dump(record, stream, indent=2, sort_keys=True)
             stream.write("\n")
-        os.replace(temporary_path, completion_path)
+        temporary_path.replace(completion_path)
     except OSError as error:
-        try:
+        with contextlib.suppress(OSError):
             temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise benchmark.BenchmarkError(
             f"could not write PGO completion record {completion_path}: {error}"
         ) from error
@@ -262,9 +261,9 @@ def find_gcda_files(profile_directory: Path) -> list[Path]:
     """Return the regular GCC profile files beneath a profile directory."""
     try:
         return sorted(
-            path
-            for path in profile_directory.rglob("*.gcda")
-            if path.is_file()
+            profile_path
+            for profile_path in profile_directory.rglob("*.gcda")
+            if profile_path.is_file()
         )
     except OSError as error:
         raise benchmark.BenchmarkError(
@@ -278,33 +277,37 @@ def train(
     timeout: float,
 ) -> int:
     """Run every weighted case serially in benchmark-style isolation."""
-    total_repetitions = sum(entry.repetitions for entry in weighted_cases)
+    total_repetitions = sum(
+        weighted_case.repetitions for weighted_case in weighted_cases
+    )
     completed_repetitions = 0
     scheduled_cases = [
-        entry.case
-        for entry in weighted_cases
-        for _ in range(entry.repetitions)
+        weighted_case.case
+        for weighted_case in weighted_cases
+        for _ in range(weighted_case.repetitions)
     ]
 
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-pgo-training-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="assemblycpp-pgo-training-"
+    ) as temp_directory:
         prepared_cases = iter(
-            benchmark.prepare_cases(scheduled_cases, Path(directory))
+            benchmark.prepare_cases(scheduled_cases, Path(temp_directory))
         )
-        for entry in weighted_cases:
+        for weighted_case in weighted_cases:
             print(
-                f"Training {entry.case.name}: "
-                f"{entry.repetitions} "
-                f"{'repetition' if entry.repetitions == 1 else 'repetitions'}",
+                f"Training {weighted_case.case.name}: "
+                f"{weighted_case.repetitions} "
+                f"{'repetition' if weighted_case.repetitions == 1 else 'repetitions'}",
                 flush=True,
             )
-            for repetition in range(1, entry.repetitions + 1):
-                prepared = next(prepared_cases)
+            for repetition in range(1, weighted_case.repetitions + 1):
+                prepared_case = next(prepared_cases)
                 try:
-                    benchmark.run_once(executable, prepared, timeout)
+                    benchmark.run_once(executable, prepared_case, timeout)
                 except benchmark.BenchmarkError as error:
                     raise benchmark.BenchmarkError(
-                        f"training {entry.case.name} repetition "
-                        f"{repetition}/{entry.repetitions}: {error}"
+                        f"training {weighted_case.case.name} repetition "
+                        f"{repetition}/{weighted_case.repetitions}: {error}"
                     ) from error
                 completed_repetitions += 1
             print(
@@ -355,35 +358,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = create_argument_parser().parse_args(argv)
     try:
         executable = benchmark.resolve_executable(arguments.executable)
-        manifest_path, cases = benchmark.load_manifest(benchmark.DEFAULT_MANIFEST)
-        weights_path, weighted_cases = load_training_weights(arguments.weights, cases)
+        manifest_path, benchmark_cases = benchmark.load_manifest(
+            benchmark.DEFAULT_MANIFEST
+        )
+        weights_path, weighted_cases = load_training_weights(
+            arguments.weights,
+            benchmark_cases,
+        )
         weights_sha256 = file_sha256(weights_path)
-        training_corpus = corpus_metadata(manifest_path, cases)
-        profile_directory, removed = prepare_profile_directory(arguments.profile_dir)
-        metadata = benchmark.executable_metadata(executable)
+        training_corpus = corpus_metadata(manifest_path, benchmark_cases)
+        profile_directory, removed_profile_count = prepare_profile_directory(
+            arguments.profile_dir
+        )
+        executable_metadata = benchmark.executable_metadata(executable)
 
         print(f"Executable: {executable}")
         print(f"Weights: {weights_path}")
         print(f"Profile directory: {profile_directory}")
-        print(f"Cleared GCC profile files: {removed}")
+        print(f"Cleared GCC profile files: {removed_profile_count}")
         print(
             f"Training cases: {len(weighted_cases)}, "
-            f"repetitions: {sum(entry.repetitions for entry in weighted_cases)}",
+            "repetitions: "
+            f"{sum(weighted_case.repetitions for weighted_case in weighted_cases)}",
             flush=True,
         )
 
-        completed = train(executable, weighted_cases, arguments.timeout)
-        benchmark.verify_executable_unchanged(executable, metadata, "training")
+        completed_repetitions = train(
+            executable,
+            weighted_cases,
+            arguments.timeout,
+        )
+        benchmark.verify_executable_unchanged(
+            executable,
+            executable_metadata,
+            "training",
+        )
         if file_sha256(weights_path) != weights_sha256:
             raise benchmark.BenchmarkError(
                 f"PGO training weights changed during training: {weights_path}"
             )
-        if corpus_metadata(manifest_path, cases) != training_corpus:
+        if corpus_metadata(manifest_path, benchmark_cases) != training_corpus:
             raise benchmark.BenchmarkError(
                 "benchmark manifest or corpus inputs changed during PGO training"
             )
-        profiles = find_gcda_files(profile_directory)
-        if not profiles:
+        profile_files = find_gcda_files(profile_directory)
+        if not profile_files:
             raise benchmark.BenchmarkError(
                 f"training produced no .gcda files in {profile_directory}; "
                 "ensure the executable was built with -fprofile-generate "
@@ -395,16 +414,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             weights_path,
             weights_sha256,
             training_corpus,
-            metadata,
-            completed,
-            profiles,
+            executable_metadata,
+            completed_repetitions,
+            profile_files,
         )
 
         print(
-            f"Training complete: {completed} "
-            f"{'repetition' if completed == 1 else 'repetitions'}"
+            f"Training complete: {completed_repetitions} "
+            f"{'repetition' if completed_repetitions == 1 else 'repetitions'}"
         )
-        print(f"GCC profile files: {len(profiles)}")
+        print(f"GCC profile files: {len(profile_files)}")
         print(f"Completion record: {completion_path}")
     except (benchmark.BenchmarkError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
