@@ -33,7 +33,8 @@ The command writes `unitTests/alanineOut` and, by default,
 This runs AssemblyCpp directly from the build directory; installation is
 optional.
 
-## Installation
+<details>
+<summary><strong>Installation</strong></summary>
 
 Install AssemblyCpp when you want a standalone command, reusable library, and
 CMake package outside the build directory. After the requirements above are
@@ -66,7 +67,10 @@ Replace `build/install` with another destination if needed, and add
 to a system location may require administrator privileges. On Windows, the
 installed command is `build\install\bin\AssemblyCpp.exe`.
 
-## Command line
+</details>
+
+<details>
+<summary><strong>Command line</strong></summary>
 
 ```text
 AssemblyCpp INPUT [OPTIONS]
@@ -124,7 +128,10 @@ For a molfile, `INPUT` below excludes the `.mol` suffix.
 | `INPUTTelemetry.json` | Search counters from a telemetry-enabled executable. |
 | `memUsage` | Linux `VmPeak` value when `--memory-report=1`. |
 
-## C++ library
+</details>
+
+<details>
+<summary><strong>C++ library</strong></summary>
 
 Installed packages export `AssemblyCpp::Library`. If AssemblyCpp is installed
 to a non-system prefix, pass that prefix when configuring the consuming
@@ -164,7 +171,10 @@ several inputs sequentially without process startup between items. Library
 calls do not create output files. Search state is process-global, so the API is
 reusable but not thread-safe; use separate processes for concurrent work.
 
-## Development
+</details>
+
+<details>
+<summary><strong>Development</strong></summary>
 
 Tests and benchmark tooling require Python 3.10 or newer. Parallel builds also
 require OpenMP and MPI; PGO builds require GCC. The supplied Conda environment
@@ -213,6 +223,8 @@ cmake --build --preset release --target package_source
 
 Use CMake 4.3 or newer to normalize archive ownership. Create source archives
 from a clean checkout because CPack includes the working tree.
+
+</details>
 
 ## License
 
