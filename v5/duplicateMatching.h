@@ -1,3 +1,5 @@
+#pragma once
+
 #include "compilerAttributes.h"
 
 enum class initialDagInsertionResult

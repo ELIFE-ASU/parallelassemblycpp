@@ -1,3 +1,5 @@
+#pragma once
+
 /**
  * @brief Print command-line usage and option documentation.
  */

@@ -13,10 +13,12 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
@@ -765,7 +767,8 @@ def validate_parallel_telemetry(
         )
         require(
             processed.get("active_mask_words") == case.active_mask_words,
-            f"{worker_path}.processed_graph.active_mask_words must be {case.active_mask_words}",
+            f"{worker_path}.processed_graph.active_mask_words must be "
+            f"{case.active_mask_words}",
         )
     expected_indices = list(range(requested_workers))
     require(

@@ -1,13 +1,20 @@
+# Python caches
 __pycache__/
 *.py[cod]
 /.ruff_cache/
-/unitTests/*Pathway
-/unitTests/*Out
-/.vscode
-/build
-/dist
-/stage
-/unitTests/*MAs
+
+# Build and packaging output
+/build/
+/dist/
+/stage/
 CMakeUserPresets.json
+
+# Editor metadata
+/.vscode/
+
+# Generated solver output
 memUsage
 *Telemetry.json
+/unitTests/*MAs
+/unitTests/*Out
+/unitTests/*Pathway

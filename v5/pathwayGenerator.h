@@ -1,3 +1,5 @@
+#pragma once
+
 /**
  * @brief One immutable duplication retained in the best pathway witness.
  *

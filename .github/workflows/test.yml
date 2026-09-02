@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   strict-clang:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -30,13 +35,16 @@ jobs:
         run: cmake --build build/clang --parallel 2
 
       - name: Test Clang unit targets
-        run: ctest --test-dir build/clang --output-on-failure -L unit
+        run: >
+          ctest --test-dir build/clang --output-on-failure
+          --no-tests=error -L unit
 
       - name: Smoke-test Clang CLI
         run: build/clang/AssemblyCpp --help
 
   strict-msvc:
     runs-on: windows-2022
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -55,7 +63,9 @@ jobs:
         run: cmake --build build/msvc --config Release --parallel 2
 
       - name: Test MSVC unit targets
-        run: ctest --test-dir build/msvc -C Release --output-on-failure -L unit
+        run: >
+          ctest --test-dir build/msvc -C Release --output-on-failure
+          --no-tests=error -L unit
 
       - name: Smoke-test MSVC CLI
         run: |
@@ -64,9 +74,10 @@ jobs:
 
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     defaults:
       run:
-        shell: bash -el {0}
+        shell: bash -el -o pipefail {0}
 
     steps:
       - name: Check out repository
@@ -116,6 +127,9 @@ jobs:
         run: |
           cmake --install build/release --prefix build/stage
           build/stage/bin/AssemblyCpp --help
+          test -f build/stage/include/assemblycpp/assemblycpp.h
+          test -f build/stage/lib/libassemblycpp.a
+          test -f build/stage/lib/cmake/AssemblyCpp/AssemblyCppConfig.cmake
           if readelf -d build/stage/bin/AssemblyCpp | grep -Eq '\((RPATH|RUNPATH)\)'; then
             echo 'error: staged executable contains an RPATH or RUNPATH' >&2
             exit 1
@@ -132,7 +146,7 @@ jobs:
 
       - name: Verify binary and source packaging
         run: |
-          export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
           cpack --config build/release/CPackConfig.cmake -B build/packages
           cpack --config build/release/CPackSourceConfig.cmake -B build/packages
           (

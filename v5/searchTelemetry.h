@@ -250,9 +250,7 @@ inline uint64_t telemetryClockDifference(clock_t start, clock_t end)
     const clock_t clockError = static_cast<clock_t>(-1);
     if (start == clockError || end == clockError) return 0;
     using UnsignedClock = std::make_unsigned_t<clock_t>;
-    return static_cast<uint64_t>(
-        static_cast<UnsignedClock>(end) - static_cast<UnsignedClock>(start)
-    );
+    return static_cast<UnsignedClock>(end) - static_cast<UnsignedClock>(start);
 }
 
 inline uint64_t searchTelemetryWallNanoseconds()
@@ -683,7 +681,7 @@ inline void configureParallelSearchTelemetry(
     summary.mode = std::move(mode);
     summary.aggregationScope = std::move(aggregationScope);
     summary.rankCount = std::max<uint64_t>(1, rankCount);
-    summary.workerCount = static_cast<uint64_t>(workers.size());
+    summary.workerCount = workers.size();
     summary.branchLeaseSize = branchLeaseSize;
     summary.elapsedNanoseconds = elapsedNanoseconds;
     summary.localThreadsPerRank.assign(summary.rankCount, 0);

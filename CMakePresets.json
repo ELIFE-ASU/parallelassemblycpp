@@ -11,8 +11,19 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
+      "warnings": {
+        "dev": true,
+        "deprecated": true,
+        "uninitialized": true,
+        "unusedCli": true
+      },
+      "errors": {
+        "dev": true,
+        "deprecated": true
+      },
       "cacheVariables": {
-        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "ASSEMBLYCPP_STRICT_WARNINGS": true
       }
     },
     {

@@ -209,7 +209,7 @@ treeCanonAtomId internTreeCanonAtom(const std::string &atomType)
     if (sharedTreeCanonAtomInterner == nullptr)
     {
         const treeCanonAtomId nextId =
-            static_cast<treeCanonAtomId>(treeCanonAtomInterner.size()) + 1;
+            treeCanonAtomInterner.size() + 1;
         return treeCanonAtomInterner.try_emplace(
             atomType,
             nextId
@@ -218,10 +218,7 @@ treeCanonAtomId internTreeCanonAtom(const std::string &atomType)
     const auto seeded = sharedTreeCanonAtomInterner->find(atomType);
     if (seeded != sharedTreeCanonAtomInterner->end()) return seeded->second;
     const treeCanonAtomId nextId =
-        static_cast<treeCanonAtomId>(
-            sharedTreeCanonAtomInterner->size() +
-                treeCanonAtomInterner.size()
-        ) + 1;
+        sharedTreeCanonAtomInterner->size() + treeCanonAtomInterner.size() + 1;
     return treeCanonAtomInterner.try_emplace(atomType, nextId).first->second;
 }
 
@@ -230,7 +227,7 @@ treeCanonNodeId internTreeCanonSignature(treeCanonSignature signature)
     if (sharedTreeCanonInterner == nullptr)
     {
         const treeCanonNodeId nextId =
-            static_cast<treeCanonNodeId>(treeCanonInterner.size()) + 1;
+            treeCanonInterner.size() + 1;
         return treeCanonInterner.try_emplace(
             std::move(signature),
             nextId
@@ -245,7 +242,7 @@ treeCanonNodeId internTreeCanonSignature(treeCanonSignature signature)
     if (canMatchSeed)
     {
         const treeCanonNodeId seededNodeCount =
-            static_cast<treeCanonNodeId>(sharedTreeCanonInterner->size());
+            sharedTreeCanonInterner->size();
         for (const treeCanonChild &child : signature.children)
         {
             if (child.subtree > seededNodeCount)
@@ -261,9 +258,7 @@ treeCanonNodeId internTreeCanonSignature(treeCanonSignature signature)
         if (seeded != sharedTreeCanonInterner->end()) return seeded->second;
     }
     const treeCanonNodeId nextId =
-        static_cast<treeCanonNodeId>(
-            sharedTreeCanonInterner->size() + treeCanonInterner.size()
-        ) + 1;
+        sharedTreeCanonInterner->size() + treeCanonInterner.size() + 1;
     return treeCanonInterner.try_emplace(
         std::move(signature),
         nextId

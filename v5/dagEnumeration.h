@@ -1,3 +1,5 @@
+#pragma once
+
 /** @brief One DAG transition to a child formed by adding one physical edge. */
 struct dagTransition
 {

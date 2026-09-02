@@ -1393,6 +1393,11 @@ class BenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(benchmark.BenchmarkError, "invalid cache rate"):
                 benchmark.parse_search_telemetry(malformed_path)
 
+            malformed["caches"]["canonical_mask"]["hit_rate"] = 10**400
+            malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "invalid cache rate"):
+                benchmark.parse_search_telemetry(malformed_path)
+
             malformed = json.loads(json.dumps(telemetry))
             malformed["processed_graph"]["edges"] = 65
             malformed["processed_graph"]["active_mask_words"] = 2

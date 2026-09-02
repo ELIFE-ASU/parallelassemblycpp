@@ -1,3 +1,5 @@
+#pragma once
+
 /**
  * @brief Assembly state data structure. Records the current state of this assembly pathway
  */

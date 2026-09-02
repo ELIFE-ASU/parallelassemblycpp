@@ -4,6 +4,14 @@ if(POLICY CMP0206)
   cmake_policy(SET CMP0206 NEW)
 endif()
 
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
+  message(
+    FATAL_ERROR
+    "In-source builds are unsupported; configure with a preset or pass a "
+    "separate build directory with -B"
+  )
+endif()
+
 project(
   AssemblyCpp
   VERSION 5.0.0
@@ -15,10 +23,20 @@ project(
 include(GNUInstallDirs)
 
 set(
-  CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+  ASSEMBLYCPP_EXECUTABLE_PERMISSIONS
   OWNER_READ OWNER_WRITE OWNER_EXECUTE
   GROUP_READ GROUP_EXECUTE
   WORLD_READ WORLD_EXECUTE
+)
+set(
+  ASSEMBLYCPP_FILE_PERMISSIONS
+  OWNER_READ OWNER_WRITE
+  GROUP_READ
+  WORLD_READ
+)
+set(
+  CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+  ${ASSEMBLYCPP_EXECUTABLE_PERMISSIONS}
 )
 
 option(
@@ -374,9 +392,22 @@ function(assemblycpp_configure_target target)
         target_compile_options(
           ${target}
           PRIVATE
+            -Walloc-zero
+            -Warray-bounds=2
+            -Wcast-function-type
+            -Wdate-time
             -Wduplicated-branches
             -Wduplicated-cond
+            -Wformat-overflow=2
+            -Wformat-signedness
+            -Wformat-truncation=2
             -Wlogical-op
+            -Wredundant-decls
+            -Wstringop-overflow=4
+            -Wstringop-truncation
+            -Wtrampolines
+            -Wuseless-cast
+            -Wvla
         )
       endif()
     else()
@@ -490,6 +521,47 @@ function(assemblycpp_configure_pgo_target target)
   target_link_options(${target} PRIVATE ${_ASSEMBLYCPP_PGO_OPTIONS})
 endfunction()
 
+function(assemblycpp_add_solver target)
+  cmake_parse_arguments(
+    PARSE_ARGV 1
+    ASSEMBLYCPP_SOLVER
+    "MPI;OPENMP;TELEMETRY"
+    ""
+    ""
+  )
+  if(ASSEMBLYCPP_SOLVER_UNPARSED_ARGUMENTS)
+    message(
+      FATAL_ERROR
+      "Unknown options for ${target}: ${ASSEMBLYCPP_SOLVER_UNPARSED_ARGUMENTS}"
+    )
+  endif()
+
+  add_executable(${target} v5/main.cpp)
+  set(ASSEMBLYCPP_SOLVER_DEFINITIONS)
+  set(ASSEMBLYCPP_SOLVER_LIBRARIES)
+  if(ASSEMBLYCPP_SOLVER_MPI)
+    list(APPEND ASSEMBLYCPP_SOLVER_DEFINITIONS ASSEMBLYCPP_USE_MPI)
+    list(APPEND ASSEMBLYCPP_SOLVER_LIBRARIES MPI::MPI_CXX)
+  endif()
+  if(ASSEMBLYCPP_SOLVER_OPENMP)
+    list(APPEND ASSEMBLYCPP_SOLVER_DEFINITIONS ASSEMBLYCPP_USE_OPENMP)
+    list(APPEND ASSEMBLYCPP_SOLVER_LIBRARIES OpenMP::OpenMP_CXX)
+  endif()
+  if(ASSEMBLYCPP_SOLVER_TELEMETRY)
+    list(APPEND ASSEMBLYCPP_SOLVER_DEFINITIONS ASSEMBLY_ENABLE_TELEMETRY)
+  endif()
+  if(ASSEMBLYCPP_SOLVER_DEFINITIONS)
+    target_compile_definitions(
+      ${target}
+      PRIVATE ${ASSEMBLYCPP_SOLVER_DEFINITIONS}
+    )
+  endif()
+  if(ASSEMBLYCPP_SOLVER_LIBRARIES)
+    target_link_libraries(${target} PRIVATE ${ASSEMBLYCPP_SOLVER_LIBRARIES})
+  endif()
+  assemblycpp_configure_target(${target})
+endfunction()
+
 add_library(AssemblyCppLibrary STATIC v5/main.cpp)
 add_library(AssemblyCpp::Library ALIAS AssemblyCppLibrary)
 target_compile_definitions(
@@ -512,8 +584,7 @@ set_target_properties(
 )
 assemblycpp_configure_target(AssemblyCppLibrary)
 
-add_executable(AssemblyCpp v5/main.cpp)
-assemblycpp_configure_target(AssemblyCpp)
+assemblycpp_add_solver(AssemblyCpp)
 assemblycpp_configure_pgo_target(AssemblyCpp)
 
 if(ASSEMBLYCPP_BUILD_OPENMP OR ASSEMBLYCPP_BUILD_HYBRID)
@@ -524,89 +595,39 @@ if(ASSEMBLYCPP_BUILD_MPI OR ASSEMBLYCPP_BUILD_HYBRID)
 endif()
 
 if(ASSEMBLYCPP_BUILD_OPENMP)
-  add_executable(AssemblyCppOMP v5/main.cpp)
-  target_compile_definitions(AssemblyCppOMP PRIVATE ASSEMBLYCPP_USE_OPENMP)
-  target_link_libraries(AssemblyCppOMP PRIVATE OpenMP::OpenMP_CXX)
-  assemblycpp_configure_target(AssemblyCppOMP)
+  assemblycpp_add_solver(AssemblyCppOMP OPENMP)
 endif()
 
 if(ASSEMBLYCPP_BUILD_MPI)
-  add_executable(AssemblyCppMPI v5/main.cpp)
-  target_compile_definitions(AssemblyCppMPI PRIVATE ASSEMBLYCPP_USE_MPI)
-  target_link_libraries(AssemblyCppMPI PRIVATE MPI::MPI_CXX)
-  assemblycpp_configure_target(AssemblyCppMPI)
+  assemblycpp_add_solver(AssemblyCppMPI MPI)
 endif()
 
 if(ASSEMBLYCPP_BUILD_HYBRID)
-  add_executable(AssemblyCppHybrid v5/main.cpp)
-  target_compile_definitions(
-    AssemblyCppHybrid
-    PRIVATE ASSEMBLYCPP_USE_MPI ASSEMBLYCPP_USE_OPENMP
-  )
-  target_link_libraries(
-    AssemblyCppHybrid
-    PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX
-  )
-  assemblycpp_configure_target(AssemblyCppHybrid)
+  assemblycpp_add_solver(AssemblyCppHybrid MPI OPENMP)
 endif()
 
 if(ASSEMBLYCPP_BUILD_TELEMETRY)
-  add_executable(AssemblyCppTelemetry v5/main.cpp)
-  target_compile_definitions(
-    AssemblyCppTelemetry
-    PRIVATE ASSEMBLY_ENABLE_TELEMETRY
-  )
-  assemblycpp_configure_target(AssemblyCppTelemetry)
+  assemblycpp_add_solver(AssemblyCppTelemetry TELEMETRY)
 
   if(ASSEMBLYCPP_BUILD_OPENMP)
-    add_executable(AssemblyCppOMPTelemetry v5/main.cpp)
-    target_compile_definitions(
-      AssemblyCppOMPTelemetry
-      PRIVATE ASSEMBLYCPP_USE_OPENMP ASSEMBLY_ENABLE_TELEMETRY
-    )
-    target_link_libraries(
-      AssemblyCppOMPTelemetry
-      PRIVATE OpenMP::OpenMP_CXX
-    )
-    assemblycpp_configure_target(AssemblyCppOMPTelemetry)
+    assemblycpp_add_solver(AssemblyCppOMPTelemetry OPENMP TELEMETRY)
   endif()
 
   if(ASSEMBLYCPP_BUILD_MPI)
-    add_executable(AssemblyCppMPITelemetry v5/main.cpp)
-    target_compile_definitions(
-      AssemblyCppMPITelemetry
-      PRIVATE ASSEMBLYCPP_USE_MPI ASSEMBLY_ENABLE_TELEMETRY
-    )
-    target_link_libraries(
-      AssemblyCppMPITelemetry
-      PRIVATE MPI::MPI_CXX
-    )
-    assemblycpp_configure_target(AssemblyCppMPITelemetry)
+    assemblycpp_add_solver(AssemblyCppMPITelemetry MPI TELEMETRY)
   endif()
 
   if(ASSEMBLYCPP_BUILD_HYBRID)
-    add_executable(AssemblyCppHybridTelemetry v5/main.cpp)
-    target_compile_definitions(
-      AssemblyCppHybridTelemetry
-      PRIVATE
-        ASSEMBLYCPP_USE_MPI
-        ASSEMBLYCPP_USE_OPENMP
-        ASSEMBLY_ENABLE_TELEMETRY
-    )
-    target_link_libraries(
-      AssemblyCppHybridTelemetry
-      PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX
-    )
-    assemblycpp_configure_target(AssemblyCppHybridTelemetry)
+    assemblycpp_add_solver(AssemblyCppHybridTelemetry MPI OPENMP TELEMETRY)
   endif()
 endif()
 
 if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   # Internalize single-file targets while preserving public library symbols.
-  target_compile_options(AssemblyCpp PRIVATE -fwhole-program)
-  target_compile_options(AssemblyCppLibrary PRIVATE -fwhole-program)
   foreach(
-    ASSEMBLYCPP_PARALLEL_TARGET
+    ASSEMBLYCPP_WHOLE_PROGRAM_TARGET
+    AssemblyCpp
+    AssemblyCppLibrary
     AssemblyCppOMP
     AssemblyCppMPI
     AssemblyCppHybrid
@@ -615,9 +636,9 @@ if(ASSEMBLYCPP_X86_64_V3 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     AssemblyCppMPITelemetry
     AssemblyCppHybridTelemetry
   )
-    if(TARGET ${ASSEMBLYCPP_PARALLEL_TARGET})
+    if(TARGET ${ASSEMBLYCPP_WHOLE_PROGRAM_TARGET})
       target_compile_options(
-        ${ASSEMBLYCPP_PARALLEL_TARGET}
+        ${ASSEMBLYCPP_WHOLE_PROGRAM_TARGET}
         PRIVATE -fwhole-program
       )
     endif()
@@ -629,33 +650,21 @@ install(
   EXPORT AssemblyCppTargets
   RUNTIME
     DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    PERMISSIONS
-      OWNER_READ OWNER_WRITE OWNER_EXECUTE
-      GROUP_READ GROUP_EXECUTE
-      WORLD_READ WORLD_EXECUTE
+    PERMISSIONS ${ASSEMBLYCPP_EXECUTABLE_PERMISSIONS}
   ARCHIVE
     DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    PERMISSIONS
-      OWNER_READ OWNER_WRITE
-      GROUP_READ
-      WORLD_READ
+    PERMISSIONS ${ASSEMBLYCPP_FILE_PERMISSIONS}
   INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/assemblycpp"
 )
 install(
   FILES v5/assemblycpp.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/assemblycpp"
-  PERMISSIONS
-    OWNER_READ OWNER_WRITE
-    GROUP_READ
-    WORLD_READ
+  PERMISSIONS ${ASSEMBLYCPP_FILE_PERMISSIONS}
 )
 install(
   FILES README.md License.md
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/assemblycpp"
-  PERMISSIONS
-    OWNER_READ OWNER_WRITE
-    GROUP_READ
-    WORLD_READ
+  PERMISSIONS ${ASSEMBLYCPP_FILE_PERMISSIONS}
 )
 install(
   EXPORT AssemblyCppTargets
@@ -700,6 +709,12 @@ if(UNIX AND NOT APPLE)
 endif()
 
 include(CTest)
+if(ASSEMBLYCPP_FULL_REGRESSION_TESTS AND NOT BUILD_TESTING)
+  message(
+    FATAL_ERROR
+    "ASSEMBLYCPP_FULL_REGRESSION_TESTS requires BUILD_TESTING=ON"
+  )
+endif()
 if(BUILD_TESTING OR ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
   find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 endif()
@@ -720,79 +735,46 @@ if(ASSEMBLYCPP_PGO_PHASE STREQUAL "GENERATE")
   )
 endif()
 
+function(assemblycpp_add_unit_test name target source)
+  add_executable(${target} ${source})
+  assemblycpp_configure_test_target(${target})
+  add_test(NAME unit.${name} COMMAND ${target} ${ARGN})
+  set_tests_properties(
+    unit.${name}
+    PROPERTIES
+      LABELS "unit"
+      TIMEOUT 300
+  )
+endfunction()
+
+function(assemblycpp_add_python_test name timeout)
+  add_test(NAME ${name} COMMAND "${Python3_EXECUTABLE}" ${ARGN})
+  set_tests_properties(
+    ${name}
+    PROPERTIES
+      LABELS "tooling"
+      TIMEOUT ${timeout}
+      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  )
+endfunction()
+
 if(BUILD_TESTING)
-  add_executable(
+  assemblycpp_add_unit_test(
+    active-word-mask
     assemblycpp_active_word_mask_tests
     unitTests/activeWordMaskTester.cpp
   )
-  assemblycpp_configure_test_target(assemblycpp_active_word_mask_tests)
-
-  add_executable(
+  assemblycpp_add_unit_test(
+    assembly-transposition-table
     assemblycpp_transposition_table_tests
     unitTests/assemblyTranspositionTableTester.cpp
   )
-  assemblycpp_configure_test_target(assemblycpp_transposition_table_tests)
 
   add_executable(
     assemblycpp_tree_canon_tests
     unitTests/treeCanonTester.cpp
   )
   assemblycpp_configure_test_target(assemblycpp_tree_canon_tests)
-
-  add_executable(
-    assemblycpp_cyclic_canon_tests
-    unitTests/cyclicCanonTester.cpp
-  )
-  assemblycpp_configure_test_target(assemblycpp_cyclic_canon_tests)
-
-  add_executable(
-    assemblycpp_search_stop_poll_tests
-    unitTests/searchStopPollTester.cpp
-  )
-  assemblycpp_configure_test_target(assemblycpp_search_stop_poll_tests)
-
-  add_executable(
-    assemblycpp_fragmentation_metadata_tests
-    unitTests/fragmentationMetadataTester.cpp
-  )
-  assemblycpp_configure_test_target(assemblycpp_fragmentation_metadata_tests)
-
-  add_executable(
-    assemblycpp_molfile_parser_tests
-    unitTests/molfileParserTester.cpp
-  )
-  assemblycpp_configure_test_target(assemblycpp_molfile_parser_tests)
-
-  add_executable(
-    assemblycpp_graphio_tests
-    unitTests/graphioTester.cpp
-  )
-  assemblycpp_configure_test_target(assemblycpp_graphio_tests)
-
-  add_executable(
-    assemblycpp_pathway_generator_tests
-    unitTests/pathwayGeneratorTester.cpp
-  )
-  assemblycpp_configure_test_target(assemblycpp_pathway_generator_tests)
-
-  add_executable(
-    assemblycpp_library_batch_tests
-    unitTests/libraryBatchTester.cpp
-  )
-  target_link_libraries(
-    assemblycpp_library_batch_tests
-    PRIVATE AssemblyCppLibrary
-  )
-  assemblycpp_configure_test_target(assemblycpp_library_batch_tests)
-
-  add_test(
-    NAME unit.active-word-mask
-    COMMAND assemblycpp_active_word_mask_tests
-  )
-  add_test(
-    NAME unit.assembly-transposition-table
-    COMMAND assemblycpp_transposition_table_tests
-  )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(
       NAME unit.tree-canonicalisation
@@ -806,127 +788,85 @@ if(BUILD_TESTING)
       COMMAND assemblycpp_tree_canon_tests
     )
   endif()
-  add_test(
-    NAME unit.cyclic-canonicalisation
-    COMMAND assemblycpp_cyclic_canon_tests
-  )
-  add_test(
-    NAME unit.search-stop-polling
-    COMMAND assemblycpp_search_stop_poll_tests
-  )
-  add_test(
-    NAME unit.fragmentation-metadata
-    COMMAND assemblycpp_fragmentation_metadata_tests
-  )
-  add_test(
-    NAME unit.molfile-parser
-    COMMAND assemblycpp_molfile_parser_tests
-  )
-  add_test(
-    NAME unit.native-graph-parser
-    COMMAND assemblycpp_graphio_tests
-  )
-  add_test(
-    NAME unit.pathway-generator
-    COMMAND assemblycpp_pathway_generator_tests
-  )
-  add_test(
-    NAME unit.library-batch
-    COMMAND
-      assemblycpp_library_batch_tests
-      "${PROJECT_SOURCE_DIR}/unitTests/icosane.mol"
-      "${PROJECT_SOURCE_DIR}/unitTests/sucrose.mol"
-      "${PROJECT_SOURCE_DIR}/unitTests/butane.mol"
-  )
   set_tests_properties(
-    unit.active-word-mask
-    unit.assembly-transposition-table
     unit.tree-canonicalisation
-    unit.cyclic-canonicalisation
-    unit.search-stop-polling
-    unit.fragmentation-metadata
-    unit.molfile-parser
-    unit.native-graph-parser
-    unit.pathway-generator
-    unit.library-batch
     PROPERTIES
       LABELS "unit"
       TIMEOUT 300
   )
 
-  add_test(
-    NAME tooling.test-data-audit
-    COMMAND
-      "${Python3_EXECUTABLE}"
-      "${PROJECT_SOURCE_DIR}/unitTests/unitTester.py"
-      --audit
+  assemblycpp_add_unit_test(
+    cyclic-canonicalisation
+    assemblycpp_cyclic_canon_tests
+    unitTests/cyclicCanonTester.cpp
   )
-  set_tests_properties(
+  assemblycpp_add_unit_test(
+    search-stop-polling
+    assemblycpp_search_stop_poll_tests
+    unitTests/searchStopPollTester.cpp
+  )
+  assemblycpp_add_unit_test(
+    fragmentation-metadata
+    assemblycpp_fragmentation_metadata_tests
+    unitTests/fragmentationMetadataTester.cpp
+  )
+  assemblycpp_add_unit_test(
+    molfile-parser
+    assemblycpp_molfile_parser_tests
+    unitTests/molfileParserTester.cpp
+  )
+  assemblycpp_add_unit_test(
+    native-graph-parser
+    assemblycpp_graphio_tests
+    unitTests/graphioTester.cpp
+  )
+  assemblycpp_add_unit_test(
+    pathway-generator
+    assemblycpp_pathway_generator_tests
+    unitTests/pathwayGeneratorTester.cpp
+  )
+  assemblycpp_add_unit_test(
+    library-batch
+    assemblycpp_library_batch_tests
+    unitTests/libraryBatchTester.cpp
+    "${PROJECT_SOURCE_DIR}/unitTests/icosane.mol"
+    "${PROJECT_SOURCE_DIR}/unitTests/sucrose.mol"
+    "${PROJECT_SOURCE_DIR}/unitTests/butane.mol"
+  )
+  target_link_libraries(
+    assemblycpp_library_batch_tests
+    PRIVATE AssemblyCppLibrary
+  )
+
+  assemblycpp_add_python_test(
     tooling.test-data-audit
-    PROPERTIES
-      LABELS "tooling"
-      TIMEOUT 300
-      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    300
+    "${PROJECT_SOURCE_DIR}/unitTests/unitTester.py"
+    --audit
   )
-
-  add_test(
-    NAME tooling.repository-text-policy
-    COMMAND
-      "${Python3_EXECUTABLE}"
-      "${PROJECT_SOURCE_DIR}/tools/check_repository.py"
-  )
-  set_tests_properties(
+  assemblycpp_add_python_test(
     tooling.repository-text-policy
-    PROPERTIES
-      LABELS "tooling"
-      TIMEOUT 30
-      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    30
+    "${PROJECT_SOURCE_DIR}/tools/check_repository.py"
   )
-
-  add_test(
-    NAME tooling.benchmark-runner
-    COMMAND
-      "${Python3_EXECUTABLE}"
-      -m unittest discover
-      -s "${PROJECT_SOURCE_DIR}/benchmarks"
-      -p "test_*.py"
-  )
-  set_tests_properties(
+  assemblycpp_add_python_test(
     tooling.benchmark-runner
-    PROPERTIES
-      LABELS "tooling"
-      TIMEOUT 300
-      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    300
+    -m unittest discover
+    -s "${PROJECT_SOURCE_DIR}/benchmarks"
+    -p "test_*.py"
   )
-
-  add_test(
-    NAME tooling.benchmark-corpus
-    COMMAND
-      "${Python3_EXECUTABLE}"
-      "${PROJECT_SOURCE_DIR}/benchmarks/benchmark.py"
-      --list-cases
-  )
-  set_tests_properties(
+  assemblycpp_add_python_test(
     tooling.benchmark-corpus
-    PROPERTIES
-      LABELS "tooling"
-      TIMEOUT 300
-      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    300
+    "${PROJECT_SOURCE_DIR}/benchmarks/benchmark.py"
+    --list-cases
   )
-
-  add_test(
-    NAME tooling.archived-benchmark-help
-    COMMAND
-      "${Python3_EXECUTABLE}"
-      "${PROJECT_SOURCE_DIR}/output/benchmarks/amino-acid-cpp-rust-2026-08-26/run_benchmark.py"
-      --help
-  )
-  set_tests_properties(
+  assemblycpp_add_python_test(
     tooling.archived-benchmark-help
-    PROPERTIES
-      LABELS "tooling"
-      TIMEOUT 30
-      WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    30
+    "${PROJECT_SOURCE_DIR}/output/benchmarks/amino-acid-cpp-rust-2026-08-26/run_benchmark.py"
+    --help
   )
 
   set(

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <array>
 #include <atomic>
 #include <bit>
@@ -642,9 +644,7 @@ ASSEMBLYCPP_NOINLINE int canoniseCacheMiss(EdgeMask &mask)
         )
         {
             const treeCanonNodeId seededNodeCount =
-                static_cast<treeCanonNodeId>(
-                    sharedTreeCanonInterner->size()
-                );
+                sharedTreeCanonInterner->size();
             canMatchSeed =
                 candidate.treeHash.first <= seededNodeCount &&
                 candidate.treeHash.second <= seededNodeCount;

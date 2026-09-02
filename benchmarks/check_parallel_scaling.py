@@ -8,9 +8,12 @@ import math
 import re
 import statistics
 import sys
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 PAIRED_COMPARISON_ORDER = (
     "baseline/candidate on odd rounds, candidate/baseline on even rounds"

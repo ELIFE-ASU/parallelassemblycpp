@@ -5,13 +5,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
-import hashlib
 import json
 import sys
 import tempfile
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 if __package__:
     from . import benchmark
@@ -175,16 +177,7 @@ def prepare_profile_directory(path: Path) -> tuple[Path, int]:
 
 def file_sha256(path: Path) -> str:
     """Return the SHA-256 digest of a regular file."""
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as error:
-        raise benchmark.BenchmarkError(
-            f"could not fingerprint {path}: {error}"
-        ) from error
-    return digest.hexdigest()
+    return benchmark.file_sha256(path)
 
 
 def repository_path(path: Path) -> str:

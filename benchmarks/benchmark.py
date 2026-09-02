@@ -18,11 +18,13 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn, TypeGuard, cast
+from typing import TYPE_CHECKING, NoReturn, TypeGuard, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent
@@ -365,17 +367,13 @@ def ensure_json_output_is_distinct(
 
 
 def executable_metadata(path: Path) -> dict[str, object]:
-    digest = hashlib.sha256()
     try:
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
         size = path.stat().st_size
     except OSError as error:
         raise BenchmarkError(f"could not fingerprint {path}: {error}") from error
     return {
         "path": str(path),
-        "sha256": digest.hexdigest(),
+        "sha256": file_sha256(path),
         "size_bytes": size,
     }
 
@@ -896,14 +894,20 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             if value is not None:
                 raise BenchmarkError(f"invalid cache rate in {path.name}")
             return
+        rate = math.nan
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                rate = float(value)
+            except OverflowError:
+                rate = math.nan
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            or value < 0
-            or value > 1
+            or not math.isfinite(rate)
+            or rate < 0
+            or rate > 1
             or not math.isclose(
-                float(value),
+                rate,
                 numerator / denominator,
                 rel_tol=5e-6,
                 abs_tol=1e-12,
@@ -1648,7 +1652,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     ):
         invalid_parallel("complete branch scan has incomplete assignments")
     if uses_legacy_rank_partition and parallel["branch_scan_complete"]:
-        expected_branch_candidates = cast(int, expected_branch_candidates)
+        expected_branch_candidates = cast("int", expected_branch_candidates)
         for rank, assignments in enumerate(rank_branch_assignments):
             expected_assignments = (
                 0
@@ -2108,7 +2112,7 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
             result.baseline_measurements,
             "clock_ticks",
         )
-        wall_speedup = cast(MetricSummary, wall_speedup)
+        wall_speedup = cast("MetricSummary", wall_speedup)
         clock_text = "n/a"
         if clock_speedup is not None:
             clock_text = f"{clock_speedup.median:.4f}x"
@@ -2123,8 +2127,8 @@ def print_comparison_summary(results: Sequence[CaseResult]) -> None:
     round_clock = aggregate_paired_speedup_summary(results, "clock_ticks")
     equal_wall = equal_weight_paired_speedup_summary(results, "wall_seconds")
     equal_clock = equal_weight_paired_speedup_summary(results, "clock_ticks")
-    round_wall = cast(MetricSummary, round_wall)
-    equal_wall = cast(MetricSummary, equal_wall)
+    round_wall = cast("MetricSummary", round_wall)
+    equal_wall = cast("MetricSummary", equal_wall)
     print("\nCorpus comparison")
     print(
         f"  paired suite wall (primary):       {round_wall.median:.4f}x "
@@ -2164,13 +2168,13 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
         counters = telemetry["counters"]
         caches = telemetry["caches"]
         memory = telemetry["memory"]
-        counters = cast(dict[str, object], counters)
-        caches = cast(dict[str, object], caches)
-        memory = cast(dict[str, object], memory)
+        counters = cast("dict[str, object]", counters)
+        caches = cast("dict[str, object]", caches)
+        memory = cast("dict[str, object]", memory)
         canonical = caches["canonical_mask"]
         residual = caches["residual_decomposition"]
-        canonical = cast(dict[str, object], canonical)
-        residual = cast(dict[str, object], residual)
+        canonical = cast("dict[str, object]", canonical)
+        residual = cast("dict[str, object]", residual)
 
         def rate_text(value: object) -> str:
             return "n/a" if value is None else f"{float(value):.1%}"
@@ -2204,12 +2208,12 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
     )
     print("  " + "-" * (name_width + 71))
     for result in parallel_results:
-        telemetry = cast(dict[str, object], result.telemetry)
-        parallel = cast(dict[str, object], telemetry["parallel"])
+        telemetry = cast("dict[str, object]", result.telemetry)
+        parallel = cast("dict[str, object]", telemetry["parallel"])
         aggregate = parallel["aggregate"]
         workers = parallel["workers"]
-        aggregate = cast(dict[str, object], aggregate)
-        workers = cast(list[object], workers)
+        aggregate = cast("dict[str, object]", aggregate)
+        workers = cast("list[object]", workers)
         elapsed_values = [
             int(worker["elapsed_nanoseconds"])
             for worker in workers
@@ -2381,7 +2385,10 @@ def write_json_report(
             "comparison_order": (
                 None
                 if baseline_metadata is None
-                else "baseline/candidate on odd rounds, candidate/baseline on even rounds"
+                else (
+                    "baseline/candidate on odd rounds, candidate/baseline "
+                    "on even rounds"
+                )
             ),
             "measurement_array_order": "round order, starting at round 1",
         },
@@ -2684,7 +2691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         executable = resolve_executable(executable_path)
         telemetry_executable = None
         if arguments.telemetry:
-            telemetry_path = cast(Path, telemetry_path)
+            telemetry_path = cast("Path", telemetry_path)
             if arguments.build:
                 telemetry_path = build_executable(
                     telemetry_path,
@@ -2796,12 +2803,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         verify_executable_unchanged(executable, candidate_metadata, "candidate")
         if baseline_executable is not None:
-            baseline_metadata = cast(dict[str, object], baseline_metadata)
+            baseline_metadata = cast("dict[str, object]", baseline_metadata)
             verify_executable_unchanged(
                 baseline_executable, baseline_metadata, "baseline"
             )
         if telemetry_executable is not None:
-            telemetry_metadata = cast(dict[str, object], telemetry_metadata)
+            telemetry_metadata = cast("dict[str, object]", telemetry_metadata)
             verify_executable_unchanged(
                 telemetry_executable,
                 telemetry_metadata,
@@ -2817,7 +2824,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print_summary(results)
         print_telemetry_summary(results)
         if arguments.json_output is not None:
-            corpus_metadata = cast(dict[str, object], corpus_metadata)
+            corpus_metadata = cast("dict[str, object]", corpus_metadata)
             write_json_report(
                 path=arguments.json_output,
                 candidate_metadata=candidate_metadata,

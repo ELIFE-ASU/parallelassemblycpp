@@ -17,10 +17,13 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
@@ -114,7 +117,8 @@ def load_manifest(path: Path) -> tuple[Path, list[TestCase]]:
             header = tuple(next(reader, ()))
             if header != MANIFEST_HEADER:
                 raise TestConfigurationError(
-                    f"invalid header in {manifest}: expected {MANIFEST_HEADER}, got {header}"
+                    f"invalid header in {manifest}: expected {MANIFEST_HEADER}, "
+                    f"got {header}"
                 )
 
             for row in reader:
@@ -171,7 +175,10 @@ def parse_pathway_document(path: Path) -> dict[str, object]:
         raise ValueError(f"invalid JSON in {path}: {error}") from error
 
     if not isinstance(document, dict):
-        raise ValueError(f"pathway document must be a JSON object: {path}")
+        # A wrong JSON shape is malformed file content, not caller misuse.
+        raise ValueError(  # noqa: TRY004
+            f"pathway document must be a JSON object: {path}"
+        )
     if set(document) != PATHWAY_KEYS:
         raise ValueError(
             f"invalid pathway keys in {path}: expected {sorted(PATHWAY_KEYS)}, "
@@ -179,7 +186,10 @@ def parse_pathway_document(path: Path) -> dict[str, object]:
         )
     for key in PATHWAY_KEYS:
         if not isinstance(document[key], list):
-            raise ValueError(f"pathway field {key!r} must be an array in {path}")
+            # Keep every pathway schema violation under the ValueError contract.
+            raise ValueError(  # noqa: TRY004
+                f"pathway field {key!r} must be an array in {path}"
+            )
 
     return document
 
@@ -272,15 +282,19 @@ def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) ->
     graph_cases = sum(case.source.suffix.lower() != ".mol" for case in cases)
     print(f"Manifest: {manifest}")
     print(
-        f"Regression cases: {len(cases)} ({len(cases) - graph_cases} mol, {graph_cases} graph)"
+        f"Regression cases: {len(cases)} "
+        f"({len(cases) - graph_cases} mol, {graph_cases} graph)"
     )
     print(f"Molecule fixtures: {len(mol_fixtures)}")
     print(f"Fixture-only molecules: {len(fixture_only)}")
     print(
-        f"Shared-content case groups: {len(shared_content)} (consistent expectations)"
+        "Shared-content case groups:",
+        len(shared_content),
+        "(consistent expectations)",
     )
     print(
-        f"Pathway golden cases: {sum(case.expected_pathway is not None for case in cases)}"
+        "Pathway golden cases: "
+        f"{sum(case.expected_pathway is not None for case in cases)}"
     )
 
     if verbose and fixture_only:
@@ -1030,13 +1044,15 @@ def run_cli_checks(executable: Path) -> int:
             require_cli(
                 output_match is not None
                 and int(output_match.group(1)) == expected_index,
-                f"disjoint-compensation scenario {name!r} returned the wrong final index",
+                f"disjoint-compensation scenario {name!r} returned the wrong "
+                "final index",
                 completed,
             )
             last_intermediate = read_last_intermediate_index(intermediate_path)
             require_cli(
                 last_intermediate == expected_index,
-                f"disjoint-compensation scenario {name!r} returned the wrong intermediate index",
+                f"disjoint-compensation scenario {name!r} returned the wrong "
+                "intermediate index",
                 completed,
             )
             require_cli(
@@ -1151,7 +1167,8 @@ def run_cli_checks(executable: Path) -> int:
                     == expected_later_activations
                     and phases["assembly_search"]["activations"]
                     == expected_later_activations,
-                    f"deep enum boundary {enum_limit} reported incorrect phase activity",
+                    f"deep enum boundary {enum_limit} reported incorrect phase "
+                    "activity",
                     completed,
                 )
             scenarios += 1
@@ -1279,7 +1296,8 @@ def run_cli_checks(executable: Path) -> int:
                     counters["matching_visits"] < 5000
                     and residual["first_occurrence_bypasses"] > 0
                     and residual["runtime_disabled_bypasses"] == 0,
-                    f"the {edge_count}-edge case did not reduce equivalent matchings before adaptive fallback",
+                    f"the {edge_count}-edge case did not reduce equivalent "
+                    "matchings before adaptive fallback",
                     completed,
                 )
             else:
@@ -1506,7 +1524,8 @@ def run_cli_checks(executable: Path) -> int:
             should_exist = expected_on_linux and sys.platform.startswith("linux")
             require_cli(
                 memory_path.exists() == should_exist,
-                f"memory scenario {memory_option or 'default'} created an unexpected report",
+                f"memory scenario {memory_option or 'default'} created an "
+                "unexpected report",
                 completed,
             )
             if should_exist:
@@ -1530,13 +1549,21 @@ def compiler_command(compiler: str) -> list[str]:
     return compiler_command
 
 
-def run_mask_unit_tests(compiler: str) -> None:
+def run_cpp_unit_test(
+    compiler: str,
+    source_stem: str,
+    label: str,
+    *,
+    stack_limit_bytes: int | None = None,
+) -> None:
+    """Build and run one standalone C++ unit-test executable."""
     command_prefix = compiler_command(compiler)
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-mask-tests-") as directory:
-        test_executable = Path(directory) / "activeWordMaskTester"
+    prefix = f"assemblycpp-{label.replace(' ', '-')}-tests-"
+    with tempfile.TemporaryDirectory(prefix=prefix) as directory:
+        test_executable = Path(directory) / source_stem
         command = [
             *command_prefix,
-            str(TEST_DIRECTORY / "activeWordMaskTester.cpp"),
+            str(TEST_DIRECTORY / f"{source_stem}.cpp"),
             "-std=c++20",
             "-O2",
             "-mpopcnt",
@@ -1544,89 +1571,48 @@ def run_mask_unit_tests(compiler: str) -> None:
             "-o",
             str(test_executable),
         ]
-        print(f"Building mask tests: {shlex.join(command)}", flush=True)
+        print(f"Building {label} tests: {shlex.join(command)}", flush=True)
         completed = subprocess.run(command, check=False)
         if completed.returncode != 0:
             raise TestConfigurationError(
-                f"mask test build failed with exit code {completed.returncode}"
-            )
-
-        completed = subprocess.run([str(test_executable)], check=False)
-        if completed.returncode != 0:
-            raise TestConfigurationError(
-                f"mask tests failed with exit code {completed.returncode}"
-            )
-        print("Mask tests: passed", flush=True)
-
-
-def run_tree_canon_unit_tests(compiler: str) -> None:
-    command_prefix = compiler_command(compiler)
-    with tempfile.TemporaryDirectory(
-        prefix="assemblycpp-tree-canon-tests-"
-    ) as directory:
-        test_executable = Path(directory) / "treeCanonTester"
-        command = [
-            *command_prefix,
-            str(TEST_DIRECTORY / "treeCanonTester.cpp"),
-            "-std=c++20",
-            "-O2",
-            "-mpopcnt",
-            "-march=x86-64-v3",
-            "-o",
-            str(test_executable),
-        ]
-        print(f"Building tree canon tests: {shlex.join(command)}", flush=True)
-        completed = subprocess.run(command, check=False)
-        if completed.returncode != 0:
-            raise TestConfigurationError(
-                f"tree canon test build failed with exit code {completed.returncode}"
+                f"{label} test build failed with exit code {completed.returncode}"
             )
 
         run_options: dict[str, object] = {}
-        if sys.platform.startswith("linux"):
-            import resource
+        if stack_limit_bytes is not None and sys.platform.startswith("linux"):
+            # resource is unavailable on Windows, so keep this import platform-local.
+            import resource  # noqa: PLC0415
 
             def limit_stack() -> None:
-                stack_limit = 64 * 1024
-                resource.setrlimit(resource.RLIMIT_STACK, (stack_limit, stack_limit))
+                resource.setrlimit(
+                    resource.RLIMIT_STACK,
+                    (stack_limit_bytes, stack_limit_bytes),
+                )
 
             run_options["preexec_fn"] = limit_stack
         completed = subprocess.run([str(test_executable)], check=False, **run_options)
         if completed.returncode != 0:
             raise TestConfigurationError(
-                f"tree canon tests failed with exit code {completed.returncode}"
+                f"{label} tests failed with exit code {completed.returncode}"
             )
-        print("Tree canon tests: passed", flush=True)
+        print(f"{label.capitalize()} tests: passed", flush=True)
+
+
+def run_mask_unit_tests(compiler: str) -> None:
+    run_cpp_unit_test(compiler, "activeWordMaskTester", "mask")
+
+
+def run_tree_canon_unit_tests(compiler: str) -> None:
+    run_cpp_unit_test(
+        compiler,
+        "treeCanonTester",
+        "tree canon",
+        stack_limit_bytes=64 * 1024,
+    )
 
 
 def run_cyclic_canon_unit_tests(compiler: str) -> None:
-    command_prefix = compiler_command(compiler)
-    with tempfile.TemporaryDirectory(
-        prefix="assemblycpp-cyclic-canon-tests-"
-    ) as directory:
-        test_executable = Path(directory) / "cyclicCanonTester"
-        command = [
-            *command_prefix,
-            str(TEST_DIRECTORY / "cyclicCanonTester.cpp"),
-            "-std=c++20",
-            "-O2",
-            "-mpopcnt",
-            "-march=x86-64-v3",
-        ]
-        command.extend(["-o", str(test_executable)])
-        print(f"Building cyclic canon tests: {shlex.join(command)}", flush=True)
-        completed = subprocess.run(command, check=False)
-        if completed.returncode != 0:
-            raise TestConfigurationError(
-                f"cyclic canon test build failed with exit code {completed.returncode}"
-            )
-
-        completed = subprocess.run([str(test_executable)], check=False)
-        if completed.returncode != 0:
-            raise TestConfigurationError(
-                f"cyclic canon tests failed with exit code {completed.returncode}"
-            )
-        print("Cyclic canon tests: passed", flush=True)
+    run_cpp_unit_test(compiler, "cyclicCanonTester", "cyclic canon")
 
 
 def build_executable(executable: Path, compiler: str) -> Path:
@@ -1738,11 +1724,14 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
             if not output_path.is_file():
                 diagnostics = format_process_diagnostics(completed)
                 suffix = f"; {diagnostics}" if diagnostics else ""
+                missing_output_error = (
+                    f"expected output file was not created: {output_path}{suffix}"
+                )
                 return TestResult(
                     case=case,
                     actual=None,
                     duration_seconds=duration,
-                    error=f"expected output file was not created: {output_path}{suffix}",
+                    error=missing_output_error,
                 )
 
             output = output_path.read_text()

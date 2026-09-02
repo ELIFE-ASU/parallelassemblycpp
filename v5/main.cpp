@@ -449,12 +449,12 @@ uint64_t parallelGraphFingerprint(const molGraph &graph)
         result *= UINT64_C(1099511628211);
     };
     mix(static_cast<uint64_t>(graph.totalBonds));
-    mix(static_cast<uint64_t>(graph.atoms.size()));
+    mix(graph.atoms.size());
     for (const atom &entry : graph.atoms)
     {
-        mix(static_cast<uint64_t>(entry.atomType.size()));
+        mix(entry.atomType.size());
         for (const unsigned char value : entry.atomType) mix(value);
-        mix(static_cast<uint64_t>(entry.bonds.size()));
+        mix(entry.bonds.size());
         for (const bond &edge : entry.bonds)
         {
             mix(static_cast<uint16_t>(edge.neighbourAtomIndex));

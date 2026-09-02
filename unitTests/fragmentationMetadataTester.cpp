@@ -48,7 +48,7 @@ void require(bool condition)
 }
 
 #undef assert
-#define assert(condition) require(static_cast<bool>(condition))
+#define assert(condition) require(!!(condition))
 
 EdgeMask makeMask(initializer_list<size_t> edges)
 {

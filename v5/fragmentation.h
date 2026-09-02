@@ -1,3 +1,5 @@
+#pragma once
+
 /**
  * @brief Splits an assembly state without canonicalising the resulting masks
  *

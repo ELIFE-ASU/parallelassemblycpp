@@ -14,9 +14,7 @@ select = [
   "C4",
   "DJ",
   "DTZ",
-  "E4",
-  "E7",
-  "E9",
+  "E",
   "ERA",
   "EXE",
   "F",
@@ -32,6 +30,10 @@ select = [
   "N",
   "PERF",
   "PIE",
+  "PLC",
+  "PLE",
+  "PLR0124",
+  "PLR0133",
   "PLW",
   "PGH",
   "PTH",
@@ -44,8 +46,11 @@ select = [
   "SLF",
   "SLOT",
   "T10",
+  "TC",
   "TID",
+  "TRY004",
   "UP",
+  "W",
   "YTT",
 ]
 
@@ -57,7 +62,7 @@ known-first-party = ["benchmarks"]
 "benchmarks/benchmark.py" = ["S603"]
 "unitTests/parallelSolverTester.py" = ["S603"]
 "unitTests/unitTester.py" = ["S603"]
-"output/benchmarks/*/run_benchmark.py" = ["S603", "S607"]
+"output/benchmarks/*/run_benchmark.py" = ["E501", "S603", "S607"]
 "tools/check_repository.py" = ["S603"]
 # Assertions are appropriate inside the unittest regression suites.
 "benchmarks/test_*.py" = ["S101"]
