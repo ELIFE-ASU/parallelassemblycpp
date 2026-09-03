@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 BINARY_SUFFIXES = frozenset({".pdf"})
-TRAILING_WHITESPACE_EXEMPT_SUFFIXES = frozenset({".mol", ".tsv"})
+TRAILING_WHITESPACE_EXEMPT_SUFFIXES = frozenset({".mol", ".sdf", ".tsv"})
 IGNORED_DIRECTORIES = frozenset(
     {
         ".agents",
@@ -84,7 +84,7 @@ def text_policy_issues(path: Path) -> list[str]:
     if raw_content and not raw_content.endswith(b"\n"):
         issues.append(f"{relative_path}: is missing its final newline")
 
-    if path.suffix not in TRAILING_WHITESPACE_EXEMPT_SUFFIXES:
+    if path.name[-4:].lower() not in TRAILING_WHITESPACE_EXEMPT_SUFFIXES:
         for line_number, line in enumerate(content.splitlines(), start=1):
             if line.endswith((" ", "\t")):
                 issues.append(f"{relative_path}:{line_number}: trailing whitespace")

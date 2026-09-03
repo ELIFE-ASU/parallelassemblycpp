@@ -19,8 +19,11 @@ Usage:
   AssemblyCpp --help
 
 Input:
-  A V2000 molfile (.mol suffix optional) or an AssemblyCpp native graph file.
-  Molfile output names omit the .mol suffix.
+  A V2000 MOL/SDF file or an AssemblyCpp native graph file.
+  Existing .mol and .sdf suffixes are matched case-insensitively.
+  A missing suffix tries the lowercase .mol spelling.
+  An SDF input reads its first V2000 structure.
+  Molfile output names omit a recognised suffix.
 
 Options:
   -h, --help

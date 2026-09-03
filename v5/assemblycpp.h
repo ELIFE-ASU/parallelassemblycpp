@@ -49,7 +49,7 @@ ASSEMBLYCPP_PUBLIC CalculationResult calculateMolfile(
     const CalculationOptions& options = {}
 );
 
-/** Read a molfile or native graph and calculate without creating output files. */
+/** Read a native graph or first V2000 MOL/SDF structure without output files. */
 ASSEMBLYCPP_PUBLIC CalculationResult calculate(
     const std::string& input,
     const CalculationOptions& options = {}

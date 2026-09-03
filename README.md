@@ -42,7 +42,7 @@ bonds are edges. Its assembly index is the smallest number of joining steps
 needed to build that graph when a fragment that has already been made can be
 reused.
 
-The program parses a V2000 molfile or native graph file, removes explicit
+The program parses a V2000 MOL/SDF or native graph file, removes explicit
 hydrogens by default, and enumerates connected fragments of the molecular
 graph. It canonicalises those fragments so that structurally equivalent copies
 can be recognised even when they use different atom or bond indices. A compact
@@ -150,10 +150,12 @@ AssemblyCpp INPUT [OPTIONS]
 AssemblyCpp --help
 ```
 
-`INPUT` may be a V2000 molfile or an AssemblyCpp native graph file. The `.mol`
-suffix is optional; native graph filenames must be supplied in full. Options
-may appear before or after the input and use `--name=value` syntax. Boolean
-values are `0` or `1`.
+`INPUT` may be a V2000 MOL/SDF file or an AssemblyCpp native graph file. The
+`.mol` and `.sdf` suffixes select MOL parsing case-insensitively; the `.mol`
+suffix may be omitted when the file uses the lowercase `.mol` spelling. An
+`.sdf` input reads its first V2000 structure. Native graph filenames must be
+supplied in full. Options may appear before or after the input and use
+`--name=value` syntax. Boolean values are `0` or `1`.
 
 ### Options
 
@@ -191,7 +193,7 @@ reconstruction of a winning pathway.
 
 ### Outputs
 
-For a molfile, `INPUT` below excludes the `.mol` suffix.
+For a MOL/SDF file, `INPUT` below excludes its recognised suffix.
 
 | File | Contents |
 | --- | --- |

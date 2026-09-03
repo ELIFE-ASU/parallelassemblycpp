@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -129,9 +130,25 @@ bool writeIntermediateAssemblyIndexFile(const string &filename)
     return true;
 }
 
+constexpr size_t molfileExtensionLength = 4;
+
 bool hasMolfileExtension(const string &filename)
 {
-    return filename.ends_with(".mol");
+    if (filename.size() < molfileExtensionLength) return false;
+
+    string extension = filename.substr(
+        filename.size() - molfileExtensionLength
+    );
+    transform(
+        extension.begin(),
+        extension.end(),
+        extension.begin(),
+        [](unsigned char character)
+        {
+            return static_cast<char>(std::tolower(character));
+        }
+    );
+    return extension == ".mol" || extension == ".sdf";
 }
 
 /** Load one supported input without creating any output files. */
@@ -1943,8 +1960,9 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
 /**
  * @brief Read a molfile or native graph and calculate its assembly index.
  *
- * Molfile paths may include or omit the .mol extension. Native graph paths are
- * used exactly as provided.
+ * Existing molfile paths may use a case-insensitive .mol or .sdf extension.
+ * An omitted extension probes the lowercase .mol spelling. Native graph paths
+ * are used exactly as provided. An SDF input reads its first V2000 structure.
  *
  * @param input Input path supplied on the command line.
  * @return true if the input was read and the calculation output was written.
@@ -1958,7 +1976,9 @@ bool assemblyCalculator(const string &input)
 #endif
     const bool explicitMolfile = hasMolfileExtension(input);
     const string outputBase =
-        explicitMolfile ? input.substr(0, input.size() - 4) : input;
+        explicitMolfile
+            ? input.substr(0, input.size() - molfileExtensionLength)
+            : input;
     molGraph molecule;
     string inputError;
 #if defined(ASSEMBLYCPP_USE_MPI)

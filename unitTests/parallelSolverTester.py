@@ -25,6 +25,7 @@ REPOSITORY_ROOT = TEST_DIRECTORY.parent
 DEFAULT_MANIFEST = REPOSITORY_ROOT / "benchmarks" / "cases.tsv"
 SKIP_RETURN_CODE = 77
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
+MOLFILE_SUFFIXES = (".mol", ".sdf")
 DEFAULT_BRANCH_LEASE_SIZE = 4
 ROOT_ENUMERATION_PHASES = ("initial_enumeration", "dag_conversion")
 ADAPTIVE_SPLITTING_POLICY = {
@@ -248,8 +249,20 @@ def executable_status(paths: Sequence[tuple[str, Path | None]]) -> int | None:
     return None
 
 
+def has_molfile_suffix(path: Path) -> bool:
+    return path.name[-4:].lower() in MOLFILE_SUFFIXES
+
+
+def solver_input_name(source: Path) -> str:
+    if not has_molfile_suffix(source):
+        return "input"
+    return f"input{source.name[-4:]}"
+
+
 def output_stem(input_path: Path) -> str:
-    return input_path.name.removesuffix(".mol")
+    if not has_molfile_suffix(input_path):
+        return input_path.name
+    return input_path.name[:-4]
 
 
 def format_completed(completed: subprocess.CompletedProcess[str]) -> str:
@@ -342,7 +355,7 @@ def run_solver(
 
     with tempfile.TemporaryDirectory(prefix="assemblycpp-parallel-") as temporary:
         working_directory = Path(temporary)
-        input_name = "input.mol" if case.source.suffix == ".mol" else "input"
+        input_name = solver_input_name(case.source)
         input_path = working_directory / input_name
         shutil.copy2(case.source, input_path)
         solver_arguments = [str(executable), input_name, "--pathway=0"]
@@ -1491,7 +1504,7 @@ def run_invalid_lease_configuration_suite(
             prefix="assemblycpp-invalid-lease-"
         ) as temporary:
             working_directory = Path(temporary)
-            input_name = "input.mol" if case.source.suffix == ".mol" else "input"
+            input_name = solver_input_name(case.source)
             shutil.copy2(case.source, working_directory / input_name)
             try:
                 completed = run_command(

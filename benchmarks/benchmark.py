@@ -46,6 +46,7 @@ CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
 ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MOLFILE_SUFFIXES = (".mol", ".sdf")
 SEARCH_TELEMETRY_PHASES = frozenset(
     (
         "input_setup",
@@ -291,6 +292,14 @@ def execution_configs_alias(
     return candidate.launcher == baseline.launcher and dict(
         candidate.environment
     ) == dict(baseline.environment)
+
+
+def strip_molfile_suffix(filename: str) -> str:
+    """Match the executable's case-insensitive MOL/SDF output basename."""
+    suffix_length = 4
+    if filename[-suffix_length:].lower() not in MOLFILE_SUFFIXES:
+        return filename
+    return filename[:-suffix_length]
 
 
 def ensure_distinct_executables(
@@ -652,8 +661,9 @@ def prepare_cases(
         working_directory.mkdir()
         input_path = working_directory / case.source.name
         shutil.copy2(case.source, input_path)
-        output_name = f"{input_path.name.removesuffix('.mol')}Out"
-        telemetry_name = f"{input_path.name.removesuffix('.mol')}Telemetry.json"
+        output_base = strip_molfile_suffix(input_path.name)
+        output_name = f"{output_base}Out"
+        telemetry_name = f"{output_base}Telemetry.json"
         prepared.append(
             PreparedCase(
                 case=case,
@@ -2476,7 +2486,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         "--input",
         type=Path,
         help=(
-            "single molfile or native graph file "
+            "single MOL/SDF or native graph file "
             f"(default: {DEFAULT_INPUT.relative_to(REPOSITORY_ROOT)})"
         ),
     )
@@ -2596,7 +2606,7 @@ def resolve_requested_cases(
         expectation = "unchecked"
     return None, [
         BenchmarkCase(
-            name=source.name.removesuffix(".mol"),
+            name=strip_molfile_suffix(source.name),
             source=source,
             expected_assembly_index=expected,
             expectation=expectation,

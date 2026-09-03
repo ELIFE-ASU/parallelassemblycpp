@@ -34,6 +34,7 @@ MANIFEST_HEADER = ("molecule", "expected_assembly_index")
 PATHWAY_MANIFEST_HEADER = ("molecule", "expected_pathway")
 PATHWAY_KEYS = {"file_graph", "remnant", "duplicates", "removed_edges"}
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
+MOLFILE_SUFFIXES = (".mol", ".sdf")
 
 
 class TestConfigurationError(RuntimeError):
@@ -104,6 +105,15 @@ def resolve_fixture(name: str, fixture_directory: Path) -> Path:
     raise TestConfigurationError(
         f"fixture {name!r} was not found as {candidate} or {mol_candidate}"
     )
+
+
+def has_molfile_suffix(path: Path) -> bool:
+    return path.name[-4:].lower() in MOLFILE_SUFFIXES
+
+
+def molecule_output_path(path: Path, output_suffix: str) -> Path:
+    input_name = path.name[:-4] if has_molfile_suffix(path) else path.name
+    return path.parent / f"{input_name}{output_suffix}"
 
 
 def load_manifest(path: Path) -> tuple[Path, list[TestCase]]:
@@ -255,10 +265,12 @@ def load_pathway_manifest(path: Path, cases: Sequence[TestCase]) -> list[TestCas
 
 def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) -> None:
     fixture_directory = manifest.parent
-    mol_fixtures = {path.resolve() for path in fixture_directory.glob("*.mol")}
-    referenced_mol = {
-        case.source for case in cases if case.source.suffix.lower() == ".mol"
+    mol_fixtures = {
+        path.resolve()
+        for path in fixture_directory.iterdir()
+        if path.is_file() and has_molfile_suffix(path)
     }
+    referenced_mol = {case.source for case in cases if has_molfile_suffix(case.source)}
     fixture_only = sorted(mol_fixtures - referenced_mol)
 
     cases_by_hash: dict[str, list[TestCase]] = defaultdict(list)
@@ -279,11 +291,11 @@ def audit_test_data(manifest: Path, cases: Sequence[TestCase], verbose: bool) ->
             f"byte-identical fixtures have conflicting expectations: {details}"
         )
 
-    graph_cases = sum(case.source.suffix.lower() != ".mol" for case in cases)
+    graph_cases = sum(not has_molfile_suffix(case.source) for case in cases)
     print(f"Manifest: {manifest}")
     print(
         f"Regression cases: {len(cases)} "
-        f"({len(cases) - graph_cases} mol, {graph_cases} graph)"
+        f"({len(cases) - graph_cases} MOL/SDF, {graph_cases} graph)"
     )
     print(f"Molecule fixtures: {len(mol_fixtures)}")
     print(f"Fixture-only molecules: {len(fixture_only)}")
@@ -652,6 +664,93 @@ def run_cli_checks(executable: Path) -> int:
         require_cli(
             "Graph:" not in completed.stdout and "  Atom " not in completed.stdout,
             "quiet mode should suppress the parsed graph dump",
+            completed,
+        )
+        scenarios += 1
+
+        extension_directory = working_directory / "molfile-extension-coverage"
+        extension_directory.mkdir()
+        for case_index, extension in enumerate(
+            (".MOL", ".mOl", ".sdf", ".SDF", ".sDf"),
+            start=1,
+        ):
+            case_directory = extension_directory / f"case-{case_index}"
+            case_directory.mkdir()
+            input_name = f"input{extension}"
+            extension_input_path = case_directory / input_name
+            if extension.lower() == ".sdf":
+                extension_input_path.write_text(
+                    source.read_text()
+                    + "$$$$\n"
+                    + (TEST_DIRECTORY / "alanine.mol").read_text()
+                    + "$$$$\n"
+                )
+            else:
+                shutil.copy2(source, extension_input_path)
+            completed = run_cli_command(
+                executable,
+                [
+                    input_name,
+                    "--pathway=0",
+                    "--parallel=off",
+                    "--verbose=1",
+                    "--remove-hydrogens=0",
+                ],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"a {extension} input should run successfully",
+                completed,
+            )
+            require_cli(
+                f"Input: {input_name}\n" in completed.stdout
+                and "Molfile: 4 atoms, 3 bonds" in completed.stdout,
+                f"a {extension} input should use MOL parsing",
+                completed,
+            )
+            require_cli(
+                (case_directory / "inputOut").is_file(),
+                f"a {extension} input should omit its suffix from output names",
+                completed,
+            )
+            require_cli(
+                read_first_line_assembly_index(case_directory / "inputOut") == 2,
+                f"a {extension} input should use its first V2000 structure",
+                completed,
+            )
+            require_cli(
+                not (case_directory / f"{input_name}Out").exists(),
+                f"a {extension} input should not retain its suffix in output names",
+                completed,
+            )
+            scenarios += 1
+
+        native_suffix_directory = extension_directory / "native-final-suffix"
+        native_suffix_directory.mkdir()
+        native_suffix_name = "input.sdf.txt"
+        shutil.copy2(
+            TEST_DIRECTORY / "graphio_test",
+            native_suffix_directory / native_suffix_name,
+        )
+        completed = run_cli_command(
+            executable,
+            [native_suffix_name, "--pathway=0", "--verbose=1"],
+            native_suffix_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "a native graph with non-final .sdf text should run successfully",
+            completed,
+        )
+        require_cli(
+            "Molfile:" not in completed.stdout and "Graph:" in completed.stdout,
+            "only a final MOL/SDF suffix should select MOL parsing",
+            completed,
+        )
+        require_cli(
+            (native_suffix_directory / f"{native_suffix_name}Out").is_file(),
+            "a native graph should retain its full filename in output names",
             completed,
         )
         scenarios += 1
@@ -1757,7 +1856,7 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
             shutil.copy2(case.source, copied_input)
             input_argument = (
                 copied_input.with_suffix("")
-                if copied_input.suffix.lower() == ".mol"
+                if copied_input.name.endswith(".mol")
                 else copied_input
             )
 
@@ -1774,7 +1873,7 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
                 check=False,
             )
             duration = time.perf_counter() - started
-            output_path = Path(f"{input_argument}Out")
+            output_path = molecule_output_path(copied_input, "Out")
 
             if completed.returncode != 0:
                 return TestResult(
@@ -1810,7 +1909,8 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
             pathway_failure = None
             if case.expected_pathway is not None:
                 pathway_failure = compare_pathway_output(
-                    Path(f"{input_argument}Pathway"), case.expected_pathway
+                    molecule_output_path(copied_input, "Pathway"),
+                    case.expected_pathway,
                 )
 
             return TestResult(

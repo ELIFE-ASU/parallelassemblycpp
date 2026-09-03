@@ -59,7 +59,13 @@ class BenchmarkTests(unittest.TestCase):
                 import sys
 
                 input_name = sys.argv[-1]
-                output_name = input_name.removesuffix(".mol") + "Out"
+                suffix = input_name[-4:].lower()
+                output_base = (
+                    input_name[:-4]
+                    if suffix in {{".mol", ".sdf"}}
+                    else input_name
+                )
+                output_name = output_base + "Out"
                 pathlib.Path(output_name).write_text(
                     f"{{input_name}} has assembly index: {assembly_index}\\n"
                     "time elapsed: {clock_ticks}\\n",
@@ -148,9 +154,7 @@ class BenchmarkTests(unittest.TestCase):
                             }},
                         }},
                     }}
-                    telemetry_name = (
-                        input_name.removesuffix(".mol") + "Telemetry.json"
-                    )
+                    telemetry_name = output_base + "Telemetry.json"
                     pathlib.Path(telemetry_name).write_text(
                         json.dumps(telemetry), encoding="utf-8"
                     )
@@ -608,6 +612,21 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(benchmark.rotate_cases(cases, 0), ["a", "b", "c"])
         self.assertEqual(benchmark.rotate_cases(cases, 1), ["b", "c", "a"])
         self.assertEqual(benchmark.rotate_cases(cases, 4), ["b", "c", "a"])
+
+    def test_molfile_output_suffixes_are_case_insensitive(self) -> None:
+        expectations = {
+            "input.mol": "input",
+            "input.MOL": "input",
+            "input.mOl": "input",
+            "input.sdf": "input",
+            "input.SDF": "input",
+            "input.SdF": "input",
+            "input.sdf.txt": "input.sdf.txt",
+            "native": "native",
+        }
+        for filename, expected in expectations.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(benchmark.strip_molfile_suffix(filename), expected)
 
     def test_paired_schedule_rotates_cases_and_balances_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -1132,7 +1151,7 @@ class BenchmarkTests(unittest.TestCase):
         for case in cases:
             if case.expectation != "reviewed":
                 continue
-            fixture_name = case.source.name.removesuffix(".mol")
+            fixture_name = benchmark.strip_molfile_suffix(case.source.name)
             self.assertIn(fixture_name, expected)
             self.assertEqual(
                 case.expected_assembly_index,
