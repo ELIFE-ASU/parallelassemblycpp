@@ -656,6 +656,68 @@ def run_cli_checks(executable: Path) -> int:
         )
         scenarios += 1
 
+        format_parity_directory = working_directory / "input-format-parity"
+        mol_directory = format_parity_directory / "mol"
+        native_directory = format_parity_directory / "native"
+        mol_directory.mkdir(parents=True)
+        native_directory.mkdir(parents=True)
+        shutil.copy2(TEST_DIRECTORY / "alanine.mol", mol_directory / "input.mol")
+        (native_directory / "input").write_text(
+            "alanine native graph\n6\n1 2 2 3 3 4 3 5 2 6\nN C C O O C\n1 1 2 1 1\n"
+        )
+
+        equivalent_results: list[tuple[int | None, dict[str, object]]] = []
+        for format_name, input_name, case_directory in (
+            ("MOL", "input.mol", mol_directory),
+            ("native graph", "input", native_directory),
+        ):
+            completed = run_cli_command(
+                executable,
+                [
+                    input_name,
+                    "--pathway=1",
+                    "--parallel=off",
+                    "--remove-hydrogens=0",
+                    "--memory-report=0",
+                    "--write-intermediate-mas=0",
+                ],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"the equivalent {format_name} input should run successfully",
+                completed,
+            )
+            pathway_path = case_directory / "inputPathway"
+            require_cli(
+                pathway_path.is_file(),
+                f"the equivalent {format_name} input omitted its pathway",
+                completed,
+            )
+            assembly_index = read_first_line_assembly_index(case_directory / "inputOut")
+            require_cli(
+                assembly_index is not None,
+                f"the equivalent {format_name} input omitted its assembly index",
+                completed,
+            )
+            equivalent_results.append(
+                (
+                    assembly_index,
+                    parse_pathway_document(pathway_path),
+                )
+            )
+
+        require_cli(
+            equivalent_results[0][0] == equivalent_results[1][0],
+            "equivalent MOL and native graph inputs should produce the same "
+            "assembly index",
+        )
+        require_cli(
+            equivalent_results[0][1] == equivalent_results[1][1],
+            "equivalent MOL and native graph inputs should produce the same pathway",
+        )
+        scenarios += 1
+
         precedence_directory = working_directory / "native-input-precedence"
         precedence_directory.mkdir()
         shutil.copy2(
