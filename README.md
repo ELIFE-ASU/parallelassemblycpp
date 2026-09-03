@@ -1,7 +1,8 @@
 # AssemblyCpp v5
 
 AssemblyCpp computes molecular assembly indices and recovers assembly pathways.
-It provides a command-line tool and a reusable C++20 library.
+It provides a command-line tool, a reusable C++20 library, and optional parallel
+search using OpenMP, MPI, or both together.
 
 This repository implements the algorithm described by Ian Seet, Keith Y.
 Patarroyo, Gage Siebert, Sara I. Walker, and Leroy Cronin in [*Rapid Exploration
@@ -55,6 +56,53 @@ output contains the lowest assembly index found and, unless disabled, a JSON
 description of a corresponding assembly pathway. If a runtime or enumeration
 limit is reached, the reported index is the best result found so far and may
 not be the proven minimum.
+
+</details>
+
+<details>
+<summary><strong>Compared with the original AssemblyCpp v5</strong></summary>
+
+This repository and the
+[original AssemblyCpp v5](https://github.com/croningp/assemblycpp-v5) implement
+the same molecular-assembly calculation. Both parse a labelled molecular graph,
+enumerate connected fragments, identify structurally equivalent copies, search
+possible fragment reuses with branch-and-bound, and recover a pathway for the
+lowest assembly index found. This is therefore a re-engineering of the v5
+implementation, not a different definition of the assembly index.
+
+The comparison below is against the original repository's `main` branch at
+[commit `f9209034`](https://github.com/croningp/assemblycpp-v5/commit/f9209034b0851d03282322bb6be697beaf030dda):
+
+- **Graph representation and matching.** The original uses fixed 512-bit edge
+  masks and Boost's VF2 implementation for cyclic graph isomorphism. This
+  version uses compact, dynamically sized edge masks and in-project tree and
+  cyclic canonicalisation, removing the vendored Boost dependency and the
+  fixed 512-edge mask limit.
+- **Search implementation.** This version adds compact DAG storage,
+  frontier-driven enumeration, reusable canonical fragment identities,
+  residual and transposition caches, tighter bounds, and allocation reuse.
+  These changes reduce repeated graph and search work without changing the
+  quantity being calculated.
+- **Parallel execution.** The original solver is serial. Serial search remains
+  the default here, while optional OpenMP, MPI, and hybrid builds can distribute
+  independent search branches between workers and then deterministically
+  reconstruct a winning pathway. This can reduce runtime for larger graphs,
+  where the search exposes enough work to outweigh parallel coordination
+  overhead; small graphs may see little or no speed-up.
+- **Interfaces.** The original provides a C++17 `assembly` command with
+  file-based results. This project provides a C++20 `AssemblyCpp` command plus
+  an installable `AssemblyCpp::Library` with stream, file, and batch APIs that
+  return results directly. Its command-line handling also validates options
+  and reports interrupted or limited searches explicitly.
+- **Project tooling.** This version expands the build and verification support
+  with CMake presets, package installation and export, CI, focused and full
+  regression suites, pathway and parallel-parity tests, telemetry, maintained
+  benchmarks, and optional LTO and PGO builds.
+
+When allowed to finish, both implementations target the same minimum assembly
+index. A recovered pathway can differ when more than one optimal pathway
+exists, and a runtime or enumeration limit can make this version return a
+best-so-far result instead of a proven minimum.
 
 </details>
 
