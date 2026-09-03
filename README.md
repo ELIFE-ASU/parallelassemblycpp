@@ -34,6 +34,31 @@ This runs AssemblyCpp directly from the build directory; installation is
 optional.
 
 <details>
+<summary><strong>What the code does</strong></summary>
+
+AssemblyCpp treats a molecule as a labelled graph: atoms are vertices and
+bonds are edges. Its assembly index is the smallest number of joining steps
+needed to build that graph when a fragment that has already been made can be
+reused.
+
+The program parses a V2000 molfile or native graph file, removes explicit
+hydrogens by default, and enumerates connected fragments of the molecular
+graph. It canonicalises those fragments so that structurally equivalent copies
+can be recognised even when they use different atom or bond indices. A compact
+directed acyclic graph (DAG) records the fragment relationships for reuse in
+later search passes.
+
+A branch-and-bound search then explores ways to reuse matching, disjoint
+fragments. Lower bounds and a cache of previously visited canonical assembly
+states eliminate branches that cannot improve the best result. The final
+output contains the lowest assembly index found and, unless disabled, a JSON
+description of a corresponding assembly pathway. If a runtime or enumeration
+limit is reached, the reported index is the best result found so far and may
+not be the proven minimum.
+
+</details>
+
+<details>
 <summary><strong>Installation</strong></summary>
 
 Install AssemblyCpp when you want a standalone command, reusable library, and
