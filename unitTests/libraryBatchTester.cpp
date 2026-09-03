@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -45,9 +46,10 @@ bool require(bool condition, const char *message)
 
 int main(int argc, char **argv)
 {
-    if (argc != 4)
+    if (argc != 5)
     {
-        std::cerr << "expected icosane, sucrose, and butane input paths\n";
+        std::cerr <<
+            "expected icosane, sucrose, butane, and native graph input paths\n";
         return 2;
     }
 
@@ -68,6 +70,39 @@ int main(int argc, char **argv)
     if (
         !require(streamed.succeeded, "stream calculation failed") ||
         !require(streamed.assemblyIndex == 6, "stream calculation index mismatch")
+    ) return 1;
+
+    std::ifstream graphStream(argv[4]);
+    const assemblycpp::CalculationResult streamedGraph =
+        assemblycpp::calculateGraph(graphStream);
+    const assemblycpp::CalculationResult graphFile =
+        assemblycpp::calculate(argv[4]);
+    if (
+        !require(streamedGraph.succeeded, "graph stream calculation failed") ||
+        !require(streamedGraph.input == "<stream>", "graph stream input mismatch") ||
+        !require(
+            streamedGraph.assemblyIndex == 5,
+            "graph stream calculation index mismatch"
+        ) ||
+        !require(graphFile.succeeded, "graph file calculation failed") ||
+        !require(
+            streamedGraph.assemblyIndex == graphFile.assemblyIndex,
+            "graph stream and file indices differ"
+        )
+    ) return 1;
+
+    std::istringstream invalidGraph(
+        "invalid graph\n2\n1 3\nC C\n1\n"
+    );
+    const assemblycpp::CalculationResult rejectedGraph =
+        assemblycpp::calculateGraph(invalidGraph);
+    if (
+        !require(!rejectedGraph.succeeded, "invalid graph stream succeeded") ||
+        !require(
+            rejectedGraph.error.find("outside the declared graph size") !=
+                std::string::npos,
+            "invalid graph stream omitted its parse error"
+        )
     ) return 1;
 
     TemporaryDirectory temporaryDirectory;

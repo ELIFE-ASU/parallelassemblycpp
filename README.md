@@ -241,10 +241,11 @@ int main()
 }
 ```
 
-`calculateMolfile` accepts a V2000 molfile stream. `calculateBatch` processes
-several inputs sequentially without process startup between items. Library
-calls do not create output files. Search state is process-global, so the API is
-reusable but not thread-safe; use separate processes for concurrent work.
+`calculateMolfile` accepts a V2000 molfile stream, while `calculateGraph`
+accepts an AssemblyCpp native graph stream. `calculateBatch` processes several
+inputs sequentially without process startup between items. Library calls do not
+create output files. Search state is process-global, so the API is reusable but
+not thread-safe; use separate processes for concurrent work.
 
 </details>
 

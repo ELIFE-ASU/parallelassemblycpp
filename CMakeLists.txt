@@ -832,6 +832,7 @@ if(BUILD_TESTING)
     "${PROJECT_SOURCE_DIR}/unitTests/icosane.mol"
     "${PROJECT_SOURCE_DIR}/unitTests/sucrose.mol"
     "${PROJECT_SOURCE_DIR}/unitTests/butane.mol"
+    "${PROJECT_SOURCE_DIR}/unitTests/graphio_test"
   )
   target_link_libraries(
     assemblycpp_library_batch_tests

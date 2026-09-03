@@ -49,6 +49,12 @@ ASSEMBLYCPP_PUBLIC CalculationResult calculateMolfile(
     const CalculationOptions& options = {}
 );
 
+/** Calculate directly from a native graph stream without creating files. */
+ASSEMBLYCPP_PUBLIC CalculationResult calculateGraph(
+    std::istream& graph,
+    const CalculationOptions& options = {}
+);
+
 /** Read a native graph or first V2000 MOL/SDF structure without output files. */
 ASSEMBLYCPP_PUBLIC CalculationResult calculate(
     const std::string& input,

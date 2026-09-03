@@ -2199,6 +2199,29 @@ assemblycpp::CalculationResult assemblycpp::calculateMolfile(
     }
 }
 
+assemblycpp::CalculationResult assemblycpp::calculateGraph(
+    std::istream &graphStream,
+    const CalculationOptions &options
+)
+{
+    CalculationResult result;
+    result.input = "<stream>";
+    if (!validLibraryOptions(options, result.error)) return result;
+
+    LibraryOptionScope optionScope(options);
+    try
+    {
+        molGraph graph;
+        graphio(graphStream, graph);
+        return calculateLoadedMolecule(graph, result.input);
+    }
+    catch (const std::exception &exception)
+    {
+        result.error = exception.what();
+        return result;
+    }
+}
+
 assemblycpp::CalculationResult assemblycpp::calculate(
     const std::string &input,
     const CalculationOptions &options
