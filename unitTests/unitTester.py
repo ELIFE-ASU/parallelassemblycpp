@@ -1314,11 +1314,7 @@ def run_cli_checks(executable: Path) -> int:
             scenarios += 1
 
         native_hydrogen_graph = (
-            "native-hydrogens\n"
-            "6\n"
-            "1 3 2 3 3 4 4 5 4 6\n"
-            "H H C C H H\n"
-            "1 1 1 1 1\n"
+            "native-hydrogens\n6\n1 3 2 3 3 4 4 5 4 6\nH H C C H H\n1 1 1 1 1\n"
         )
         native_hydrogen_cases = (
             ("native-hydrogens-default", [], ["C", "C"], 1),
