@@ -19,11 +19,13 @@ Usage:
   AssemblyCpp --help
 
 Input:
-  A V2000 MOL/SDF file or an AssemblyCpp native graph file.
+  By default, a V2000 MOL/SDF file or an AssemblyCpp native graph file.
   Existing .mol and .sdf suffixes are matched case-insensitively.
   A missing suffix tries the lowercase .mol spelling.
   An SDF input reads its first V2000 structure.
   Molfile output names omit a recognised suffix.
+  With --run-strings=1, INPUT is read exactly as a text file containing one
+  string per line.
 
 Options:
   -h, --help
@@ -57,10 +59,13 @@ Notes:
   --enum-max includes one-edge masks.
   A limited search records its best index and status in INPUTOut; the index may
   not be minimal.
+  String assembly is serial. --accept-palindromes affects string mode only and
+  identifies a fragment with its reversal.
 
 Outputs:
   INPUTOut              Assembly index, status, and std::clock ticks.
-  INPUTPathway          Recovered pathway JSON (--pathway=1).
+  INPUTPathway          Graph pathway JSON (--pathway=1).
+  INPUT_N_Pathway       String pathway JSON for zero-based line N.
   INPUTIntermediateMAs  Improved indices and ticks when enabled.
 )" ASSEMBLY_TELEMETRY_OUTPUT_HELP R"(  ./memUsage            Linux VmPeak report (--memory-report=1).
 
@@ -86,6 +91,7 @@ Legacy options:
 Examples:
   AssemblyCpp molecule.mol
   AssemblyCpp molecule --pathway=0 --enum-max=1000000
+  AssemblyCpp strings.txt --run-strings=1
 )";
 }
 

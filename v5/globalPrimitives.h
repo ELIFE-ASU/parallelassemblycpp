@@ -162,6 +162,8 @@ bool verbose = false;
 bool disjointCompensation = false;
 bool memoryReportEnabled = false;
 bool writeIntermediateAssemblyIndices = false;
+bool stringAssemblyMode = false;
+bool acceptReversedStrings = false;
 
 /** User policy for selecting the parallel search implementation. */
 enum class parallelMode

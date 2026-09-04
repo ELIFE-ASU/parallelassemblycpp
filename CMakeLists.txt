@@ -826,6 +826,11 @@ if(BUILD_TESTING)
     unitTests/pathwayGeneratorTester.cpp
   )
   assemblycpp_add_unit_test(
+    string-assembly
+    assemblycpp_string_assembly_tests
+    unitTests/stringAssemblyTester.cpp
+  )
+  assemblycpp_add_unit_test(
     library-batch
     assemblycpp_library_batch_tests
     unitTests/libraryBatchTester.cpp

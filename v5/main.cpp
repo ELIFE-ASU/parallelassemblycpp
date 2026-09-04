@@ -35,6 +35,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include "stringAssembly.h"
 #if defined(ASSEMBLYCPP_USE_OPENMP)
     #include <omp.h>
 #endif
@@ -417,12 +418,14 @@ string parallelCompatibilityFallbackReason(int localThreads)
 #if defined(ASSEMBLYCPP_USE_MPI)
 bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
 {
-    constexpr size_t optionCount = 12;
+    constexpr size_t optionCount = 14;
     const array<unsigned long long, optionCount> local = {
         arguments.showHelp ? 1ULL : 0ULL,
         static_cast<unsigned long long>(maximumEnumerationCount),
         maximumRuntimeTicks,
         pathwayOutputEnabled ? 1ULL : 0ULL,
+        stringAssemblyMode ? 1ULL : 0ULL,
+        acceptReversedStrings ? 1ULL : 0ULL,
         static_cast<unsigned long long>(parallelExecutionMode),
         static_cast<unsigned long long>(parallelThreadCount),
         removeHydrogens ? 1ULL : 0ULL,
@@ -1958,6 +1961,141 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
 }
 
 /**
+ * @brief Calculate every line in a string input file.
+ *
+ * @param input Exact input path supplied on the command line.
+ * @return true if every string and requested pathway was written.
+ */
+bool stringAssemblyCalculator(const string &input)
+{
+    searchCancellationFlag.store(false);
+    int succeeded = 1;
+
+    if (parallelExecutionMode == parallelMode::on)
+    {
+        if (isPrimaryProcess())
+            cerr << "error: --parallel=on cannot be honored for string "
+                    "assembly\n";
+        succeeded = 0;
+    }
+    if (writeIntermediateAssemblyIndices)
+    {
+        if (isPrimaryProcess())
+            cerr << "error: --write-intermediate-mas is unavailable for "
+                    "string assembly\n";
+        succeeded = 0;
+    }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled)
+    {
+        if (isPrimaryProcess())
+            cerr << "error: --telemetry is unavailable for string assembly\n";
+        succeeded = 0;
+    }
+#endif
+
+    if (isPrimaryProcess() && succeeded != 0)
+    {
+        ifstream inputFile(input);
+        if (!inputFile.is_open())
+        {
+            cerr << "error: could not open input file '" << input << "'\n";
+            succeeded = 0;
+        }
+        else
+        {
+            const string outputName = input + "Out";
+            ofstream outputFile(outputName);
+            if (!outputFile.is_open())
+            {
+                cerr << "error: could not open output file '" << outputName
+                     << "'\n";
+                succeeded = 0;
+            }
+            else
+            {
+                string value;
+                size_t lineIndex = 0;
+                while (getline(inputFile, value))
+                {
+                    if (!value.empty() && value.back() == '\r') value.pop_back();
+
+                    try
+                    {
+                        const assemblycpp::detail::stringAssembly::Options options{
+                            acceptReversedStrings,
+                            maximumRuntimeTicks,
+                            interruptionRequested
+                        };
+                        const assemblycpp::detail::stringAssembly::Result result =
+                            assemblycpp::detail::stringAssembly::calculate(
+                                value,
+                                options
+                            );
+                        outputFile << value << " has assembly index: "
+                                   << result.assemblyIndex << '\n';
+                        if (result.runtimeLimitReached)
+                            outputFile << "status: runtime limit reached\n";
+                        if (result.interrupted)
+                            outputFile << "status: interrupted by user\n";
+                        outputFile << "time elapsed: " << result.clockTicks << '\n';
+
+                        if (pathwayOutputEnabled)
+                        {
+                            const string pathwayName = input + "_" +
+                                to_string(lineIndex) + "_Pathway";
+                            string pathwayError;
+                            if (
+                                !assemblycpp::detail::stringAssembly::writePathway(
+                                    pathwayName,
+                                    value,
+                                    result,
+                                    pathwayError
+                                )
+                            )
+                            {
+                                cerr << "error: " << pathwayError << '\n';
+                                succeeded = 0;
+                                break;
+                            }
+                        }
+                        lineIndex++;
+                        if (result.interrupted) break;
+                    }
+                    catch (const std::exception &exception)
+                    {
+                        cerr << "error: string calculation failed on line "
+                             << lineIndex + 1 << " of '" << input << "': "
+                             << exception.what() << '\n';
+                        succeeded = 0;
+                        break;
+                    }
+                }
+
+                if (inputFile.bad())
+                {
+                    cerr << "error: could not read input file '" << input
+                         << "'\n";
+                    succeeded = 0;
+                }
+                outputFile.close();
+                if (!outputFile)
+                {
+                    cerr << "error: could not write output file '" << outputName
+                         << "'\n";
+                    succeeded = 0;
+                }
+            }
+        }
+    }
+
+#if defined(ASSEMBLYCPP_USE_MPI)
+    MPI_Bcast(&succeeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+    return succeeded != 0;
+}
+
+/**
  * @brief Read a molfile or native graph and calculate its assembly index.
  *
  * Existing molfile paths may use a case-insensitive .mol or .sdf extension.
@@ -2423,7 +2561,9 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    bool succeeded = assemblyCalculator(arguments.input);
+    bool succeeded = stringAssemblyMode
+        ? stringAssemblyCalculator(arguments.input)
+        : assemblyCalculator(arguments.input);
 
     // All search and pathway output is complete; ignore new interrupts while
     // final process-level reports and stream buffers are finished.

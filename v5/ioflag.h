@@ -12,6 +12,8 @@ enum class InputFlag
     runtime,
     enumMax,
     pathway,
+    runStrings,
+    acceptPalindromes,
     parallel,
     threads,
     removeHydrogensFlag,
@@ -67,8 +69,24 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "pathway",
             "0|1",
             "1",
-            "Write recovered pathway JSON to INPUTPathway.",
+            "Write recovered pathway JSON.",
             {}
+        },
+        {
+            InputFlag::runStrings,
+            "run-strings",
+            "0|1",
+            "0",
+            "Treat INPUT as a file containing one string per line.",
+            {"runStrings"}
+        },
+        {
+            InputFlag::acceptPalindromes,
+            "accept-palindromes",
+            "0|1",
+            "0",
+            "Treat a string fragment and its reversal as equivalent.",
+            {"acceptPalindromes", "palindrome"}
         },
         {
             InputFlag::parallel,
@@ -252,6 +270,14 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 
         case InputFlag::pathway:
             pathwayOutputEnabled = parseBooleanFlag(definition, value);
+            break;
+
+        case InputFlag::runStrings:
+            stringAssemblyMode = parseBooleanFlag(definition, value);
+            break;
+
+        case InputFlag::acceptPalindromes:
+            acceptReversedStrings = parseBooleanFlag(definition, value);
             break;
 
         case InputFlag::parallel:

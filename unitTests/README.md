@@ -40,9 +40,11 @@ python unitTests/unitTester.py --build --pathways-only --verbose
 
 The harness always runs command-line checks before the selected regression
 cases. These cover validation, legacy names, limits, inputs, outputs, and Linux
-memory reporting. `--build` also compiles and runs the focused C++ tests, using
-an x86-64-v3 executable with telemetry as a test shortcut. Use a CMake portable
-build on older x86-64 or non-x86 systems.
+memory reporting. They also run the five-case upstream string corpus and
+validate per-line pathway JSON. The focused `stringAssemblyTester` adds edge,
+reversal, cancellation, and JSON-escaping coverage. `--build` also compiles and
+runs the focused C++ tests, using an x86-64-v3 executable with telemetry as a
+test shortcut. Use a CMake portable build on older x86-64 or non-x86 systems.
 
 Audit manifests and fixture coverage without running calculations:
 

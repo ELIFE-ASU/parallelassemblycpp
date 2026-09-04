@@ -2,7 +2,8 @@
 
 AssemblyCpp computes molecular assembly indices and recovers assembly pathways.
 It provides a command-line tool, a reusable C++20 library, and optional parallel
-search using OpenMP, MPI, or both together.
+search using OpenMP, MPI, or both together. The command-line tool also computes
+string assembly indices for files containing one string per line.
 
 This repository implements the algorithm described by Ian Seet, Keith Y.
 Patarroyo, Gage Siebert, Sara I. Walker, and Leroy Cronin in [*Rapid Exploration
@@ -150,7 +151,8 @@ AssemblyCpp INPUT [OPTIONS]
 AssemblyCpp --help
 ```
 
-`INPUT` may be a V2000 MOL/SDF file or an AssemblyCpp native graph file. The
+By default, `INPUT` may be a V2000 MOL/SDF file or an AssemblyCpp native graph
+file. With `--run-strings=1`, it is an exact text-file path instead. The
 `.mol` and `.sdf` suffixes select MOL parsing case-insensitively; the `.mol`
 suffix may be omitted when the file uses the lowercase `.mol` spelling. An
 `.sdf` input reads its first V2000 structure. Native graph filenames must be
@@ -165,6 +167,8 @@ supplied in full. Options may appear before or after the input and use
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
+| `--run-strings=<0\|1>` | `0` | Treat `INPUT` as a file containing one string per line. |
+| `--accept-palindromes=<0\|1>` | `0` | Identify a string fragment with its reversal. |
 | `--parallel=<auto\|on\|off>` | `off` | Select parallel search automatically, require it, or disable it. |
 | `--threads=<auto\|N>` | `auto` | Set the OpenMP thread count per process; `N` must be positive. |
 | `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from molfiles. |
@@ -202,6 +206,30 @@ For a MOL/SDF file, `INPUT` below excludes its recognised suffix.
 | `INPUTIntermediateMAs` | Improved indices when `--write-intermediate-mas=1`. |
 | `INPUTTelemetry.json` | Search counters from a telemetry-enabled executable. |
 | `memUsage` | Linux `VmPeak` value when `--memory-report=1`. |
+
+### String assembly
+
+Pass `--run-strings=1` to select the string algorithm. In this mode `INPUT` is
+opened exactly as supplied and every line is processed as a separate string:
+
+```bash
+./build/release/AssemblyCpp strings.txt --run-strings=1
+```
+
+Results are written to `strings.txtOut`. With pathway output enabled, the
+zero-based line number is included in each pathway name, such as
+`strings.txt_0_Pathway`. `--accept-palindromes=1` treats a fragment and its
+reversal as equivalent. String search is serial; `--parallel=on`, telemetry,
+and intermediate-index output are unavailable in string mode. A finite
+`--runtime` budget applies separately to each line.
+
+The implementation is adapted from the standard-library string search in
+[AssemblyCPP Public](https://gitlab.com/croningroup/public/assemblycpp-public)
+at commit `2a87948`, authored by Stuart Marshall from work by Ian Seet and
+Leroy Cronin. It ports the interval enumeration, Lempel-Ziv lower bound, and
+recursive branch-and-bound search without importing the upstream Boost/VF2
+graph implementation or vendored dependencies. The legacy spellings
+`-runStrings`, `-acceptPalindromes`, and `-palindrome` remain accepted.
 
 </details>
 

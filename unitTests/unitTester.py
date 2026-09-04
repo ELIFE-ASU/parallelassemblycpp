@@ -431,6 +431,8 @@ def run_cli_checks(executable: Path) -> int:
         "--runtime=<TICKS>",
         "--enum-max=<COUNT>",
         "--pathway=<0|1>",
+        "--run-strings=<0|1>",
+        "--accept-palindromes=<0|1>",
         "--parallel=<auto|on|off>",
         (
             "Select parallel search automatically, require it, or disable it. "
@@ -516,6 +518,10 @@ def run_cli_checks(executable: Path) -> int:
             "--runTime=1000000000",
             "-runTime=1000000000",
             "-enumMax=1000000",
+            "-runStrings=0",
+            "--runStrings=0",
+            "-acceptPalindromes=0",
+            "-palindrome=0",
             "-removeHydrogens=0",
             "-compensateDisjoint=0",
             "-disjointCompensation=0",
@@ -558,6 +564,8 @@ def run_cli_checks(executable: Path) -> int:
             (["input", "--pathway"], "requires a value"),
             (["input", "--pathway="], "expected 0 or 1"),
             (["input", "--pathway=2"], "expected 0 or 1"),
+            (["input", "--run-strings=2"], "expected 0 or 1"),
+            (["input", "--accept-palindromes=yes"], "expected 0 or 1"),
             (["input", "--parallel"], "requires a value"),
             (["input", "--parallel="], "expected auto, on, or off"),
             (["input", "--parallel=ON"], "expected auto, on, or off"),
@@ -579,6 +587,10 @@ def run_cli_checks(executable: Path) -> int:
             (["input", f"--runtime={'9' * 100}"], "non-negative integer"),
             (
                 ["input", "--pathway=0", "--pathway=1"],
+                "may be specified only once",
+            ),
+            (
+                ["input", "--run-strings=0", "-runStrings=1"],
                 "may be specified only once",
             ),
             (
@@ -608,6 +620,147 @@ def run_cli_checks(executable: Path) -> int:
                 completed,
             )
             scenarios += 1
+
+        string_directory = working_directory / "string-assembly"
+        string_directory.mkdir()
+        string_input = string_directory / "strings.txt"
+        string_cases = tuple(
+            symbol_count * "0" + symbol_count * "1" + symbol_count * "2"
+            for symbol_count in (5, 10, 15, 20, 25)
+        )
+        string_input.write_text("\n".join(string_cases) + "\n")
+        completed = run_cli_command(
+            executable,
+            [
+                string_input.name,
+                "--run-strings=1",
+                "--accept-palindromes=0",
+                "--pathway=1",
+            ],
+            string_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "string assembly should process a line-oriented input",
+            completed,
+        )
+        string_output = string_directory / "strings.txtOut"
+        require_cli(
+            string_output.is_file(),
+            "string assembly did not create INPUTOut",
+            completed,
+        )
+        string_output_text = string_output.read_text()
+        string_indices = [
+            int(match.group(1))
+            for match in ASSEMBLY_INDEX_PATTERN.finditer(string_output_text)
+        ]
+        require_cli(
+            string_indices == [11, 14, 17, 17, 20],
+            "string assembly disagrees with the upstream reference corpus: "
+            f"{string_indices}",
+            completed,
+        )
+        require_cli(
+            string_output_text.count("time elapsed:") == len(string_cases),
+            "string assembly should record timing for every input line",
+            completed,
+        )
+        for line_index, value in enumerate(string_cases):
+            pathway_path = string_directory / f"strings.txt_{line_index}_Pathway"
+            require_cli(
+                pathway_path.is_file(),
+                f"string line {line_index} did not create its pathway",
+                completed,
+            )
+            pathway = json.loads(pathway_path.read_text())
+            require_cli(
+                pathway["file_graph"][0]["Fragments"] == [value]
+                and isinstance(pathway["duplicates"], list),
+                f"string line {line_index} pathway has the wrong structure",
+                completed,
+            )
+        scenarios += 1
+
+        no_pathway_directory = working_directory / "string-no-pathway"
+        no_pathway_directory.mkdir()
+        no_pathway_input = no_pathway_directory / "input"
+        no_pathway_input.write_text("abab\n")
+        completed = run_cli_command(
+            executable,
+            ["input", "-runStrings=1", "--pathway=0"],
+            no_pathway_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "the legacy string flag should run successfully",
+            completed,
+        )
+        require_cli(
+            read_first_line_assembly_index(no_pathway_directory / "inputOut") == 2,
+            "legacy string mode calculated the wrong index for 'abab'",
+            completed,
+        )
+        require_cli(
+            not (no_pathway_directory / "input_0_Pathway").exists(),
+            "--pathway=0 should suppress string pathway output",
+            completed,
+        )
+        scenarios += 1
+
+        reversal_directory = working_directory / "string-reversal"
+        reversal_directory.mkdir()
+        (reversal_directory / "input").write_text("abcxcba\n")
+        reversal_indices: list[int | None] = []
+        for reversal_option in ("--accept-palindromes=0", "-acceptPalindromes=1"):
+            completed = run_cli_command(
+                executable,
+                [
+                    "input",
+                    "--run-strings=1",
+                    reversal_option,
+                    "--pathway=0",
+                ],
+                reversal_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"string reversal option {reversal_option!r} should succeed",
+                completed,
+            )
+            reversal_indices.append(
+                read_first_line_assembly_index(reversal_directory / "inputOut")
+            )
+        require_cli(
+            reversal_indices == [6, 4],
+            "--accept-palindromes did not enable reversal equivalence: "
+            f"{reversal_indices}",
+        )
+        scenarios += 1
+
+        unique_string_directory = working_directory / "string-unique-pathway"
+        unique_string_directory.mkdir()
+        (unique_string_directory / "input").write_text("abcdef\n")
+        completed = run_cli_command(
+            executable,
+            ["input", "--run-strings=1", "--pathway=1"],
+            unique_string_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "a unique string should still produce a valid pathway document",
+            completed,
+        )
+        unique_pathway = json.loads(
+            (unique_string_directory / "input_0_Pathway").read_text()
+        )
+        require_cli(
+            unique_pathway["remnant"][0] == {"Fragments": ["abcdef"], "Positions": [0]}
+            and unique_pathway["duplicates"] == [],
+            "a no-copy pathway should preserve the whole string as its remnant",
+            completed,
+        )
+        scenarios += 1
 
         source = TEST_DIRECTORY / "butane.mol"
         input_path = working_directory / "input.mol"
