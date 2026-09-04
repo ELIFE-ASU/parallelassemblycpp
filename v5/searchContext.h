@@ -100,7 +100,7 @@ struct SearchContext
 {
     constexpr std::uint64_t maximum =
         std::numeric_limits<std::uint64_t>::max();
-    auto saturatedSize = [maximum](std::size_t value) noexcept
+    auto saturatedSize = [](std::size_t value) noexcept
     {
         if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t))
         {
