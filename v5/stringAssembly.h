@@ -368,6 +368,7 @@ class Search
 
     bool shouldStop()
     {
+        if (interrupted_ || runtimeLimitReached_) return true;
         if (
             options_.cancellationRequested != nullptr &&
             options_.cancellationRequested()
@@ -845,11 +846,17 @@ public:
         bestAssemblyIndex_ = static_cast<int>(original_.size()) - 1;
 
         AssemblyState root;
-        root.intervals = preprocess();
-        std::vector<int> rootKey(root.intervals.size(), -1);
-        states_.emplace(std::move(rootKey), 0);
-
-        if (!root.intervals.empty()) recurse(root, true);
+        if (!shouldStop())
+        {
+            root.intervals = preprocess();
+            if (root.intervals.empty()) static_cast<void>(shouldStop());
+            else
+            {
+                std::vector<int> rootKey(root.intervals.size(), -1);
+                states_.emplace(std::move(rootKey), 0);
+                recurse(root, true);
+            }
+        }
 
         Result result;
         result.assemblyIndex = bestAssemblyIndex_;

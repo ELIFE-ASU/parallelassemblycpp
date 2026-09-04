@@ -682,6 +682,116 @@ def run_cli_checks(executable: Path) -> int:
             )
         scenarios += 1
 
+        line_endings_directory = working_directory / "string-line-endings"
+        line_endings_directory.mkdir()
+        line_endings_input = line_endings_directory / "input"
+        # Keep the bytes explicit: the first two records use CRLF, the second
+        # record is empty, and the final record deliberately has no newline.
+        line_endings_input.write_bytes(b"abab\r\n\r\nabcdef")
+        completed = run_cli_command(
+            executable,
+            ["input", "--run-strings=1", "--pathway=1"],
+            line_endings_directory,
+        )
+        require_cli(
+            completed.returncode == 0,
+            "string assembly should accept blank lines, CRLF, and a final "
+            "line without a newline",
+            completed,
+        )
+        line_endings_output = line_endings_directory / "inputOut"
+        require_cli(
+            line_endings_output.is_file(),
+            "mixed-line-ending string input did not create INPUTOut",
+            completed,
+        )
+        line_endings_output_text = line_endings_output.read_text()
+        line_endings_indices = [
+            int(match.group(1))
+            for match in ASSEMBLY_INDEX_PATTERN.finditer(line_endings_output_text)
+        ]
+        require_cli(
+            line_endings_indices == [2, -1, 5],
+            "mixed-line-ending string records were not preserved: "
+            f"{line_endings_indices}",
+            completed,
+        )
+        require_cli(
+            line_endings_output_text.count("time elapsed:") == 3,
+            "mixed-line-ending string input should produce three timing records",
+            completed,
+        )
+        for line_index, value in enumerate(("abab", "", "abcdef")):
+            pathway_path = line_endings_directory / f"input_{line_index}_Pathway"
+            require_cli(
+                pathway_path.is_file(),
+                f"mixed-line-ending string record {line_index} has no pathway",
+                completed,
+            )
+            pathway = json.loads(pathway_path.read_text())
+            require_cli(
+                pathway["file_graph"][0]["Fragments"] == [value],
+                f"mixed-line-ending pathway {line_index} changed its record",
+                completed,
+            )
+        require_cli(
+            not (line_endings_directory / "input_3_Pathway").exists(),
+            "mixed-line-ending input produced a spurious fourth record",
+            completed,
+        )
+        scenarios += 1
+
+        # These features are intentionally unavailable in string mode. Keep
+        # the cases isolated so an earlier rejection cannot mask another
+        # validation branch.
+        incompatible_string_options = [
+            (
+                "parallel",
+                "--parallel=on",
+                "--parallel=on cannot be honored for string assembly",
+            ),
+            (
+                "intermediate-indices",
+                "--write-intermediate-mas=1",
+                "--write-intermediate-mas is unavailable for string assembly",
+            ),
+        ]
+        if telemetry_supported:
+            incompatible_string_options.append(
+                (
+                    "telemetry",
+                    "--telemetry=1",
+                    "--telemetry is unavailable for string assembly",
+                )
+            )
+        for case_name, option, error_text in incompatible_string_options:
+            incompatible_directory = (
+                working_directory / f"string-incompatible-{case_name}"
+            )
+            incompatible_directory.mkdir()
+            (incompatible_directory / "input").write_text("abab\n")
+            completed = run_cli_command(
+                executable,
+                ["input", "--run-strings=1", option],
+                incompatible_directory,
+            )
+            require_cli(
+                completed.returncode == 1,
+                f"string mode should reject {option}",
+                completed,
+            )
+            require_cli(
+                error_text in completed.stderr,
+                f"string-mode rejection for {option} should explain the conflict",
+                completed,
+            )
+            require_cli(
+                not (incompatible_directory / "inputOut").exists(),
+                f"string-mode rejection for {option} should not create output",
+                completed,
+            )
+            scenarios += 1
+
         no_pathway_directory = working_directory / "string-no-pathway"
         no_pathway_directory.mkdir()
         no_pathway_input = no_pathway_directory / "input"
@@ -1929,6 +2039,10 @@ def run_cyclic_canon_unit_tests(compiler: str) -> None:
     run_cpp_unit_test(compiler, "cyclicCanonTester", "cyclic canon")
 
 
+def run_string_assembly_unit_tests(compiler: str) -> None:
+    run_cpp_unit_test(compiler, "stringAssemblyTester", "string assembly")
+
+
 def build_executable(executable: Path, compiler: str) -> Path:
     executable = executable.resolve()
     executable.parent.mkdir(parents=True, exist_ok=True)
@@ -1936,6 +2050,7 @@ def build_executable(executable: Path, compiler: str) -> Path:
     run_mask_unit_tests(compiler)
     run_tree_canon_unit_tests(compiler)
     run_cyclic_canon_unit_tests(compiler)
+    run_string_assembly_unit_tests(compiler)
     command_prefix = compiler_command(compiler)
 
     command = [

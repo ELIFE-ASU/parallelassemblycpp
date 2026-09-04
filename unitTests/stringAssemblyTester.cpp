@@ -7,6 +7,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../v5/stringAssembly.h"
@@ -17,6 +19,9 @@ using assemblycpp::detail::stringAssembly::PathwayStep;
 using assemblycpp::detail::stringAssembly::Result;
 using assemblycpp::detail::stringAssembly::calculate;
 using assemblycpp::detail::stringAssembly::writePathway;
+
+namespace implementation =
+    assemblycpp::detail::stringAssembly::implementation;
 
 namespace
 {
@@ -43,6 +48,265 @@ std::string numberedBlocks(size_t blockLength)
         repeated('1', blockLength) +
         repeated('2', blockLength);
 }
+
+std::string intervalListText(const std::vector<Interval> &intervals)
+{
+    std::ostringstream output;
+    output << '[';
+    for (size_t index = 0; index < intervals.size(); index++)
+    {
+        if (index > 0) output << ", ";
+        output << '{' << intervals[index].offset << ','
+               << intervals[index].length << '}';
+    }
+    output << ']';
+    return output.str();
+}
+
+std::string withoutJsonFormatting(const std::string &json)
+{
+    std::string result;
+    result.reserve(json.size());
+    bool insideString = false;
+    bool escaped = false;
+    for (const char character : json)
+    {
+        if (
+            !insideString &&
+            (character == ' ' || character == '\t' || character == '\n' ||
+                character == '\r')
+        ) continue;
+
+        result.push_back(character);
+        if (!insideString)
+        {
+            if (character == '"') insideString = true;
+            continue;
+        }
+        if (escaped) escaped = false;
+        else if (character == '\\') escaped = true;
+        else if (character == '"') insideString = false;
+    }
+    return result;
+}
+
+void requireIntervals(
+    const std::vector<Interval> &actual,
+    const std::vector<Interval> &expected,
+    const std::string &description
+)
+{
+    require(
+        actual == expected,
+        description + ": expected " + intervalListText(expected) +
+            ", got " + intervalListText(actual)
+    );
+}
+
+/**
+ * Small, deliberately straightforward reference search. It models a state as
+ * a multiset of fragments and tries every pair of equal, non-overlapping
+ * substrings. This is independent of the production search's enumeration,
+ * hashing, bounds, and pruning, making it useful as an exhaustive oracle for
+ * short inputs.
+ */
+class ReferenceSearch
+{
+    struct Occurrence
+    {
+        size_t fragment = 0;
+        size_t offset = 0;
+        size_t length = 0;
+    };
+
+    bool acceptReversed_ = false;
+    std::unordered_map<std::string, int> memo_;
+
+    [[nodiscard]] std::string canonicalFragment(std::string fragment) const
+    {
+        if (!acceptReversed_) return fragment;
+        std::string reversed(fragment.rbegin(), fragment.rend());
+        return std::min(fragment, reversed);
+    }
+
+    [[nodiscard]] std::string stateKey(
+        const std::vector<std::string> &fragments
+    ) const
+    {
+        std::vector<std::string> canonical;
+        canonical.reserve(fragments.size());
+        for (const std::string &fragment : fragments)
+            canonical.push_back(canonicalFragment(fragment));
+        std::sort(canonical.begin(), canonical.end());
+
+        std::string key;
+        for (const std::string &fragment : canonical)
+        {
+            key += std::to_string(fragment.size());
+            key.push_back(':');
+            key += fragment;
+            key.push_back(';');
+        }
+        return key;
+    }
+
+    [[nodiscard]] bool equivalent(
+        const std::vector<std::string> &fragments,
+        const Occurrence &left,
+        const Occurrence &right
+    ) const
+    {
+        const std::string leftText = fragments[left.fragment].substr(
+            left.offset,
+            left.length
+        );
+        const std::string rightText = fragments[right.fragment].substr(
+            right.offset,
+            right.length
+        );
+        if (leftText == rightText) return true;
+        return acceptReversed_ && std::equal(
+            leftText.begin(),
+            leftText.end(),
+            rightText.rbegin()
+        );
+    }
+
+    static void appendPart(
+        std::vector<std::string> &output,
+        const std::string &fragment,
+        size_t offset,
+        size_t length
+    )
+    {
+        if (length > 1) output.push_back(fragment.substr(offset, length));
+    }
+
+    [[nodiscard]] static std::vector<std::string> fragmentState(
+        const std::vector<std::string> &fragments,
+        const Occurrence &left,
+        const Occurrence &right
+    )
+    {
+        std::vector<std::string> result{
+            fragments[left.fragment].substr(left.offset, left.length)
+        };
+
+        for (size_t index = 0; index < fragments.size(); index++)
+        {
+            const std::string &fragment = fragments[index];
+            if (index != left.fragment && index != right.fragment)
+            {
+                if (fragment.size() > 1) result.push_back(fragment);
+                continue;
+            }
+
+            if (left.fragment == right.fragment)
+            {
+                if (index != left.fragment) continue;
+                const size_t firstOffset = std::min(left.offset, right.offset);
+                const size_t secondOffset = std::max(left.offset, right.offset);
+                appendPart(result, fragment, 0, firstOffset);
+                const size_t betweenOffset = firstOffset + left.length;
+                appendPart(
+                    result,
+                    fragment,
+                    betweenOffset,
+                    secondOffset - betweenOffset
+                );
+                const size_t afterOffset = secondOffset + left.length;
+                appendPart(
+                    result,
+                    fragment,
+                    afterOffset,
+                    fragment.size() - afterOffset
+                );
+                continue;
+            }
+
+            const Occurrence &selected =
+                index == left.fragment ? left : right;
+            appendPart(result, fragment, 0, selected.offset);
+            const size_t afterOffset = selected.offset + selected.length;
+            appendPart(
+                result,
+                fragment,
+                afterOffset,
+                fragment.size() - afterOffset
+            );
+        }
+        return result;
+    }
+
+    [[nodiscard]] int maximumAdditionalSavings(
+        const std::vector<std::string> &fragments
+    )
+    {
+        const std::string key = stateKey(fragments);
+        const auto known = memo_.find(key);
+        if (known != memo_.end()) return known->second;
+
+        size_t maximumLength = 0;
+        for (const std::string &fragment : fragments)
+            maximumLength = std::max(maximumLength, fragment.size());
+
+        int best = 0;
+        std::unordered_set<std::string> triedTransitions;
+        for (size_t length = 2; length <= maximumLength; length++)
+        {
+            std::vector<Occurrence> occurrences;
+            for (size_t fragment = 0; fragment < fragments.size(); fragment++)
+            {
+                const size_t fragmentLength = fragments[fragment].size();
+                if (fragmentLength < length) continue;
+                for (size_t offset = 0; offset <= fragmentLength - length; offset++)
+                    occurrences.push_back({fragment, offset, length});
+            }
+
+            for (size_t first = 0; first < occurrences.size(); first++)
+            {
+                for (size_t second = first + 1; second < occurrences.size(); second++)
+                {
+                    const Occurrence &left = occurrences[first];
+                    const Occurrence &right = occurrences[second];
+                    if (
+                        left.fragment == right.fragment &&
+                        left.offset < right.offset + length &&
+                        right.offset < left.offset + length
+                    ) continue;
+                    if (!equivalent(fragments, left, right)) continue;
+
+                    std::vector<std::string> next = fragmentState(
+                        fragments,
+                        left,
+                        right
+                    );
+                    const std::string transitionKey =
+                        std::to_string(length) + '#' + stateKey(next);
+                    if (!triedTransitions.insert(transitionKey).second) continue;
+                    best = std::max(
+                        best,
+                        static_cast<int>(length) - 1 +
+                            maximumAdditionalSavings(next)
+                    );
+                }
+            }
+        }
+
+        memo_.emplace(key, best);
+        return best;
+    }
+
+public:
+    explicit ReferenceSearch(bool acceptReversed):
+        acceptReversed_(acceptReversed) {}
+
+    [[nodiscard]] int assemblyIndex(const std::string &input)
+    {
+        return static_cast<int>(input.size()) - 1 -
+            maximumAdditionalSavings({input});
+    }
+};
 
 std::string intervalText(const std::string &input, const Interval &interval)
 {
@@ -82,6 +346,7 @@ void requireConsistentPathway(
 )
 {
     int duplicatedSymbols = 0;
+    std::vector<Interval> removed;
     for (size_t index = 0; index < result.pathway.size(); index++)
     {
         const PathwayStep &step = result.pathway[index];
@@ -95,6 +360,17 @@ void requireConsistentPathway(
         );
         require(step.match.length >= 2, prefix + "does not save an operation");
         require(!overlap(step.match, step.duplicate), prefix + "overlaps itself");
+        for (const Interval &previous : removed)
+        {
+            require(
+                !overlap(step.match, previous),
+                prefix + "match reuses an already removed region"
+            );
+            require(
+                !overlap(step.duplicate, previous),
+                prefix + "duplicate reuses an already removed region"
+            );
+        }
 
         const std::string match = intervalText(input, step.match);
         const std::string duplicate = intervalText(input, step.duplicate);
@@ -104,6 +380,7 @@ void requireConsistentPathway(
             prefix + "does not identify equivalent text"
         );
         duplicatedSymbols += step.match.length - 1;
+        removed.push_back(step.duplicate);
     }
 
     require(
@@ -176,6 +453,238 @@ void testTrivialStrings()
     );
 }
 
+void requireMatchesReference(
+    const std::string &input,
+    ReferenceSearch &orientationSensitiveReference,
+    ReferenceSearch &orientationIndependentReference
+)
+{
+    const Result orientationSensitive = calculate(input);
+    const int expectedSensitive =
+        orientationSensitiveReference.assemblyIndex(input);
+    require(
+        orientationSensitive.assemblyIndex == expectedSensitive,
+        "reference disagreement for '" + input + "': expected " +
+            std::to_string(expectedSensitive) + ", got " +
+            std::to_string(orientationSensitive.assemblyIndex)
+    );
+    require(
+        !orientationSensitive.runtimeLimitReached &&
+            !orientationSensitive.interrupted,
+        "unlimited reference case stopped for '" + input + "'"
+    );
+    requireConsistentPathway(input, orientationSensitive);
+
+    Options options;
+    options.acceptReversed = true;
+    const Result orientationIndependent = calculate(input, options);
+    const int expectedIndependent =
+        orientationIndependentReference.assemblyIndex(input);
+    require(
+        orientationIndependent.assemblyIndex == expectedIndependent,
+        "reversal-aware reference disagreement for '" + input +
+            "': expected " + std::to_string(expectedIndependent) + ", got " +
+            std::to_string(orientationIndependent.assemblyIndex)
+    );
+    require(
+        orientationIndependent.assemblyIndex <=
+            orientationSensitive.assemblyIndex,
+        "acceptReversed increased the index for '" + input + "'"
+    );
+    require(
+        !orientationIndependent.runtimeLimitReached &&
+            !orientationIndependent.interrupted,
+        "unlimited reversal-aware case stopped for '" + input + "'"
+    );
+    requireConsistentPathway(input, orientationIndependent, true);
+}
+
+void testExhaustiveShortStrings()
+{
+    ReferenceSearch orientationSensitiveReference(false);
+    ReferenceSearch orientationIndependentReference(true);
+
+    const auto checkAlphabet = [&] (
+        const std::string &alphabet,
+        size_t maximumLength
+    )
+    {
+        size_t combinationCount = 1;
+        for (size_t length = 0; length <= maximumLength; length++)
+        {
+            if (length > 0) combinationCount *= alphabet.size();
+            for (size_t encoded = 0; encoded < combinationCount; encoded++)
+            {
+                size_t remaining = encoded;
+                std::string input(length, alphabet.front());
+                for (char &symbol : input)
+                {
+                    symbol = alphabet[remaining % alphabet.size()];
+                    remaining /= alphabet.size();
+                }
+                requireMatchesReference(
+                    input,
+                    orientationSensitiveReference,
+                    orientationIndependentReference
+                );
+            }
+        }
+    };
+
+    checkAlphabet("ab", 8);
+    checkAlphabet("abc", 6);
+}
+
+void testIntervalUtilities()
+{
+    implementation::FixedIntervalMap intervals(3);
+    require(intervals.empty(), "a new fixed interval map should be empty");
+    intervals.insert(5);
+    require(!intervals.empty(), "an insertion did not populate its interval map");
+    require(
+        !intervals.containsTwoDisjointInsertions(),
+        "one insertion was mistaken for two disjoint insertions"
+    );
+    intervals.insert(11);
+    require(
+        intervals.containsTwoDisjointInsertions(),
+        "two separated insertions were not detected"
+    );
+    requireIntervals(
+        intervals.intervals(),
+        {{5, 3}, {11, 3}},
+        "separated insertion intervals"
+    );
+    intervals.insert(8);
+    intervals.insert(6);
+    requireIntervals(
+        intervals.intervals(),
+        {{5, 9}},
+        "touching and overlapping insertion intervals"
+    );
+
+    implementation::FixedIntervalMap overlapping(3);
+    overlapping.insert(5);
+    overlapping.insert(6);
+    overlapping.insert(7);
+    require(
+        !overlapping.containsTwoDisjointInsertions(),
+        "overlapping insertions were counted by their multiplicity"
+    );
+    overlapping.insert(8);
+    require(
+        overlapping.containsTwoDisjointInsertions(),
+        "a six-symbol union did not contain two length-three insertions"
+    );
+
+    implementation::FixedIntervalMap singletonRuns(1);
+    singletonRuns.insert(7);
+    singletonRuns.insert(3);
+    singletonRuns.insert(2);
+    singletonRuns.insert(4);
+    requireIntervals(
+        singletonRuns.intervals(),
+        {{2, 3}, {7, 1}},
+        "out-of-order singleton insertion runs"
+    );
+    requireIntervals(
+        singletonRuns.intervals(true),
+        {{2, 3}},
+        "singleton run filtering"
+    );
+
+    const auto removed = [] (int offset, int length)
+    {
+        return PathwayStep{{0, length}, {offset, length}};
+    };
+    requireIntervals(
+        implementation::remnantIntervals(10, {}),
+        {{0, 10}},
+        "remnants without removals"
+    );
+    requireIntervals(
+        implementation::remnantIntervals(
+            10,
+            {removed(6, 2), removed(2, 2)}
+        ),
+        {{0, 2}, {4, 2}, {8, 2}},
+        "remnants from unsorted separated removals"
+    );
+    requireIntervals(
+        implementation::remnantIntervals(
+            10,
+            {removed(2, 2), removed(4, 3)}
+        ),
+        {{0, 2}, {7, 3}},
+        "remnants from adjacent removals"
+    );
+    requireIntervals(
+        implementation::remnantIntervals(
+            10,
+            {removed(4, 4), removed(2, 4), removed(3, 2)}
+        ),
+        {{0, 2}, {8, 2}},
+        "remnants from overlapping and nested removals"
+    );
+    requireIntervals(
+        implementation::remnantIntervals(
+            10,
+            {removed(8, 2), removed(0, 2)}
+        ),
+        {{2, 6}},
+        "remnants after prefix and suffix removals"
+    );
+    requireIntervals(
+        implementation::remnantIntervals(10, {removed(0, 10)}),
+        {},
+        "remnants after a full removal"
+    );
+}
+
+void testMultiStepPathways()
+{
+    struct TestCase
+    {
+        std::string input;
+        int expectedIndex;
+    };
+    const std::vector<TestCase> cases{
+        {"ababcdcd", 5},
+        {"abcababc", 4}
+    };
+
+    for (const TestCase &testCase : cases)
+    {
+        const Result result = calculate(testCase.input);
+        require(
+            result.assemblyIndex == testCase.expectedIndex,
+            "multi-step case '" + testCase.input + "' has index " +
+                std::to_string(result.assemblyIndex)
+        );
+        require(
+            result.pathway.size() == 2,
+            "multi-step case '" + testCase.input +
+                "' should contain two pathway steps"
+        );
+        requireConsistentPathway(testCase.input, result);
+        size_t remnantSymbols = 0;
+        for (
+            const Interval &interval : implementation::remnantIntervals(
+                testCase.input.size(),
+                result.pathway
+            )
+        ) remnantSymbols += static_cast<size_t>(interval.length);
+        size_t removedSymbols = 0;
+        for (const PathwayStep &step : result.pathway)
+            removedSymbols += static_cast<size_t>(step.duplicate.length);
+        require(
+            remnantSymbols + removedSymbols == testCase.input.size(),
+            "multi-step case '" + testCase.input +
+                "' lost symbols when generating remnants"
+        );
+    }
+}
+
 void testReverseEquivalence()
 {
     const std::string input = "abcabzzxyyxabcab";
@@ -219,6 +728,15 @@ bool cancelImmediately()
     return true;
 }
 
+int cancellationPolls = 0;
+int cancellationPollLimit = 0;
+
+bool cancelAfterConfiguredPolls()
+{
+    cancellationPolls++;
+    return cancellationPolls == cancellationPollLimit;
+}
+
 void testSearchStops()
 {
     const std::string input = numberedBlocks(25);
@@ -233,6 +751,24 @@ void testSearchStops()
         "zero-runtime result should retain the initial upper bound"
     );
     require(timedOut.pathway.empty(), "zero-runtime search returned a pathway");
+    for (const std::string &noDuplicates : {std::string(), std::string("abcdef")})
+    {
+        const Result stopped = calculate(noDuplicates, runtimeOptions);
+        require(
+            stopped.runtimeLimitReached,
+            "zero runtime was ignored without duplicate substrings"
+        );
+        require(!stopped.interrupted, "zero runtime reported cancellation");
+        require(
+            stopped.assemblyIndex ==
+                static_cast<int>(noDuplicates.size()) - 1,
+            "zero-runtime no-duplicate result changed its initial bound"
+        );
+        require(
+            stopped.pathway.empty(),
+            "zero-runtime no-duplicate result returned a pathway"
+        );
+    }
 
     Options cancellationOptions;
     cancellationOptions.cancellationRequested = &cancelImmediately;
@@ -243,21 +779,126 @@ void testSearchStops()
         cancelled.assemblyIndex == static_cast<int>(input.size()) - 1,
         "immediately cancelled result should retain the initial upper bound"
     );
-    require(cancelled.pathway.empty(), "immediately cancelled search returned a pathway");
+    require(
+        cancelled.pathway.empty(),
+        "immediately cancelled search returned a pathway"
+    );
+    for (const std::string &noDuplicates : {std::string(), std::string("abcdef")})
+    {
+        const Result stopped = calculate(noDuplicates, cancellationOptions);
+        require(
+            stopped.interrupted,
+            "cancellation was ignored without duplicate substrings"
+        );
+        require(
+            !stopped.runtimeLimitReached,
+            "no-duplicate cancellation reported a timeout"
+        );
+        require(
+            stopped.assemblyIndex ==
+                static_cast<int>(noDuplicates.size()) - 1,
+            "cancelled no-duplicate result changed its initial bound"
+        );
+        require(
+            stopped.pathway.empty(),
+            "cancelled no-duplicate result returned a pathway"
+        );
+    }
+
+    Options competingOptions;
+    competingOptions.runtimeTicks = 0;
+    competingOptions.cancellationRequested = &cancelImmediately;
+    const Result cancellationWins = calculate(input, competingOptions);
+    require(
+        cancellationWins.interrupted,
+        "cancellation was not reported when two stop conditions applied"
+    );
+    require(
+        !cancellationWins.runtimeLimitReached,
+        "a lower-priority runtime limit obscured cancellation"
+    );
+
+    cancellationPolls = 0;
+    cancellationPollLimit = 2;
+    Options postPreprocessCancellationOptions;
+    postPreprocessCancellationOptions.cancellationRequested =
+        &cancelAfterConfiguredPolls;
+    const Result stoppedAfterPreprocess = calculate(
+        "abcdef",
+        postPreprocessCancellationOptions
+    );
+    require(
+        cancellationPolls == cancellationPollLimit &&
+            stoppedAfterPreprocess.interrupted,
+        "a no-duplicate input was not polled after preprocessing"
+    );
+    require(
+        stoppedAfterPreprocess.assemblyIndex == 5 &&
+            stoppedAfterPreprocess.pathway.empty(),
+        "post-preprocessing cancellation changed a no-duplicate result"
+    );
+
+    cancellationPolls = 0;
+    cancellationPollLimit = 4;
+    Options delayedCancellationOptions;
+    delayedCancellationOptions.cancellationRequested =
+        &cancelAfterConfiguredPolls;
+    const std::string partialInput = "abcabcabc";
+    const Result partiallySearched = calculate(
+        partialInput,
+        delayedCancellationOptions
+    );
+    require(
+        cancellationPolls == cancellationPollLimit,
+        "delayed cancellation used an unexpected number of polls"
+    );
+    require(partiallySearched.interrupted, "delayed cancellation was ignored");
+    require(
+        !partiallySearched.runtimeLimitReached,
+        "delayed cancellation reported a timeout"
+    );
+    require(
+        partiallySearched.assemblyIndex >= 4 &&
+            partiallySearched.assemblyIndex <
+                static_cast<int>(partialInput.size()),
+        "delayed cancellation returned an invalid best-so-far index"
+    );
+    requireConsistentPathway(partialInput, partiallySearched);
 }
 
 void testJsonAndPathwayOutput()
 {
+    const std::vector<std::string> controlEscapes{
+        "\\u0000", "\\u0001", "\\u0002", "\\u0003",
+        "\\u0004", "\\u0005", "\\u0006", "\\u0007",
+        "\\b", "\\t", "\\n", "\\u000B", "\\f", "\\r",
+        "\\u000E", "\\u000F", "\\u0010", "\\u0011",
+        "\\u0012", "\\u0013", "\\u0014", "\\u0015",
+        "\\u0016", "\\u0017", "\\u0018", "\\u0019",
+        "\\u001A", "\\u001B", "\\u001C", "\\u001D",
+        "\\u001E", "\\u001F"
+    };
+    for (size_t value = 0; value < controlEscapes.size(); value++)
+    {
+        std::ostringstream controlOutput;
+        implementation::writeJsonString(
+            std::string(1, static_cast<char>(value)),
+            controlOutput
+        );
+        require(
+            controlOutput.str() == '"' + controlEscapes[value] + '"',
+            "incorrect JSON escape for control byte " +
+                std::to_string(value) + ": " + controlOutput.str()
+        );
+    }
+
     std::string special = "quote\"\\\b\f\n\r\t";
     special.push_back('\x01');
     special.push_back('\x1f');
     special += " end";
 
     std::ostringstream encoded;
-    assemblycpp::detail::stringAssembly::implementation::writeJsonString(
-        special,
-        encoded
-    );
+    implementation::writeJsonString(special, encoded);
     require(
         encoded.str() ==
             "\"quote\\\"\\\\\\b\\f\\n\\r\\t\\u0001\\u001F end\"",
@@ -273,6 +914,10 @@ void testJsonAndPathwayOutput()
     const std::filesystem::path outputPath =
         std::filesystem::temp_directory_path() /
         ("assemblycpp-string-pathway-" + std::to_string(nonce) + ".json");
+    const std::filesystem::path multiStepOutputPath =
+        std::filesystem::temp_directory_path() /
+        ("assemblycpp-string-pathway-multi-step-" +
+            std::to_string(nonce) + ".json");
 
     struct RemoveFile
     {
@@ -282,7 +927,7 @@ void testJsonAndPathwayOutput()
             std::error_code ignored;
             std::filesystem::remove(path, ignored);
         }
-    } cleanup{outputPath};
+    } cleanup{outputPath}, multiStepCleanup{multiStepOutputPath};
 
     std::string error;
     require(
@@ -297,10 +942,7 @@ void testJsonAndPathwayOutput()
     require(pathwayFile.good() || pathwayFile.eof(), "could not read pathway JSON");
 
     std::ostringstream encodedInput;
-    assemblycpp::detail::stringAssembly::implementation::writeJsonString(
-        input,
-        encodedInput
-    );
+    implementation::writeJsonString(input, encodedInput);
     const std::string json = contents.str();
     require(
         json.find(encodedInput.str()) != std::string::npos,
@@ -310,6 +952,92 @@ void testJsonAndPathwayOutput()
         json.find("\"remnant\"") != std::string::npos &&
             json.find("\"duplicates\"") != std::string::npos,
         "pathway JSON is missing required sections"
+    );
+
+    Result synthetic;
+    synthetic.assemblyIndex = 6;
+    synthetic.pathway = {
+        {{0, 2}, {2, 2}},
+        {{4, 3}, {7, 3}}
+    };
+    requireConsistentPathway("ababXYZXYZ", synthetic);
+    error.clear();
+    require(
+        writePathway(
+            multiStepOutputPath.string(),
+            "ababXYZXYZ",
+            synthetic,
+            error
+        ),
+        "could not write multi-step pathway fixture: " + error
+    );
+    std::ifstream multiStepFile(multiStepOutputPath);
+    require(
+        multiStepFile.is_open(),
+        "multi-step pathway JSON file was not created"
+    );
+    std::ostringstream multiStepContents;
+    multiStepContents << multiStepFile.rdbuf();
+    require(
+        multiStepFile.good() || multiStepFile.eof(),
+        "could not read multi-step pathway JSON"
+    );
+    const std::string compact = withoutJsonFormatting(multiStepContents.str());
+    require(
+        compact.find("\"Fragments\":[\"ababXYZXYZ\"]") !=
+            std::string::npos,
+        "multi-step pathway JSON changed its input fragment"
+    );
+    require(
+        compact.find("\"Fragments\":[\"ab\",\"XYZ\"]") !=
+            std::string::npos &&
+            compact.find("\"Positions\":[0,4]") != std::string::npos,
+        "multi-step pathway JSON changed its remnant fragments"
+    );
+    size_t firstDuplicate = compact.find(
+        "{\"Left\":[0,2],\"Right\":[2,2]}"
+    );
+    if (firstDuplicate == std::string::npos)
+        firstDuplicate = compact.find(
+            "{\"Right\":[2,2],\"Left\":[0,2]}"
+        );
+    size_t secondDuplicate = compact.find(
+        "{\"Left\":[4,3],\"Right\":[7,3]}"
+    );
+    if (secondDuplicate == std::string::npos)
+        secondDuplicate = compact.find(
+            "{\"Right\":[7,3],\"Left\":[4,3]}"
+        );
+    require(
+        firstDuplicate != std::string::npos &&
+            secondDuplicate != std::string::npos &&
+            firstDuplicate < secondDuplicate,
+        "multi-step pathway JSON changed its ordered duplicates"
+    );
+
+    const std::filesystem::path missingDirectory =
+        std::filesystem::temp_directory_path() /
+        ("assemblycpp-string-pathway-missing-" + std::to_string(nonce));
+    require(
+        !std::filesystem::exists(missingDirectory),
+        "temporary missing-directory fixture unexpectedly exists"
+    );
+    const std::filesystem::path unavailablePath =
+        missingDirectory / "pathway.json";
+    std::string openError;
+    require(
+        !writePathway(
+            unavailablePath.string(),
+            "abab",
+            calculate("abab"),
+            openError
+        ),
+        "pathway writing unexpectedly created a missing parent directory"
+    );
+    require(
+        openError ==
+            "could not open output file '" + unavailablePath.string() + "'",
+        "pathway open failure returned the wrong error: " + openError
     );
 }
 
@@ -321,6 +1049,9 @@ int main()
     {
         testUpstreamRegressionCases();
         testTrivialStrings();
+        testExhaustiveShortStrings();
+        testIntervalUtilities();
+        testMultiStepPathways();
         testReverseEquivalence();
         testSearchStops();
         testJsonAndPathwayOutput();
