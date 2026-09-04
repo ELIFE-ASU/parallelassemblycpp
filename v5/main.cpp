@@ -367,7 +367,13 @@ bool configuredLocalParallelThreadCount(int &threadCount, string &reason)
 {
 #if defined(ASSEMBLYCPP_USE_OPENMP)
     omp_set_dynamic(0);
+#if defined(_OPENMP) && _OPENMP >= 200805
     const int threadLimit = max(1, omp_get_thread_limit());
+#else
+    // omp_get_thread_limit was added in OpenMP 3.0. Older runtimes, including
+    // MSVC's OpenMP 2.0 implementation, are limited by the API's int argument.
+    const int threadLimit = numeric_limits<int>::max();
+#endif
     if (parallelThreadCount != 0)
     {
         if (parallelThreadCount > static_cast<size_t>(threadLimit))

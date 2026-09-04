@@ -12,11 +12,14 @@ unsigned long long bitsetLowWordBelow(const Bitset &mask, size_t limit)
     {
         return mask.lowWordBelow(limit);
     }
-    constexpr size_t wordBits = numeric_limits<unsigned long long>::digits;
-    const Bitset lowWordMask(numeric_limits<unsigned long long>::max());
-    unsigned long long word = (mask & lowWordMask).to_ullong();
-    if (limit < wordBits) word &= (1ULL << limit) - 1;
-    return word;
+    else
+    {
+        constexpr size_t wordBits = numeric_limits<unsigned long long>::digits;
+        const Bitset lowWordMask(numeric_limits<unsigned long long>::max());
+        unsigned long long word = (mask & lowWordMask).to_ullong();
+        if (limit < wordBits) word &= (1ULL << limit) - 1;
+        return word;
+    }
 }
 
 /**
@@ -58,9 +61,8 @@ void forEachSetBitWithWideLimit(
                 word &= word - 1;
             }
         }
-        return;
     }
-    if constexpr (requires(const Bitset &bits, size_t index) {
+    else if constexpr (requires(const Bitset &bits, size_t index) {
         bits.findFirst();
         bits.findNext(index);
     })
