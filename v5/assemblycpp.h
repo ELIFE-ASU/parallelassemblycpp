@@ -24,6 +24,7 @@ struct CalculationOptions
 {
     std::uint64_t runtimeTicks = std::numeric_limits<std::uint64_t>::max();
     int enumerationLimit = 50000000;
+    /** Remove explicit H vertices from MOL/SDF and native graph inputs. */
     bool removeHydrogens = true;
     bool compensateDisjoint = false;
     bool verbose = false;

@@ -171,7 +171,7 @@ supplied in full. Options may appear before or after the input and use
 | `--accept-palindromes=<0\|1>` | `0` | Identify a string fragment with its reversal. |
 | `--parallel=<auto\|on\|off>` | `off` | Select parallel search automatically, require it, or disable it. |
 | `--threads=<auto\|N>` | `auto` | Set the OpenMP thread count per process; `N` must be positive. |
-| `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from molfiles. |
+| `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from MOL/SDF and native graph inputs. |
 | `--verbose=<0\|1>` | `0` | Print the parsed input graph. |
 | `--compensate-disjoint=<0\|1>` | `0` | Subtract one per processed component after the first. |
 | `--memory-report=<0\|1>` | `0` | Write Linux peak virtual memory to `memUsage`. |

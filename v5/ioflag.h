@@ -109,7 +109,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "remove-hydrogens",
             "0|1",
             "1",
-            "Remove explicit hydrogens from molfile inputs.",
+            "Remove explicit hydrogens from MOL/SDF and native graph inputs.",
             {"removeHydrogens"}
         },
         {

@@ -91,6 +91,30 @@ int main(int argc, char **argv)
         )
     ) return 1;
 
+    const std::string explicitHydrogenGraph =
+        "explicit hydrogens\n"
+        "6\n"
+        "1 3 2 3 3 4 4 5 4 6\n"
+        "H H C C H H\n"
+        "1 1 1 1 1\n";
+    std::istringstream filteredGraphStream(explicitHydrogenGraph);
+    const assemblycpp::CalculationResult filteredGraph =
+        assemblycpp::calculateGraph(filteredGraphStream);
+    assemblycpp::CalculationOptions retainedHydrogenOptions;
+    retainedHydrogenOptions.removeHydrogens = false;
+    std::istringstream retainedGraphStream(explicitHydrogenGraph);
+    const assemblycpp::CalculationResult retainedGraph =
+        assemblycpp::calculateGraph(
+            retainedGraphStream,
+            retainedHydrogenOptions
+        );
+    if (
+        !require(filteredGraph.succeeded, "filtered graph calculation failed") ||
+        !require(filteredGraph.assemblyIndex == 0, "filtered graph index mismatch") ||
+        !require(retainedGraph.succeeded, "retained graph calculation failed") ||
+        !require(retainedGraph.assemblyIndex == 3, "retained graph index mismatch")
+    ) return 1;
+
     std::istringstream invalidGraph(
         "invalid graph\n2\n1 3\nC C\n1\n"
     );

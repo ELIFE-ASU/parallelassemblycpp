@@ -166,14 +166,7 @@ void molfileParser(std::istream &molfile, molGraph &molecule)
             );
         parsed.addBond(atomA - 1, atomB - 1, bondOrder);
     }
-    if (removeHydrogens)
-    {
-        for (size_t atomIndex = 0; atomIndex < parsed.atoms.size(); atomIndex++)
-        {
-            if (parsed.atomType(atomIndex) == "H") parsed.removeAtom(atomIndex);
-        }
-        parsed.removeAndCollapse();
-    }
+    if (removeHydrogens) parsed.removeExplicitHydrogens();
     if (verbose) parsed.printToCout();
     molecule = std::move(parsed);
 }

@@ -120,6 +120,7 @@ namespace
 
 int main()
 {
+    removeHydrogens = true;
     verbose = false;
 
     molGraph graph = parse(validGraph);
@@ -134,6 +135,39 @@ int main()
     assert(graph.atoms[0].bonds[0].neighbourAtomIndex == 1);
     assert(graph.atoms[1].bonds[0].bondType == 1);
     assert(graph.atoms[1].bonds[1].bondType == 2);
+
+    const string explicitHydrogenGraph =
+        "explicit hydrogens\n"
+        "4\n"
+        "1 3 2 3 3 4\n"
+        "H H C C\n"
+        "1 1 1\n";
+    const molGraph hydrogensRemoved = parse(explicitHydrogenGraph);
+    assert(hydrogensRemoved.atoms.size() == 2);
+    assert(hydrogensRemoved.totalBonds == 1);
+    assert(hydrogensRemoved.atoms[0].atomType == "C");
+    assert(hydrogensRemoved.atoms[1].atomType == "C");
+    assert(hydrogensRemoved.atoms[0].bonds[0].neighbourAtomIndex == 1);
+
+    removeHydrogens = false;
+    const molGraph hydrogensRetained = parse(explicitHydrogenGraph);
+    assert(hydrogensRetained.atoms.size() == 4);
+    assert(hydrogensRetained.totalBonds == 3);
+    assert(hydrogensRetained.atoms[0].atomType == "H");
+    assert(hydrogensRetained.atoms[1].atomType == "H");
+
+    removeHydrogens = true;
+    const molGraph unrestrictedLabels = parse(
+        "unrestricted labels\n"
+        "2\n"
+        "1 2\n"
+        "COLLAPSE He\n"
+        "1\n"
+    );
+    assert(unrestrictedLabels.atoms.size() == 2);
+    assert(unrestrictedLabels.totalBonds == 1);
+    assert(unrestrictedLabels.atoms[0].atomType == "COLLAPSE");
+    assert(unrestrictedLabels.atoms[1].atomType == "He");
 
     molGraph replacementTarget = sentinelGraph();
     istringstream validInput(validGraph);

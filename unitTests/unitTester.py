@@ -1275,6 +1275,7 @@ def run_cli_checks(executable: Path) -> int:
                 5,
             ),
         )
+        molecular_hydrogen_graphs = {}
         for (
             name,
             hydrogen_options,
@@ -1309,20 +1310,43 @@ def run_cli_checks(executable: Path) -> int:
                 "atoms or bonds",
                 completed,
             )
+            molecular_hydrogen_graphs[tuple(hydrogen_options)] = graph
             scenarios += 1
 
-        native_hydrogen_graph = "native-hydrogens\n4\n1 3 2 3 3 4\nH H C C\n1 1 1\n"
-        expected_native_graph = None
-        for name, hydrogen_option in (
-            ("native-hydrogens-on", "--remove-hydrogens=1"),
-            ("native-hydrogens-off", "--remove-hydrogens=0"),
-        ):
+        native_hydrogen_graph = (
+            "native-hydrogens\n"
+            "6\n"
+            "1 3 2 3 3 4 4 5 4 6\n"
+            "H H C C H H\n"
+            "1 1 1 1 1\n"
+        )
+        native_hydrogen_cases = (
+            ("native-hydrogens-default", [], ["C", "C"], 1),
+            (
+                "native-hydrogens-on",
+                ["--remove-hydrogens=1"],
+                ["C", "C"],
+                1,
+            ),
+            (
+                "native-hydrogens-off",
+                ["--remove-hydrogens=0"],
+                ["H", "H", "C", "C", "H", "H"],
+                5,
+            ),
+        )
+        for (
+            name,
+            hydrogen_options,
+            expected_colours,
+            expected_edge_count,
+        ) in native_hydrogen_cases:
             case_directory = working_directory / name
             case_directory.mkdir()
             (case_directory / "input").write_text(native_hydrogen_graph)
             completed = run_cli_command(
                 executable,
-                ["input", "--pathway=1", hydrogen_option],
+                ["input", "--pathway=1", *hydrogen_options],
                 case_directory,
             )
             require_cli(
@@ -1338,20 +1362,18 @@ def run_cli_checks(executable: Path) -> int:
             )
             graph = parse_pathway_document(pathway_path)["file_graph"][0]
             require_cli(
-                graph["VertexColours"] == ["H", "H", "C", "C"]
-                and len(graph["Edges"]) == 3,
-                "--remove-hydrogens should not transform native graph inputs",
+                graph["VertexColours"] == expected_colours
+                and len(graph["Edges"]) == expected_edge_count,
+                f"native-graph hydrogen scenario {name!r} transformed the "
+                "wrong atoms or bonds",
                 completed,
             )
-            if expected_native_graph is None:
-                expected_native_graph = graph
-            else:
-                require_cli(
-                    graph == expected_native_graph,
-                    "native graph output should be identical with hydrogen "
-                    "removal on or off",
-                    completed,
-                )
+            require_cli(
+                graph == molecular_hydrogen_graphs[tuple(hydrogen_options)],
+                f"native-graph hydrogen scenario {name!r} should match its "
+                "MOL equivalent",
+                completed,
+            )
             scenarios += 1
 
         all_hydrogen_mol = (

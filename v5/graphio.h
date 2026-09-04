@@ -236,6 +236,7 @@ inline void graphio(std::istream &inputStream, molGraph &molecule)
         );
     }
 
+    if (removeHydrogens) parsed.removeExplicitHydrogens();
     if (verbose)
     {
         const std::vector<std::string> nameFields = graphioDetail::tokens(nameLine);

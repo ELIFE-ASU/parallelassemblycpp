@@ -143,9 +143,10 @@ struct molGraph
 
 private:
     /**
-     * @brief Rebuild the graph while dropping removed atoms and zero-order bonds.
+     * @brief Rebuild the graph while dropping selected atoms and zero-order bonds.
      */
-    void rebuild(bool removeMarkedAtoms)
+    template <typename AtomRemovalPredicate>
+    void rebuild(AtomRemovalPredicate shouldRemoveAtom)
     {
         const size_t removed = atoms.size();
         vector<size_t> reverseMap(atoms.size(), removed);
@@ -153,7 +154,7 @@ private:
 
         for (size_t i = 0; i < atoms.size(); i++)
         {
-            if (removeMarkedAtoms && atoms[i].atomType == "COLLAPSE") continue;
+            if (shouldRemoveAtom(atoms[i])) continue;
             reverseMap[i] = output.atoms.size();
             output.addAtom(atoms[i].atomType);
         }
@@ -190,26 +191,36 @@ public:
      */
     void collapse()
     {
-        rebuild(false);
+        rebuild([](const atom &) { return false; });
     }
 
-    /**
-     * @brief For explicit hydrogen removal
-     *
-     */
+    /** Mark one atom for removal by removeAndCollapse(). */
     void removeAtom(size_t i)
     {
         if (i >= atoms.size()) return;
         atoms[i].atomType = "COLLAPSE";
     }
 
-    /**
-     * @brief For explicit hydrogen removal
-     *
-     */
+    /** Remove atoms marked by removeAtom(), then rebuild the graph. */
     void removeAndCollapse()
     {
-        rebuild(true);
+        rebuild(
+            [](const atom &candidate)
+            {
+                return candidate.atomType == "COLLAPSE";
+            }
+        );
+    }
+
+    /** Remove every explicitly represented hydrogen atom and its bonds. */
+    void removeExplicitHydrogens()
+    {
+        rebuild(
+            [](const atom &candidate)
+            {
+                return candidate.atomType == "H";
+            }
+        );
     }
 
     /**
