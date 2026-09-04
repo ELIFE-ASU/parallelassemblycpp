@@ -472,6 +472,18 @@ function(assemblycpp_configure_target target)
           ${target}
           PRIVATE --param=inline-unit-growth=104
         )
+        if(
+          NOT ASSEMBLYCPP_ENABLE_LTO
+          AND ASSEMBLYCPP_PGO_PHASE STREQUAL "OFF"
+        )
+          # GCC's versioned AVX2 loops bloat short-circuit mask operations.
+          # Keep straight-line SLP vectorization while disabling loop
+          # vectorization.
+          target_compile_options(
+            ${target}
+            PRIVATE -fno-tree-loop-vectorize
+          )
+        endif()
       endif()
     else()
       message(

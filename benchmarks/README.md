@@ -18,6 +18,10 @@ python benchmarks/benchmark.py \
 Use `--list-cases` to inspect the selected cases and
 `python benchmarks/benchmark.py --help` for all runner options.
 
+The runner's `--build` option is a direct `-O3 -DNDEBUG` x86-64-v3 shortcut.
+Use the CMake presets for compiler-flag comparisons so target-specific GCC,
+LTO, and PGO options are included.
+
 ## Corpus
 
 `cases.tsv` is the maintained benchmark manifest.

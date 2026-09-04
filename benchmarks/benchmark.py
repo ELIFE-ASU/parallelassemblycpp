@@ -602,6 +602,7 @@ def build_executable(
         str(REPOSITORY_ROOT / "v5" / "main.cpp"),
         "-std=c++20",
         "-O3",
+        "-DNDEBUG",
         "-mpopcnt",
         "-march=x86-64-v3",
     ]

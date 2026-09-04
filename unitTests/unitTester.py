@@ -1943,6 +1943,7 @@ def build_executable(executable: Path, compiler: str) -> Path:
         str(REPOSITORY_ROOT / "v5" / "main.cpp"),
         "-std=c++20",
         "-O3",
+        "-DNDEBUG",
         "-mpopcnt",
         "-march=x86-64-v3",
         "-DASSEMBLY_ENABLE_TELEMETRY",
