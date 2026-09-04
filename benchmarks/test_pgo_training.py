@@ -59,13 +59,13 @@ class PgoTrainingTests(unittest.TestCase):
                 self.assertEqual(weights[case.name], 32)
             elif case.name == "phosphatidylcholine":
                 self.assertEqual(weights[case.name], 4)
-            elif case.name in {"erythromycin", "clarithromycin"}:
+            elif case.name in {"erythromycin", "clarithromycin", "paclitaxel"}:
                 self.assertEqual(weights[case.name], 1)
             elif "scaling" in case.suites:
                 self.assertEqual(weights[case.name], 8)
             else:
                 self.fail(f"unclassified default training case: {case.name}")
-        self.assertEqual(sum(weights.values()), 2862)
+        self.assertEqual(sum(weights.values()), 2863)
 
     def test_weights_reject_invalid_header_and_column_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -270,7 +270,7 @@ class PgoTrainingTests(unittest.TestCase):
             ) -> int:
                 self.assertEqual(executable_path, executable.resolve())
                 self.assertEqual(timeout, 9.0)
-                self.assertEqual(len(weighted_cases), 36)
+                self.assertEqual(len(weighted_cases), 37)
                 self.assertFalse(stale.exists())
                 (profiles / "fresh.gcda").write_text("fresh", encoding="utf-8")
                 return sum(entry.repetitions for entry in weighted_cases)
@@ -294,20 +294,20 @@ class PgoTrainingTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertTrue((profiles / "fresh.gcda").is_file())
             self.assertTrue(keep.is_file())
-            self.assertIn("Training complete: 2862 repetitions", stdout.getvalue())
+            self.assertIn("Training complete: 2863 repetitions", stdout.getvalue())
             completion = profiles / pgo_training.COMPLETION_FILENAME
             record = json.loads(completion.read_text(encoding="utf-8"))
             self.assertEqual(
                 record["schema_version"],
                 pgo_training.COMPLETION_SCHEMA_VERSION,
             )
-            self.assertEqual(record["completed_repetitions"], 2862)
+            self.assertEqual(record["completed_repetitions"], 2863)
             self.assertEqual(record["profile_files"], ["fresh.gcda"])
             self.assertEqual(
                 record["corpus"]["manifest"]["sha256"],
                 pgo_training.file_sha256(benchmark.DEFAULT_MANIFEST),
             )
-            self.assertEqual(len(record["corpus"]["inputs"]), 36)
+            self.assertEqual(len(record["corpus"]["inputs"]), 37)
 
     def test_failed_training_leaves_no_completion_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

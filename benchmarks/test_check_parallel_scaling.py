@@ -146,6 +146,109 @@ class CheckParallelScalingTests(unittest.TestCase):
         self.assertIn("62.5%", stdout)
         self.assertIn("No case wall-time regressions.", stdout)
 
+    def test_accepts_recorded_forced_parallel_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            path = self.write_result(
+                Path(temp_directory) / "omp.json",
+                candidate_execution={
+                    "launcher": [],
+                    "arguments": ["--parallel=on"],
+                    "environment": {"OMP_NUM_THREADS": "4"},
+                },
+                baseline_execution={
+                    "launcher": [],
+                    "arguments": ["--parallel=off"],
+                    "environment": {"OMP_NUM_THREADS": "1"},
+                },
+            )
+            status, _, stderr = self.run_main([f"omp:4:{path}"])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(stderr, "")
+
+    def test_legacy_missing_arguments_normalize_to_empty_identity(self) -> None:
+        missing = {
+            "execution": {
+                "candidate": {
+                    "launcher": [],
+                    "environment": {"OMP_NUM_THREADS": "4"},
+                }
+            }
+        }
+        explicit_empty = {
+            "execution": {
+                "candidate": {
+                    "launcher": [],
+                    "arguments": [],
+                    "environment": {"OMP_NUM_THREADS": "4"},
+                }
+            }
+        }
+        path = Path("report.json")
+
+        missing_identity = check_parallel_scaling.execution_identity(
+            missing, "candidate", path
+        )
+        explicit_identity = check_parallel_scaling.execution_identity(
+            explicit_empty, "candidate", path
+        )
+
+        self.assertEqual(missing_identity, explicit_identity)
+        self.assertEqual(missing_identity.arguments, ())
+
+    def test_rejects_recorded_nonparallel_candidate_or_parallel_baseline(
+        self,
+    ) -> None:
+        scenarios = (
+            (["--parallel=auto"], ["--parallel=off"], "candidate arguments"),
+            (
+                ["--parallel=on", "--parallel=off"],
+                ["--parallel=off"],
+                "candidate arguments",
+            ),
+            (["--parallel=on"], ["--parallel=on"], "baseline arguments"),
+        )
+        for candidate_arguments, baseline_arguments, expected_error in scenarios:
+            with (
+                self.subTest(
+                    candidate=candidate_arguments,
+                    baseline=baseline_arguments,
+                ),
+                tempfile.TemporaryDirectory() as temp_directory,
+            ):
+                path = self.write_result(
+                    Path(temp_directory) / "omp.json",
+                    candidate_execution={
+                        "launcher": [],
+                        "arguments": candidate_arguments,
+                        "environment": {"OMP_NUM_THREADS": "4"},
+                    },
+                    baseline_execution={
+                        "launcher": [],
+                        "arguments": baseline_arguments,
+                        "environment": {"OMP_NUM_THREADS": "1"},
+                    },
+                )
+                status, _, stderr = self.run_main([f"omp:4:{path}"])
+
+            self.assertEqual(status, 2)
+            self.assertIn(expected_error, stderr)
+
+    def test_rejects_malformed_recorded_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            path = self.write_result(
+                Path(temp_directory) / "omp.json",
+                candidate_execution={
+                    "launcher": [],
+                    "arguments": "--parallel=on",
+                    "environment": {"OMP_NUM_THREADS": "4"},
+                },
+            )
+            status, _, stderr = self.run_main([f"omp:4:{path}"])
+
+        self.assertEqual(status, 2)
+        self.assertIn("invalid candidate arguments configuration", stderr)
+
     def test_report_only_lists_regressions_without_failing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             path = self.write_result(

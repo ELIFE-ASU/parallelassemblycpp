@@ -44,6 +44,7 @@ class CorpusIdentity:
 @dataclass(frozen=True)
 class ExecutionIdentity:
     launcher: tuple[str, ...]
+    arguments: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
 
 
@@ -137,7 +138,7 @@ def execution_identity(
     execution = document.get("execution")
     if execution is None:
         # Early schema-v2 reports always launched both roles directly.
-        return ExecutionIdentity((), ())
+        return ExecutionIdentity((), (), ())
     if not isinstance(execution, dict):
         raise ScalingError(f"invalid execution configurations in {path}")
     config = execution.get(role)
@@ -149,6 +150,12 @@ def execution_identity(
         not isinstance(argument, str) or not argument for argument in launcher
     ):
         raise ScalingError(f"invalid {role} launcher configuration in {path}")
+    arguments = config.get("arguments", [])
+    if not isinstance(arguments, list) or any(
+        not isinstance(argument, str) or not argument or "\x00" in argument
+        for argument in arguments
+    ):
+        raise ScalingError(f"invalid {role} arguments configuration in {path}")
     environment = config.get("environment")
     if not isinstance(environment, dict):
         raise ScalingError(f"invalid {role} environment configuration in {path}")
@@ -165,8 +172,46 @@ def execution_identity(
         normalized_environment.append((key, value))
     return ExecutionIdentity(
         tuple(launcher),
+        tuple(arguments),
         tuple(sorted(normalized_environment)),
     )
+
+
+def validate_recorded_parallel_arguments(
+    document: dict[str, object],
+    candidate: ExecutionIdentity,
+    baseline: ExecutionIdentity,
+    path: Path,
+) -> None:
+    """Require explicit parallel evidence in reports that record solver arguments."""
+    execution = document.get("execution")
+    if execution is None:
+        return
+    if not isinstance(execution, dict):
+        # execution_identity reports the more specific malformed-report error.
+        return
+    candidate_config = execution.get("candidate")
+    baseline_config = execution.get("baseline")
+    arguments_recorded = (
+        isinstance(candidate_config, dict) and "arguments" in candidate_config
+    ) or (isinstance(baseline_config, dict) and "arguments" in baseline_config)
+    if not arguments_recorded:
+        # Schema-v2 reports written before solver arguments were recorded remain valid.
+        return
+
+    candidate_parallel_arguments = tuple(
+        argument
+        for argument in candidate.arguments
+        if argument == "--parallel" or argument.startswith("--parallel=")
+    )
+    if candidate_parallel_arguments != ("--parallel=on",):
+        raise ScalingError(
+            f"candidate arguments in {path} must specify exactly --parallel=on"
+        )
+    if "--parallel=on" in baseline.arguments:
+        raise ScalingError(
+            f"baseline arguments in {path} must not specify --parallel=on"
+        )
 
 
 def positive_worker_value(value: str, context: str) -> int:
@@ -356,6 +401,12 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
     )
     baseline_execution = execution_identity(document, "baseline", spec.path)
     candidate_execution = execution_identity(document, "candidate", spec.path)
+    validate_recorded_parallel_arguments(
+        document,
+        candidate_execution,
+        baseline_execution,
+        spec.path,
+    )
     if (
         baseline_sha256 == candidate_sha256
         and baseline_execution == candidate_execution

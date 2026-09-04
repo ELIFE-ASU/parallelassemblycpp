@@ -219,11 +219,13 @@ class CheckSpeedupsTests(unittest.TestCase):
                     baseline_hash="same-binary",
                     candidate_execution={
                         "launcher": [],
-                        "environment": {"OMP_NUM_THREADS": "4"},
+                        "arguments": ["--mode=candidate"],
+                        "environment": {},
                     },
                     baseline_execution={
                         "launcher": [],
-                        "environment": {"OMP_NUM_THREADS": "1"},
+                        "arguments": ["--mode=baseline"],
+                        "environment": {},
                     },
                 )
                 for suite in benchmark.KNOWN_SUITES
@@ -234,6 +236,57 @@ class CheckSpeedupsTests(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertIn("PASS", stdout.getvalue())
+
+    def test_legacy_missing_arguments_normalize_to_empty_identity(self) -> None:
+        missing = {"execution": {"candidate": {"launcher": [], "environment": {}}}}
+        explicit_empty = {
+            "execution": {
+                "candidate": {
+                    "launcher": [],
+                    "arguments": [],
+                    "environment": {},
+                }
+            }
+        }
+        path = Path("report.json")
+
+        self.assertEqual(
+            check_speedups.execution_identity(missing, "candidate", path),
+            check_speedups.execution_identity(explicit_empty, "candidate", path),
+        )
+
+    def test_rejects_mixed_execution_arguments_across_suites(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            paths = self.write_all_results(directory)
+            paths[1] = self.write_result(
+                directory,
+                "full",
+                candidate_execution={
+                    "launcher": [],
+                    "arguments": ["--candidate-mode=alternate"],
+                    "environment": {},
+                },
+            )
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = check_speedups.main([str(path) for path in paths])
+
+        self.assertEqual(status, 2)
+        self.assertIn("execution configurations", stderr.getvalue())
+
+    def test_rejects_malformed_execution_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            paths = self.write_all_results(Path(temp_directory))
+            document = json.loads(paths[0].read_text(encoding="utf-8"))
+            document["execution"]["candidate"]["arguments"] = [""]
+            paths[0].write_text(json.dumps(document), encoding="utf-8")
+
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = check_speedups.main([str(path) for path in paths])
+
+        self.assertEqual(status, 2)
+        self.assertIn("invalid candidate arguments configuration", stderr.getvalue())
 
     def test_rejects_mixed_execution_configs_across_suites(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

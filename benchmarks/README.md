@@ -173,22 +173,25 @@ Example launch commands:
 
 ```bash
 OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
-  ./build/parallel/AssemblyCppOMP molecule.mol --pathway=0
+  ./build/parallel/AssemblyCppOMP molecule.mol \
+    --pathway=0 --parallel=on --threads=4
 
 mpirun --map-by slot --bind-to core -n 4 \
-  ./build/parallel/AssemblyCppMPI molecule.mol --pathway=0
+  ./build/parallel/AssemblyCppMPI molecule.mol \
+    --pathway=0 --parallel=on --threads=1
 
 OMP_NUM_THREADS=2 OMP_PLACES=cores OMP_PROC_BIND=close \
   mpirun --map-by slot:PE=2 --bind-to core -n 2 \
-  ./build/parallel/AssemblyCppHybrid molecule.mol --pathway=0
+  ./build/parallel/AssemblyCppHybrid molecule.mol \
+    --pathway=0 --parallel=on --threads=2
 
 OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
   ./build/parallel/AssemblyCppOMPTelemetry molecule.mol \
-    --pathway=0 --telemetry=1
+    --pathway=0 --parallel=on --threads=4 --telemetry=1
 
 mpirun --map-by slot --bind-to core -n 4 \
   ./build/parallel/AssemblyCppMPITelemetry molecule.mol \
-    --pathway=0 --telemetry=1
+    --pathway=0 --parallel=on --threads=1 --telemetry=1
 ```
 
 These placement flags use Open MPI syntax. Each process enumerates the root
@@ -237,23 +240,45 @@ worker, but remains available within hybrid ranks.
 Set the positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
 fixed root lease size. Only MPI rank zero writes output.
 
-The runner accepts separate launchers and environment variables for each role:
+The runner accepts separate parallel policies, launchers, and environment
+variables for each role:
 
 ```bash
 python benchmarks/benchmark.py \
   --baseline-executable build/parallel/AssemblyCpp \
   --baseline-launcher "taskset -c 0" \
+  --baseline-parallel off \
   --executable build/parallel/AssemblyCppOMP \
   --candidate-launcher "taskset -c 0,2,4,6" \
+  --candidate-parallel on \
   --candidate-env OMP_NUM_THREADS=4 \
   --suite profile --runs 6 \
   --json-output build/parallel-omp-4.json
 ```
 
-Set `OMP_NUM_THREADS` explicitly for every OpenMP or hybrid report. The separate
-telemetry executable inherits the candidate launcher and candidate environment,
-so MPI rank counts and hybrid thread placement match the timed candidate. On
-POSIX, a timeout or interrupt terminates the launcher's process group.
+Set `OMP_NUM_THREADS` explicitly for every OpenMP or hybrid report. Use
+`--candidate-parallel on` to require the candidate's parallel search path;
+`on` fails instead of silently falling back when the requested topology cannot
+be used. The selected parallel modes are recorded with the launcher and
+environment in JSON reports. The separate telemetry executable inherits the
+complete candidate execution configuration, so its mode, MPI rank count, and
+hybrid thread placement match the timed candidate. On POSIX, a timeout or
+interrupt terminates the launcher's process group.
+
+Paclitaxel is a deliberately long, complex profile case. To compare a
+four-thread OpenMP calculation with the serial solver without running the rest
+of the profile suite:
+
+```bash
+python benchmarks/benchmark.py \
+  --baseline-executable build/parallel/AssemblyCpp \
+  --baseline-parallel off \
+  --executable build/parallel/AssemblyCppOMP \
+  --candidate-parallel on \
+  --candidate-env OMP_NUM_THREADS=4 \
+  --case paclitaxel --runs 6 \
+  --json-output build/parallel-paclitaxel-omp-4.json
+```
 
 Compare topology reports with:
 

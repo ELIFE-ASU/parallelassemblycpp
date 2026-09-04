@@ -687,7 +687,7 @@ class BenchmarkTests(unittest.TestCase):
                 all(len(result.baseline_measurements) == 3 for result in results)
             )
 
-    def test_telemetry_run_reuses_candidate_launcher_and_environment(self) -> None:
+    def test_telemetry_run_reuses_candidate_execution_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
             source = self.create_fixture(directory)
@@ -697,6 +697,7 @@ class BenchmarkTests(unittest.TestCase):
             execution = benchmark.ExecutionConfig(
                 launcher=("mpiexec", "-n", "2"),
                 environment=(("OMP_NUM_THREADS", "3"),),
+                arguments=("--parallel=on",),
             )
             telemetry_document = {"schema_version": 1}
 
@@ -728,7 +729,7 @@ class BenchmarkTests(unittest.TestCase):
             telemetry_run.assert_called_once()
             self.assertEqual(telemetry_run.call_args.kwargs.get("execution"), execution)
 
-    def test_configured_telemetry_command_applies_launcher_and_environment(
+    def test_configured_telemetry_command_applies_execution_configuration(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -748,6 +749,7 @@ class BenchmarkTests(unittest.TestCase):
             execution = benchmark.ExecutionConfig(
                 launcher=("mpiexec", "-n", "2"),
                 environment=(("OMP_NUM_THREADS", "3"),),
+                arguments=("--parallel=on",),
             )
             telemetry_document = {"schema_version": 1}
 
@@ -772,12 +774,76 @@ class BenchmarkTests(unittest.TestCase):
                 run_command.call_args.args
             )
             self.assertEqual(
-                command[:4],
-                ["mpiexec", "-n", "2", "candidate-telemetry"],
+                command,
+                [
+                    "mpiexec",
+                    "-n",
+                    "2",
+                    "candidate-telemetry",
+                    "--parallel=on",
+                    "--pathway=0",
+                    "--memory-report=0",
+                    "--write-intermediate-mas=0",
+                    "--telemetry=1",
+                    "--",
+                    "input.mol",
+                ],
             )
             self.assertEqual(command_directory, working_directory)
             self.assertEqual(timeout, 1.0)
             self.assertEqual(environment["OMP_NUM_THREADS"], "3")
+
+    def test_configured_timed_command_applies_solver_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            working_directory = directory / "work"
+            working_directory.mkdir()
+            prepared = benchmark.PreparedCase(
+                case=benchmark.BenchmarkCase(
+                    "sample", source, 7, "reviewed", ("quick",), "parallel"
+                ),
+                input_name=source.name,
+                output_path=working_directory / "inputOut",
+                telemetry_path=working_directory / "inputTelemetry.json",
+                working_directory=working_directory,
+            )
+            measurement = benchmark.Measurement(1.0, 100, 7)
+
+            with (
+                mock.patch.object(benchmark, "run_command") as run_command,
+                mock.patch.object(
+                    benchmark,
+                    "parse_measurement",
+                    return_value=measurement,
+                ),
+            ):
+                result = benchmark.run_once(
+                    Path("candidate"),
+                    prepared,
+                    1.0,
+                    execution=benchmark.ExecutionConfig(arguments=("--parallel=on",)),
+                )
+
+            self.assertEqual(result, measurement)
+            command, command_directory, timeout, environment = (
+                run_command.call_args.args
+            )
+            self.assertEqual(
+                command,
+                [
+                    "candidate",
+                    "--parallel=on",
+                    "--pathway=0",
+                    "--memory-report=0",
+                    "--write-intermediate-mas=0",
+                    "--",
+                    "input.mol",
+                ],
+            )
+            self.assertEqual(command_directory, working_directory)
+            self.assertEqual(timeout, 1.0)
+            self.assertIsNone(environment)
 
     def test_role_execution_configs_launch_with_environment_and_reach_json(
         self,
@@ -831,6 +897,10 @@ class BenchmarkTests(unittest.TestCase):
                         "CANDIDATE_MODE=candidate enabled",
                         "--baseline-env",
                         "BASELINE_MODE=baseline enabled",
+                        "--candidate-parallel",
+                        "on",
+                        "--baseline-parallel",
+                        "off",
                         "--runs",
                         "2",
                         "--warmup",
@@ -847,6 +917,7 @@ class BenchmarkTests(unittest.TestCase):
                 {
                     "launcher": candidate_launcher,
                     "environment": {"CANDIDATE_MODE": "candidate enabled"},
+                    "arguments": ["--parallel=on"],
                 },
             )
             self.assertEqual(
@@ -854,6 +925,7 @@ class BenchmarkTests(unittest.TestCase):
                 {
                     "launcher": baseline_launcher,
                     "environment": {"BASELINE_MODE": "baseline enabled"},
+                    "arguments": ["--parallel=off"],
                 },
             )
             self.assertEqual(
@@ -883,10 +955,10 @@ class BenchmarkTests(unittest.TestCase):
                         str(executable),
                         "--baseline-executable",
                         str(executable),
-                        "--candidate-env",
-                        "OMP_NUM_THREADS=4",
-                        "--baseline-env",
-                        "OMP_NUM_THREADS=1",
+                        "--candidate-parallel",
+                        "on",
+                        "--baseline-parallel",
+                        "off",
                         "--runs",
                         "2",
                         "--warmup",
@@ -903,12 +975,12 @@ class BenchmarkTests(unittest.TestCase):
                 report["executables"]["baseline"]["sha256"],
             )
             self.assertEqual(
-                report["execution"]["candidate"]["environment"],
-                {"OMP_NUM_THREADS": "4"},
+                report["execution"]["candidate"]["arguments"],
+                ["--parallel=on"],
             )
             self.assertEqual(
-                report["execution"]["baseline"]["environment"],
-                {"OMP_NUM_THREADS": "1"},
+                report["execution"]["baseline"]["arguments"],
+                ["--parallel=off"],
             )
 
     def test_identical_binary_copies_require_distinct_execution_configs(self) -> None:
@@ -947,6 +1019,7 @@ class BenchmarkTests(unittest.TestCase):
             ["--candidate-env", "missing-separator"],
             ["--candidate-env", "1INVALID=value"],
             ["--candidate-launcher", "'unterminated"],
+            ["--candidate-parallel", "sometimes"],
         ):
             with (
                 self.subTest(arguments=arguments),
@@ -967,6 +1040,10 @@ class BenchmarkTests(unittest.TestCase):
                 ),
                 (
                     ["--baseline-env", "OMP_NUM_THREADS=1"],
+                    "require --baseline-executable",
+                ),
+                (
+                    ["--baseline-parallel", "off"],
                     "require --baseline-executable",
                 ),
                 (
@@ -1167,9 +1244,14 @@ class BenchmarkTests(unittest.TestCase):
             len(benchmark.select_cases(cases, "full", [])),
             15,
         )
+        profile = benchmark.select_cases(cases, "profile", [])
+        self.assertEqual(len(profile), 5)
+        paclitaxel = next(case for case in profile if case.name == "paclitaxel")
+        self.assertEqual(paclitaxel.expected_assembly_index, 23)
+        self.assertEqual(paclitaxel.expectation, "provisional")
         self.assertEqual(
-            len(benchmark.select_cases(cases, "profile", [])),
-            4,
+            paclitaxel.source,
+            (benchmark.BENCHMARK_DIRECTORY / "inputs" / "paclitaxel.mol").resolve(),
         )
         scaling = benchmark.select_cases(cases, "scaling", [])
         self.assertEqual(len(scaling), 18)

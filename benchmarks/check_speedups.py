@@ -40,7 +40,11 @@ PAIRED_COMPARISON_ORDER = (
     "baseline/candidate on odd rounds, candidate/baseline on even rounds"
 )
 MAX_CLOCK_TICKS = (1 << 64) - 1
-ExecutionIdentity = tuple[tuple[str, ...], tuple[tuple[str, str], ...]]
+ExecutionIdentity = tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[tuple[str, str], ...],
+]
 
 
 def number_at(document: object, keys: Sequence[str], context: str) -> float:
@@ -74,12 +78,12 @@ def string_at(document: object, keys: Sequence[str], context: str) -> str:
 def execution_identity(
     document: dict[str, object], role: str, path: Path
 ) -> ExecutionIdentity:
-    """Return one canonical launcher/environment identity from a report."""
+    """Return one canonical launcher/arguments/environment report identity."""
     execution = document.get("execution")
     if execution is None:
         # Schema-v2 reports written before execution configurations existed used
         # the ordinary direct-launch configuration for both roles.
-        return (), ()
+        return (), (), ()
     if not isinstance(execution, dict):
         raise GateError(f"invalid execution configurations in {path}")
     config = execution.get(role)
@@ -91,6 +95,12 @@ def execution_identity(
         not isinstance(value, str) or not value for value in launcher
     ):
         raise GateError(f"invalid {role} launcher configuration in {path}")
+    arguments = config.get("arguments", [])
+    if not isinstance(arguments, list) or any(
+        not isinstance(value, str) or not value or "\x00" in value
+        for value in arguments
+    ):
+        raise GateError(f"invalid {role} arguments configuration in {path}")
     environment = config.get("environment")
     if not isinstance(environment, dict):
         raise GateError(f"invalid {role} environment configuration in {path}")
@@ -104,7 +114,11 @@ def execution_identity(
         ):
             raise GateError(f"invalid {role} environment configuration in {path}")
         normalized_environment.append((key, value))
-    return tuple(launcher), tuple(sorted(normalized_environment))
+    return (
+        tuple(launcher),
+        tuple(arguments),
+        tuple(sorted(normalized_environment)),
+    )
 
 
 def load_result(path: Path) -> dict[str, object]:

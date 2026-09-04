@@ -42,6 +42,7 @@ MANIFEST_HEADER = (
 )
 KNOWN_SUITES = ("quick", "full", "profile", "scaling")
 KNOWN_EXPECTATIONS = ("reviewed", "provisional")
+PARALLEL_MODES = ("auto", "on", "off")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
@@ -163,10 +164,11 @@ class CaseResult:
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    """Launcher prefix and explicit environment overrides for one executable."""
+    """Launcher prefix, environment, and solver arguments for one executable."""
 
     launcher: tuple[str, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
+    arguments: tuple[str, ...] = ()
 
 
 def positive_int(value: str) -> int:
@@ -219,6 +221,8 @@ def create_execution_config(
     launcher: tuple[str, ...] | None,
     environment: Sequence[tuple[str, str]],
     role: str,
+    *,
+    parallel_mode: str | None = None,
 ) -> ExecutionConfig | None:
     """Validate and normalize one optional command execution configuration."""
     seen: set[str] = set()
@@ -232,8 +236,15 @@ def create_execution_config(
     if launcher and shutil.which(launcher[0], path=launcher_path) is None:
         raise BenchmarkError(f"{role} launcher not found: {launcher[0]}")
 
-    config = ExecutionConfig(launcher or (), tuple(environment))
-    return None if not config.launcher and not config.environment else config
+    if parallel_mode is not None and parallel_mode not in PARALLEL_MODES:
+        raise BenchmarkError(f"invalid {role} parallel mode: {parallel_mode}")
+    arguments = () if parallel_mode is None else (f"--parallel={parallel_mode}",)
+    config = ExecutionConfig(launcher or (), tuple(environment), arguments)
+    return (
+        None
+        if not config.launcher and not config.environment and not config.arguments
+        else config
+    )
 
 
 def execution_config_metadata(config: ExecutionConfig | None) -> dict[str, object]:
@@ -242,6 +253,7 @@ def execution_config_metadata(config: ExecutionConfig | None) -> dict[str, objec
     return {
         "launcher": list(effective.launcher),
         "environment": dict(effective.environment),
+        "arguments": list(effective.arguments),
     }
 
 
@@ -289,9 +301,11 @@ def execution_configs_alias(
     """Return whether two configurations launch with identical semantics."""
     candidate = candidate or ExecutionConfig()
     baseline = baseline or ExecutionConfig()
-    return candidate.launcher == baseline.launcher and dict(
-        candidate.environment
-    ) == dict(baseline.environment)
+    return (
+        candidate.launcher == baseline.launcher
+        and dict(candidate.environment) == dict(baseline.environment)
+        and candidate.arguments == baseline.arguments
+    )
 
 
 def strip_molfile_suffix(filename: str) -> str:
@@ -741,6 +755,7 @@ def run_once(
     command = [
         *(execution.launcher if execution is not None else ()),
         str(executable),
+        *(execution.arguments if execution is not None else ()),
         "--pathway=0",
         "--memory-report=0",
         "--write-intermediate-mas=0",
@@ -1728,6 +1743,7 @@ def run_telemetry_once(
     command = [
         *(execution.launcher if execution is not None else ()),
         str(executable),
+        *(execution.arguments if execution is not None else ()),
         "--pathway=0",
         "--memory-report=0",
         "--write-intermediate-mas=0",
@@ -2463,6 +2479,16 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help="command prefix for the baseline executable",
     )
     parser.add_argument(
+        "--candidate-parallel",
+        choices=PARALLEL_MODES,
+        help="parallel search policy for the candidate executable",
+    )
+    parser.add_argument(
+        "--baseline-parallel",
+        choices=PARALLEL_MODES,
+        help="parallel search policy for the baseline executable",
+    )
+    parser.add_argument(
         "--candidate-env",
         "--candidate-environment",
         dest="candidate_environment",
@@ -2636,17 +2662,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.candidate_launcher,
             arguments.candidate_environment,
             "candidate",
+            parallel_mode=arguments.candidate_parallel,
         )
         if baseline_executable is None and (
-            arguments.baseline_launcher or arguments.baseline_environment
+            arguments.baseline_launcher
+            or arguments.baseline_environment
+            or arguments.baseline_parallel
         ):
             raise BenchmarkError(
-                "--baseline-launcher and --baseline-env require --baseline-executable"
+                "--baseline-launcher, --baseline-env, and --baseline-parallel "
+                "require --baseline-executable"
             )
         baseline_execution = create_execution_config(
             arguments.baseline_launcher,
             arguments.baseline_environment,
             "baseline",
+            parallel_mode=arguments.baseline_parallel,
         )
 
         if arguments.telemetry_executable is not None and not arguments.telemetry:

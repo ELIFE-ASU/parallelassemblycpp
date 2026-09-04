@@ -17,6 +17,7 @@ folic_acid	../unitTests/folic_acid.mol	20	reviewed	full	mixed cyclic graph
 phosphatidylcholine	../unitTests/phosphatidylcholine.mol	22	provisional	profile	long acyclic search
 erythromycin	../unitTests/erythromycin.mol	20	provisional	profile	macrocycle search
 clarithromycin	../unitTests/clarithromycin.mol	21	provisional	profile	fragmentation and pruning stress
+paclitaxel	inputs/paclitaxel.mol	23	provisional	profile	complex polycyclic natural product
 amino-acid-scale-02c	inputs/scaling/amino_acid_scaling_02c_018a.mol	10	provisional	scaling	18 atoms / 16 bonds / 2 comps
 amino-acid-scale-03c	inputs/scaling/amino_acid_scaling_03c_027a.mol	13	provisional	scaling	27 atoms / 24 bonds / 3 comps
 amino-acid-scale-04c	inputs/scaling/amino_acid_scaling_04c_036a.mol	15	provisional	scaling	36 atoms / 32 bonds / 4 comps
