@@ -386,22 +386,29 @@ struct WorkerContext
 struct parallelTaskFragmentDescriptor
 {
     std::size_t wordOffset = 0;
-    std::uint32_t edgeCount = 0;
-    bool connected = false;
+    std::int32_t canonicalId = unknownCanonicalId;
+    std::uint32_t edgeCount : 31 = 0;
+    std::uint32_t connected : 1 = false;
 };
+
+static_assert(sizeof(parallelTaskFragmentDescriptor) == 2 * sizeof(std::uint64_t));
 
 /**
  * An assembly state that may safely move between worker threads.
  *
- * Canonical IDs are deliberately omitted: after the shared root seed they are
- * process-global only when L2 reuse is enabled, and worker-local otherwise.
- * The receiving worker reconstructs the masks and canonicalises them through
- * the active mode before continuing the search.
+ * IDs travel with their validity domain: shared root seed, process registry,
+ * or originating worker. Masks remain plain words because wide EdgeMasks
+ * must be constructed and destroyed in the receiving worker's arena.
  */
 struct parallelSearchTaskDescriptor
 {
     std::vector<parallelTaskFragmentDescriptor> fragments;
     std::vector<std::uint64_t> fragmentWords;
+    std::size_t originWorkerIndex = 0;
+    std::size_t canonicalSeedSize = 0;
+    bool sharedCanonicalIds = false;
+    std::uint64_t estimatedWorkUnits = 0;
+    std::uint64_t serializationNanoseconds = 0;
     int sumDupBonds = 0;
     int lowerBoundAssemblyIndex = 0;
     unsigned int depth = 2;
@@ -420,6 +427,13 @@ inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeepRefillActivations = 0;
 inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskQueueHighWatermark = 0;
 inline ASSEMBLYCPP_SEARCH_LOCAL unsigned int searchMaximumTaskDepthExecuted = 0;
 inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchWarmStartBranches = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskSerializationNanoseconds = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskExecutionNanoseconds = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksImmediatelyPruned = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersCreated = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersReused = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksRejectedAsTooSmall = 0;
+inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskMinimumWorkUnits = 0;
 
 /** Keep independent scheduler ownership domains off the same cache line. */
 template<typename Value>
@@ -458,6 +472,19 @@ struct alignas(schedulerCacheLineBytes) parallelWorkerTaskDeque
     // Keep regular searches allocation-free; construct a deque only after
     // live starvation or the existing shallow policy requests donation.
     std::optional<std::deque<parallelSearchTaskDescriptor>> tasks;
+    // Ordinary vectors hold no thread-owned masks. Free buffers return to
+    // their producer, bounded by both count and retained allocation bytes.
+    std::vector<parallelSearchTaskDescriptor> freeBuffers;
+    std::size_t retainedBufferBytes = 0;
+    std::atomic<std::uint64_t> minimumTaskWorkUnits{0};
+    // Calibration is protected by mutex; only the owner advances probe skips.
+    std::size_t calibrationSamples = 0;
+    std::size_t usefulSamples = 0;
+    long double serializationNanoseconds = 0;
+    long double usefulExecutionNanoseconds = 0;
+    long double usefulWorkUnits = 0;
+    std::uint64_t maximumObservedWorkUnits = 0;
+    std::size_t skippedSmallTasks = 0;
     // Only this deque's owner updates its rotating steal origin.
     std::size_t stealOffset = 0;
 };
@@ -489,6 +516,12 @@ public:
         parallelMaximumQueuedTasksPerWorker;
     static constexpr unsigned int maximumTaskDepth =
         parallelMaximumTaskDepth;
+    static constexpr std::size_t maximumRetainedBuffersPerWorker =
+        maximumTasksPerWorker;
+    static constexpr std::size_t maximumRetainedBufferBytesPerWorker =
+        1024 * 1024;
+    static constexpr std::size_t taskCalibrationSamples = 16;
+    static constexpr std::uint64_t taskTransferAmortization = 8;
 
     ParallelTaskScheduler(
         std::size_t rootJobCount,
@@ -740,37 +773,96 @@ public:
             taskDepth < 2 ||
             taskDepth > maximumTaskDepth ||
             !taskDonationRequested(taskDepth) ||
-            cancelled.load(std::memory_order_relaxed) ||
-            !reserveTaskSlot(taskDepth)
+            cancelled.load(std::memory_order_relaxed)
         ) return false;
 
+        parallelWorkerTaskDeque &owner = taskDeques[workerIndex];
+        const std::uint64_t workUnits = estimateTaskWork(state);
+        if (workUnits < owner.minimumTaskWorkUnits.load(
+            std::memory_order_relaxed
+        ))
+        {
+            // Probe occasionally: a changing incumbent/frontier must not
+            // leave donation permanently disabled by an old pruning sample.
+            if (++owner.skippedSmallTasks < taskCalibrationSamples)
+            {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                ++searchTasksRejectedAsTooSmall;
+#endif
+                return false;
+            }
+            owner.skippedSmallTasks = 0;
+        }
+        if (!reserveTaskSlot(taskDepth)) return false;
+
+        const auto serializationStarted = std::chrono::steady_clock::now();
         parallelSearchTaskDescriptor task;
+        task.originWorkerIndex = workerIndex;
         try
         {
+            {
+                std::lock_guard<std::mutex> lock(owner.mutex);
+                if (!owner.freeBuffers.empty())
+                {
+                    owner.retainedBufferBytes -= taskBufferBytes(
+                        owner.freeBuffers.back()
+                    );
+                    task = std::move(owner.freeBuffers.back());
+                    owner.freeBuffers.pop_back();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                    ++searchTaskBuffersReused;
+#endif
+                }
+                else
+                {
+                    if (owner.freeBuffers.capacity() == 0)
+                        owner.freeBuffers.reserve(maximumRetainedBuffersPerWorker);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                    ++searchTaskBuffersCreated;
+#endif
+                }
+            }
+            task.originWorkerIndex = workerIndex;
+            task.canonicalSeedSize = sharedGraphHashSeed == nullptr
+                ? 0 : sharedGraphHashSeed->size();
+            task.sharedCanonicalIds = sharedCanonicalRegistry != nullptr;
+            task.estimatedWorkUnits = workUnits;
             task.sumDupBonds = state.sumDupBonds;
             task.lowerBoundAssemblyIndex = lowerBoundAssemblyIndex;
             task.depth = taskDepth;
-            task.fragments.reserve(state.fragments.size());
             const std::size_t wordCount = EdgeMask::activeWordCount();
             if (
                 wordCount != 0 &&
                 state.fragments.size() >
                     std::numeric_limits<std::size_t>::max() / wordCount
             ) throw std::length_error("parallel task masks exceed capacity");
-            task.fragmentWords.reserve(state.fragments.size() * wordCount);
-            for (const assemblyFragment &fragment : state.fragments)
+            task.fragments.resize(state.fragments.size());
+            task.fragmentWords.resize(state.fragments.size() * wordCount);
+            std::size_t offset = 0;
+            for (std::size_t index = 0; index < state.fragments.size(); ++index)
             {
-                task.fragments.push_back({
-                    task.fragmentWords.size(),
+                const assemblyFragment &fragment = state.fragments[index];
+                task.fragments[index] = {
+                    offset,
+                    fragment.canonicalId,
                     fragment.edgeCount,
                     fragment.connected != 0
-                });
+                };
                 for (std::size_t word = 0; word < wordCount; ++word)
-                    task.fragmentWords.push_back(fragment.mask.activeWord(word));
+                    task.fragmentWords[offset++] = fragment.mask.activeWord(word);
             }
+            task.serializationNanoseconds = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - serializationStarted
+                ).count()
+            );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            searchTaskSerializationNanoseconds += task.serializationNanoseconds;
+#endif
         }
         catch (...)
         {
+            recycleTask(task);
             releaseReservedTask(taskDepth);
             notifyWaiters(true);
             throw;
@@ -778,12 +870,12 @@ public:
 
         if (cancelled.load(std::memory_order_relaxed))
         {
+            recycleTask(task);
             releaseReservedTask(taskDepth);
             notifyWaiters(true);
             return false;
         }
 
-        parallelWorkerTaskDeque &owner = taskDeques[workerIndex];
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         std::size_t ownerQueueSize = 0;
 #endif
@@ -800,6 +892,7 @@ public:
         }
         catch (...)
         {
+            recycleTask(task);
             releaseReservedTask(taskDepth);
             notifyWaiters(true);
             throw;
@@ -813,6 +906,102 @@ public:
         disableDonationAtTarget();
         notifyWaiters(false);
         return true;
+    }
+
+    /** Potential edge pairs provide a cheap size estimate before transfer. */
+    [[nodiscard]] static std::uint64_t estimateTaskWork(
+        const assemblyState &state
+    ) noexcept
+    {
+        std::uint64_t units = 0;
+        for (const assemblyFragment &fragment : state.fragments)
+        {
+            const std::uint64_t edges = fragment.edgeCount;
+            const std::uint64_t pairs = edges == 0 ? 0 : edges * (edges - 1) / 2;
+            if (pairs > std::numeric_limits<std::uint64_t>::max() - units)
+                return std::numeric_limits<std::uint64_t>::max();
+            units += pairs;
+        }
+        return units;
+    }
+
+    /** Calibrate only transferred work; ordinary recursive search has no clock. */
+    void recordTaskExecution(
+        const parallelSearchTaskDescriptor &task,
+        std::uint64_t elapsedNanoseconds,
+        bool immediatelyPruned
+    )
+    {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        searchTaskExecutionNanoseconds += elapsedNanoseconds;
+        if (immediatelyPruned) ++searchTasksImmediatelyPruned;
+#endif
+        parallelWorkerTaskDeque &owner = taskDeques[task.originWorkerIndex];
+        std::lock_guard<std::mutex> lock(owner.mutex);
+        ++owner.calibrationSamples;
+        owner.serializationNanoseconds += task.serializationNanoseconds;
+        owner.maximumObservedWorkUnits = std::max(
+            owner.maximumObservedWorkUnits,
+            task.estimatedWorkUnits
+        );
+        if (!immediatelyPruned)
+        {
+            ++owner.usefulSamples;
+            owner.usefulExecutionNanoseconds += elapsedNanoseconds;
+            owner.usefulWorkUnits += task.estimatedWorkUnits;
+        }
+        if (owner.calibrationSamples < taskCalibrationSamples) return;
+
+        // Require expected useful execution to amortise serialization eight
+        // times. The useful fraction discounts tasks immediately dominated by
+        // the incumbent or transposition table. A fresh window permits recovery.
+        const long double minimum = owner.usefulSamples == 0 ||
+            owner.usefulExecutionNanoseconds == 0
+            ? 2.0L * owner.maximumObservedWorkUnits + 1
+            : taskTransferAmortization * owner.serializationNanoseconds *
+                owner.usefulWorkUnits /
+                (owner.usefulExecutionNanoseconds * owner.usefulSamples);
+        const std::uint64_t threshold = minimum >=
+            static_cast<long double>(std::numeric_limits<std::uint64_t>::max())
+            ? std::numeric_limits<std::uint64_t>::max()
+            : static_cast<std::uint64_t>(minimum) + 1;
+        owner.minimumTaskWorkUnits.store(threshold, std::memory_order_relaxed);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        searchTaskMinimumWorkUnits = std::max(searchTaskMinimumWorkUnits, threshold);
+#endif
+        owner.calibrationSamples = 0;
+        owner.usefulSamples = 0;
+        owner.serializationNanoseconds = 0;
+        owner.usefulExecutionNanoseconds = 0;
+        owner.usefulWorkUnits = 0;
+        owner.maximumObservedWorkUnits = 0;
+    }
+
+    /** Return plain-word storage even after cancellation or failed execution. */
+    void recycleTask(parallelSearchTaskDescriptor &task) noexcept
+    {
+        const std::size_t bytes = taskBufferBytes(task);
+        if (bytes == 0) return;
+        if (task.originWorkerIndex < workerCount &&
+            bytes <= maximumRetainedBufferBytesPerWorker)
+        {
+            parallelWorkerTaskDeque &owner = taskDeques[task.originWorkerIndex];
+            std::lock_guard<std::mutex> lock(owner.mutex);
+            if (owner.freeBuffers.size() < owner.freeBuffers.capacity() &&
+                owner.freeBuffers.size() < maximumRetainedBuffersPerWorker &&
+                bytes <= maximumRetainedBufferBytesPerWorker -
+                    owner.retainedBufferBytes)
+            {
+                // Retain sizes too: resizing an equally sized donation then
+                // avoids zero-initialising words that serialization overwrites.
+                owner.freeBuffers.push_back(std::move(task));
+                owner.retainedBufferBytes += bytes;
+                return;
+            }
+        }
+        // Oversized/burst buffers are released instead of increasing retained
+        // memory. Vector moves and destruction do not touch EdgeMask arenas.
+        task = parallelSearchTaskDescriptor{};
     }
 
     WorkAvailability nextWork(
@@ -991,6 +1180,19 @@ public:
     }
 
 private:
+    [[nodiscard]] static std::size_t taskBufferBytes(
+        const parallelSearchTaskDescriptor &task
+    ) noexcept
+    {
+        const std::size_t fragmentBytes = task.fragments.capacity() *
+            sizeof(parallelTaskFragmentDescriptor);
+        const std::size_t wordBytes = task.fragmentWords.capacity() *
+            sizeof(std::uint64_t);
+        return wordBytes > std::numeric_limits<std::size_t>::max() - fragmentBytes
+            ? std::numeric_limits<std::size_t>::max()
+            : fragmentBytes + wordBytes;
+    }
+
     [[nodiscard]] bool rootWorkComplete() const noexcept
     {
         if (!distributedRootSourceExhausted.load(std::memory_order_acquire))

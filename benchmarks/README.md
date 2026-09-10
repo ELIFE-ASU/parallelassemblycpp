@@ -94,9 +94,9 @@ A cache rate is `null` when no lookup occurred. Aggregate elapsed time is the
 critical parallel-region wall time; worker elapsed and busy values are sums,
 and each worker's busy time is its elapsed time minus measured scheduler-idle
 wait time, not CPU utilization. The aggregate queue high-water mark and maximum
-task depth are maxima across workers; the other scheduler event fields are
-sums. Legacy VF2 counters remain in the schema but are zero with the exact
-cyclic canonicaliser.
+task depth and minimum useful task work are maxima across workers; the other
+scheduler event fields are sums. Legacy VF2 counters remain in the schema but
+are zero with the exact cyclic canonicaliser.
 
 The aggregate and worker records expose `deeper_tasks_spawned`,
 `deeper_tasks_executed`, `task_steal_attempts`, `task_steals`,
@@ -104,6 +104,41 @@ The aggregate and worker records expose `deeper_tasks_spawned`,
 `scheduler_idle_nanoseconds`, `deep_refill_activations`,
 `task_queue_high_watermark`, and `maximum_task_depth_executed`. The reported
 `busy_timing_method` is `elapsed_minus_scheduler_idle_time`.
+
+Task-transfer measurements appear on each worker and in the aggregate:
+
+- `task_serialization_nanoseconds`: steady-clock time acquiring reusable
+  storage and serialising fragment metadata and mask words, before enqueueing.
+- `task_execution_nanoseconds`: steady-clock time executing transferred tasks,
+  including reconstruction, canonicalisation, and recursive search, before
+  recycling their storage. Serialization of descendants can occur within this
+  interval, so these two timings must not be added as disjoint costs.
+- `tasks_immediately_pruned`: transferred tasks rejected by the initial
+  incumbent bound or first transposition-table lookup before recursive search.
+  Cancellation and exceptions are not counted as pruning.
+- `task_buffers_created` and `task_buffers_reused`: donations that acquire new
+  vector storage or reuse a returned descriptor's vector capacities. Each
+  producer retains at most 32 returned buffers and 1 MiB of vector capacity;
+  oversized and excess buffers are released. These counts describe buffer
+  acquisitions, not allocator calls, and may include a subsequently cancelled
+  donation.
+- `tasks_rejected_as_too_small`: donations kept local by the measured minimum
+  work threshold. They still execute within the current search.
+- `task_minimum_work_units`: the largest threshold calculated by a worker,
+  with the aggregate taking the maximum. Zero means no calibration window
+  completed. A work unit is one possible edge pair within a fragment:
+  `sum(edges * (edges - 1) / 2)`.
+
+Every 16 completed transfers from a producer recalibrate its minimum work
+threshold. The estimate combines serialization cost, execution time per work
+unit for tasks that survive immediate pruning, and the fraction that survive.
+A donation must offer estimated useful execution of at least eight times its
+average serialization cost. A window containing only immediate prunes raises
+the threshold above twice the largest observed task. Initial donations
+calibrate without a minimum; every sixteenth undersized opportunity is still
+transferred to refresh the estimate as the search changes. This calibration
+runs in ordinary builds as well as telemetry builds. Historical schema-v1
+reports without the transfer measurement group remain readable.
 
 ## Paired comparisons
 

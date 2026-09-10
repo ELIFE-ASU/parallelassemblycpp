@@ -1397,6 +1397,13 @@ ParallelSearchResult runParallelSearch(
         searchProactiveTailRefills = 0;
 #endif
         searchWarmStartBranches = 0;
+        searchTaskSerializationNanoseconds = 0;
+        searchTaskExecutionNanoseconds = 0;
+        searchTasksImmediatelyPruned = 0;
+        searchTaskBuffersCreated = 0;
+        searchTaskBuffersReused = 0;
+        searchTasksRejectedAsTooSmall = 0;
+        searchTaskMinimumWorkUnits = 0;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         uint64_t workerStartedNanoseconds = 0;
         if (searchTelemetryEnabled)
@@ -1532,6 +1539,17 @@ ParallelSearchResult runParallelSearch(
                 static_cast<uint64_t>(searchWarmStartBranches),
                 workerElapsedNanoseconds
             );
+            result.telemetry.taskSerializationNanoseconds =
+                searchTaskSerializationNanoseconds;
+            result.telemetry.taskExecutionNanoseconds =
+                searchTaskExecutionNanoseconds;
+            result.telemetry.tasksImmediatelyPruned =
+                searchTasksImmediatelyPruned;
+            result.telemetry.taskBuffersCreated = searchTaskBuffersCreated;
+            result.telemetry.taskBuffersReused = searchTaskBuffersReused;
+            result.telemetry.tasksRejectedAsTooSmall =
+                searchTasksRejectedAsTooSmall;
+            result.telemetry.taskMinimumWorkUnits = searchTaskMinimumWorkUnits;
         }
 #endif
         parallelTaskScheduler = nullptr;
@@ -1562,6 +1580,13 @@ ParallelSearchResult runParallelSearch(
         searchProactiveTailRefills = 0;
 #endif
         searchWarmStartBranches = 0;
+        searchTaskSerializationNanoseconds = 0;
+        searchTaskExecutionNanoseconds = 0;
+        searchTasksImmediatelyPruned = 0;
+        searchTaskBuffersCreated = 0;
+        searchTaskBuffersReused = 0;
+        searchTasksRejectedAsTooSmall = 0;
+        searchTaskMinimumWorkUnits = 0;
     };
 
 #if defined(ASSEMBLYCPP_USE_OPENMP)

@@ -163,6 +163,13 @@ struct ParallelSearchWorkerTelemetry
     uint64_t maximumTaskDepthExecuted = 0;
     uint64_t proactiveTailRefills = 0;
     uint64_t warmStartBranches = 0;
+    uint64_t taskSerializationNanoseconds = 0;
+    uint64_t taskExecutionNanoseconds = 0;
+    uint64_t tasksImmediatelyPruned = 0;
+    uint64_t taskBuffersCreated = 0;
+    uint64_t taskBuffersReused = 0;
+    uint64_t tasksRejectedAsTooSmall = 0;
+    uint64_t taskMinimumWorkUnits = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t busyNanoseconds = 0;
     uint64_t processedAtoms = 0;
@@ -215,6 +222,13 @@ struct ParallelSearchTelemetrySummary
     uint64_t maximumTaskDepthExecuted = 0;
     uint64_t proactiveTailRefillCount = 0;
     uint64_t warmStartBranchCount = 0;
+    uint64_t taskSerializationNanoseconds = 0;
+    uint64_t taskExecutionNanoseconds = 0;
+    uint64_t tasksImmediatelyPruned = 0;
+    uint64_t taskBuffersCreated = 0;
+    uint64_t taskBuffersReused = 0;
+    uint64_t tasksRejectedAsTooSmall = 0;
+    uint64_t taskMinimumWorkUnits = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t workerElapsedNanoseconds = 0;
     uint64_t workerBusyNanoseconds = 0;
@@ -759,6 +773,17 @@ inline void configureParallelSearchTelemetry(
         );
         summary.proactiveTailRefillCount += worker.proactiveTailRefills;
         summary.warmStartBranchCount += worker.warmStartBranches;
+        summary.taskSerializationNanoseconds +=
+            worker.taskSerializationNanoseconds;
+        summary.taskExecutionNanoseconds += worker.taskExecutionNanoseconds;
+        summary.tasksImmediatelyPruned += worker.tasksImmediatelyPruned;
+        summary.taskBuffersCreated += worker.taskBuffersCreated;
+        summary.taskBuffersReused += worker.taskBuffersReused;
+        summary.tasksRejectedAsTooSmall += worker.tasksRejectedAsTooSmall;
+        summary.taskMinimumWorkUnits = std::max(
+            summary.taskMinimumWorkUnits,
+            worker.taskMinimumWorkUnits
+        );
         summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
         summary.workerBusyNanoseconds += worker.busyNanoseconds;
         addSharedAssemblyCacheTelemetry(
@@ -975,6 +1000,20 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.proactiveTailRefillCount << ",\n"
            << "      \"warm_start_branches\": "
            << parallel.warmStartBranchCount << ",\n"
+           << "      \"task_serialization_nanoseconds\": "
+           << parallel.taskSerializationNanoseconds << ",\n"
+           << "      \"task_execution_nanoseconds\": "
+           << parallel.taskExecutionNanoseconds << ",\n"
+           << "      \"tasks_immediately_pruned\": "
+           << parallel.tasksImmediatelyPruned << ",\n"
+           << "      \"task_buffers_created\": "
+           << parallel.taskBuffersCreated << ",\n"
+           << "      \"task_buffers_reused\": "
+           << parallel.taskBuffersReused << ",\n"
+           << "      \"tasks_rejected_as_too_small\": "
+           << parallel.tasksRejectedAsTooSmall << ",\n"
+           << "      \"task_minimum_work_units\": "
+           << parallel.taskMinimumWorkUnits << ",\n"
            << "      \"elapsed_nanoseconds\": "
            << parallel.elapsedNanoseconds << ",\n"
            << "      \"worker_elapsed_nanoseconds\": "
@@ -1058,6 +1097,20 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
                << worker.proactiveTailRefills << ",\n"
                << "        \"warm_start_branches\": "
                << worker.warmStartBranches << ",\n"
+               << "        \"task_serialization_nanoseconds\": "
+               << worker.taskSerializationNanoseconds << ",\n"
+               << "        \"task_execution_nanoseconds\": "
+               << worker.taskExecutionNanoseconds << ",\n"
+               << "        \"tasks_immediately_pruned\": "
+               << worker.tasksImmediatelyPruned << ",\n"
+               << "        \"task_buffers_created\": "
+               << worker.taskBuffersCreated << ",\n"
+               << "        \"task_buffers_reused\": "
+               << worker.taskBuffersReused << ",\n"
+               << "        \"tasks_rejected_as_too_small\": "
+               << worker.tasksRejectedAsTooSmall << ",\n"
+               << "        \"task_minimum_work_units\": "
+               << worker.taskMinimumWorkUnits << ",\n"
                << "        \"elapsed_nanoseconds\": "
                << worker.elapsedNanoseconds << ",\n"
                << "        \"busy_nanoseconds\": "

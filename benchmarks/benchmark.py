@@ -113,6 +113,14 @@ PARALLEL_SCHEDULER_SUM_FIELDS = (
     "proactive_tail_refills",
     "warm_start_branches",
 )
+PARALLEL_TASK_TRANSFER_SUM_FIELDS = (
+    "task_serialization_nanoseconds",
+    "task_execution_nanoseconds",
+    "tasks_immediately_pruned",
+    "task_buffers_created",
+    "task_buffers_reused",
+    "tasks_rejected_as_too_small",
+)
 
 
 class BenchmarkError(RuntimeError):
@@ -1356,6 +1364,21 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             aggregate["shared_assembly_cache"],
             rank_count,
         )
+    # Transfer measurements are additive schema-v1 fields. Historical reports
+    # omit the complete group; new reports must provide it on every record.
+    workers = parallel.get("workers")
+    if not isinstance(workers, list) or len(workers) != worker_count:
+        invalid_parallel("worker count does not match worker records")
+    transfer_fields = (*PARALLEL_TASK_TRANSFER_SUM_FIELDS, "task_minimum_work_units")
+    has_transfer_measurements = any(
+        name in record
+        for record in (aggregate, *workers)
+        if isinstance(record, dict)
+        for name in transfer_fields
+    )
+    scheduler_sum_fields = PARALLEL_SCHEDULER_SUM_FIELDS + (
+        PARALLEL_TASK_TRANSFER_SUM_FIELDS if has_transfer_measurements else ()
+    )
     aggregate_integer_names = (
         "branch_assignments",
         "elapsed_nanoseconds",
@@ -1363,7 +1386,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         "worker_busy_nanoseconds",
         "task_queue_high_watermark",
         "maximum_task_depth_executed",
-        *PARALLEL_SCHEDULER_SUM_FIELDS,
+        *scheduler_sum_fields,
+        *(("task_minimum_work_units",) if has_transfer_measurements else ()),
     )
     if any(
         not is_nonnegative_integer(aggregate.get(name))
@@ -1381,9 +1405,6 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     if has_dynamic_leases and not is_nonnegative_integer(aggregate_branch_leases):
         invalid_parallel("invalid aggregate branch lease count")
 
-    workers = parallel.get("workers")
-    if not isinstance(workers, list) or len(workers) != worker_count:
-        invalid_parallel("worker count does not match worker records")
     worker_counters = []
     worker_branch_candidates = []
     rank_local_ids: list[set[int]] = [set() for _ in range(rank_count)]
@@ -1395,9 +1416,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     total_elapsed = 0
     total_busy = 0
     maximum_elapsed = 0
-    scheduler_sums = dict.fromkeys(PARALLEL_SCHEDULER_SUM_FIELDS, 0)
+    scheduler_sums = dict.fromkeys(scheduler_sum_fields, 0)
     maximum_task_queue_high_watermark = 0
     maximum_task_depth_executed = 0
+    maximum_task_minimum_work_units = 0
     rank_offsets = []
     offset = 0
     for threads in threads_per_rank:
@@ -1468,10 +1490,13 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         elapsed = worker.get("elapsed_nanoseconds")
         busy = worker.get("busy_nanoseconds")
         worker_scheduler_values = {
-            name: worker.get(name) for name in PARALLEL_SCHEDULER_SUM_FIELDS
+            name: worker.get(name) for name in scheduler_sum_fields
         }
         task_queue_high_watermark = worker.get("task_queue_high_watermark")
         task_depth = worker.get("maximum_task_depth_executed")
+        task_minimum_work_units = (
+            worker.get("task_minimum_work_units") if has_transfer_measurements else 0
+        )
         if any(
             not is_nonnegative_integer(value)
             for value in (
@@ -1481,6 +1506,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 busy,
                 task_queue_high_watermark,
                 task_depth,
+                task_minimum_work_units,
                 *worker_scheduler_values.values(),
             )
         ):
@@ -1512,6 +1538,33 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             worker_scheduler_values["depth_two_tasks_executed"]
             + worker_scheduler_values["deeper_tasks_executed"]
         )
+        if has_transfer_measurements:
+            if (
+                worker_scheduler_values["tasks_immediately_pruned"]
+                > transferred_tasks_executed
+            ):
+                invalid_parallel(
+                    "worker immediate prunes exceed executed tasks at "
+                    f"record {worker_index}"
+                )
+            if (
+                transferred_tasks_executed == 0
+                and worker_scheduler_values["task_execution_nanoseconds"] != 0
+            ):
+                invalid_parallel(
+                    "worker execution time without executed tasks at "
+                    f"record {worker_index}"
+                )
+            if any(
+                worker_scheduler_values[name] > busy
+                for name in (
+                    "task_serialization_nanoseconds",
+                    "task_execution_nanoseconds",
+                )
+            ):
+                invalid_parallel(
+                    f"worker task timing exceeds busy time at record {worker_index}"
+                )
         if task_steals > task_steal_attempts:
             invalid_parallel(
                 f"worker task steals exceed attempts at record {worker_index}"
@@ -1555,6 +1608,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         maximum_task_depth_executed = max(
             maximum_task_depth_executed,
             task_depth,
+        )
+        maximum_task_minimum_work_units = max(
+            maximum_task_minimum_work_units,
+            task_minimum_work_units,
         )
 
         graph = worker.get("processed_graph")
@@ -1624,6 +1681,10 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         invalid_parallel("aggregate task queue high-water mark does not match workers")
     if aggregate["maximum_task_depth_executed"] != maximum_task_depth_executed:
         invalid_parallel("aggregate maximum task depth does not match workers")
+    if has_transfer_measurements and (
+        aggregate["task_minimum_work_units"] != maximum_task_minimum_work_units
+    ):
+        invalid_parallel("aggregate minimum task work does not match workers")
     aggregate_depth_two_spawned = aggregate["depth_two_tasks_spawned"]
     aggregate_depth_two_executed = aggregate["depth_two_tasks_executed"]
     aggregate_deeper_spawned = aggregate["deeper_tasks_spawned"]

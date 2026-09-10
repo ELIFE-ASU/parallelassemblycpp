@@ -428,6 +428,13 @@ class BenchmarkTests(unittest.TestCase):
                 "maximum_task_depth_executed": 2,
                 "proactive_tail_refills": 1,
                 "warm_start_branches": 1,
+                "task_serialization_nanoseconds": 9,
+                "task_execution_nanoseconds": 20,
+                "tasks_immediately_pruned": 0,
+                "task_buffers_created": 2,
+                "task_buffers_reused": 1,
+                "tasks_rejected_as_too_small": 4,
+                "task_minimum_work_units": 120,
             }
         )
         second_worker.update(
@@ -442,6 +449,13 @@ class BenchmarkTests(unittest.TestCase):
                 "task_queue_high_watermark": 0,
                 "maximum_task_depth_executed": 3,
                 "warm_start_branches": 1 if mode != "openmp" else 0,
+                "task_serialization_nanoseconds": 0,
+                "task_execution_nanoseconds": 17,
+                "tasks_immediately_pruned": 1,
+                "task_buffers_created": 0,
+                "task_buffers_reused": 0,
+                "tasks_rejected_as_too_small": 2,
+                "task_minimum_work_units": 80,
             }
         )
         aggregate.update(
@@ -458,6 +472,13 @@ class BenchmarkTests(unittest.TestCase):
                 "maximum_task_depth_executed": 3,
                 "proactive_tail_refills": 1,
                 "warm_start_branches": rank_count,
+                "task_serialization_nanoseconds": 9,
+                "task_execution_nanoseconds": 37,
+                "tasks_immediately_pruned": 1,
+                "task_buffers_created": 2,
+                "task_buffers_reused": 1,
+                "tasks_rejected_as_too_small": 6,
+                "task_minimum_work_units": 120,
             }
         )
 
@@ -1591,6 +1612,70 @@ class BenchmarkTests(unittest.TestCase):
                 parsed["parallel"]["aggregate"]["maximum_task_depth_executed"],
                 3,
             )
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["task_execution_nanoseconds"],
+                37,
+            )
+            self.assertEqual(
+                parsed["parallel"]["aggregate"]["task_minimum_work_units"],
+                120,
+            )
+
+            for field in benchmark.PARALLEL_TASK_TRANSFER_SUM_FIELDS:
+                with self.subTest(transfer_sum=field):
+                    malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
+                    malformed_transfer["parallel"]["aggregate"][field] += 1
+                    malformed_path = directory / f"parallel-transfer-{field}.json"
+                    malformed_path.write_text(
+                        json.dumps(malformed_transfer), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(
+                        benchmark.BenchmarkError,
+                        f"aggregate scheduler field {field}",
+                    ):
+                        benchmark.parse_search_telemetry(malformed_path)
+
+            for field in (
+                *benchmark.PARALLEL_TASK_TRANSFER_SUM_FIELDS,
+                "task_minimum_work_units",
+            ):
+                with self.subTest(missing_worker_transfer=field):
+                    malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
+                    del malformed_transfer["parallel"]["workers"][1][field]
+                    malformed_path = directory / "parallel-transfer-missing.json"
+                    malformed_path.write_text(
+                        json.dumps(malformed_transfer), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(
+                        benchmark.BenchmarkError, "invalid worker measurement"
+                    ):
+                        benchmark.parse_search_telemetry(malformed_path)
+
+            invalid_transfer_cases = (
+                ("tasks_immediately_pruned", 2, "immediate prunes exceed executed"),
+                ("task_serialization_nanoseconds", 51, "task timing exceeds busy"),
+                ("task_execution_nanoseconds", 51, "task timing exceeds busy"),
+                ("task_minimum_work_units", -1, "invalid worker measurement"),
+            )
+            for field, value, message in invalid_transfer_cases:
+                with self.subTest(invalid_worker_transfer=field):
+                    malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
+                    malformed_transfer["parallel"]["workers"][0][field] = value
+                    malformed_path = directory / "parallel-transfer-invalid.json"
+                    malformed_path.write_text(
+                        json.dumps(malformed_transfer), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(benchmark.BenchmarkError, message):
+                        benchmark.parse_search_telemetry(malformed_path)
+
+            malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
+            malformed_transfer["parallel"]["aggregate"]["task_minimum_work_units"] = 200
+            malformed_path = directory / "parallel-transfer-minimum-maximum.json"
+            malformed_path.write_text(json.dumps(malformed_transfer), encoding="utf-8")
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError, "aggregate minimum task work"
+            ):
+                benchmark.parse_search_telemetry(malformed_path)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["branch_scheduler"]["adaptive_splitting"][
