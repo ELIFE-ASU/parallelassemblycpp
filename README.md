@@ -24,7 +24,7 @@ variable is now `PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE`.
 When updating an existing checkout, build in a fresh directory and reinstall
 into a clean prefix; old binaries and package files are not removed
 automatically. Regenerate PGO training profiles for the renamed targets. The
-package version remains 5.0.0, and the `v5/` source directory
+package version is 0.1.0, and the `v5/` source directory
 retains its name.
 
 ## Quick start
@@ -330,7 +330,7 @@ cmake -S . -B build \
 Then link the imported target in the consuming project's `CMakeLists.txt`:
 
 ```cmake
-find_package(ParallelAssemblyCpp 5 CONFIG REQUIRED)
+find_package(ParallelAssemblyCpp 0.1.0 CONFIG REQUIRED)
 target_link_libraries(my_program PRIVATE ParallelAssemblyCpp::Library)
 ```
 
