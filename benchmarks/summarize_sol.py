@@ -27,6 +27,8 @@ FIELDNAMES = (
     "case",
     "topology",
     "workers",
+    "mpi_ranks",
+    "threads_per_rank",
     "runs",
     "wall_median_seconds",
     "wall_mad_seconds",
@@ -38,7 +40,7 @@ FIELDNAMES = (
 )
 
 
-def report_rows(path: Path, root: Path, *, parallel: bool) -> list[dict[str, object]]:
+def report_rows(path: Path, root: Path, *, topology: str) -> list[dict[str, object]]:
     """Validate raw measurements and summarize case and suite round totals."""
     checker = check_parallel_scaling
     document = checker.load_result(path)
@@ -48,13 +50,28 @@ def report_rows(path: Path, root: Path, *, parallel: bool) -> list[dict[str, obj
         raise checker.ScalingError(f"invalid run count in {path}")
     execution = checker.execution_identity(document, "candidate", path)
     workers = checker.execution_worker_count(execution, str(path))
-    if parallel:
+    mpi_ranks = checker.mpi_rank_count(execution, str(path))
+    threads_per_rank = workers // mpi_ranks
+    parallel = topology != "serial"
+    if topology == "omp":
         match = re.fullmatch(r"omp-([0-9]+)\.json", path.name)
         if match is None or int(match[1]) < 2:
             raise checker.ScalingError(f"invalid OpenMP report filename: {path}")
-        if checker.mpi_rank_count(execution, str(path)) != 1:
+        if mpi_ranks != 1:
             raise checker.ScalingError(f"OpenMP report must use one process: {path}")
         checker.evaluate_report(checker.TopologySpec("omp", int(match[1]), path))
+    elif topology == "hybrid":
+        match = re.fullmatch(r"hybrid-([0-9]+)x([0-9]+)\.json", path.name)
+        if match is None or int(match[1]) < 2 or int(match[2]) < 2:
+            raise checker.ScalingError(f"invalid hybrid report filename: {path}")
+        ranks, threads = int(match[1]), int(match[2])
+        if mpi_ranks != ranks or threads_per_rank != threads:
+            raise checker.ScalingError(
+                f"hybrid topology mismatch in {path}: expected {ranks} MPI ranks "
+                f"and {threads} threads per rank, recorded {mpi_ranks} ranks "
+                f"and {threads_per_rank} effective threads per rank"
+            )
+        checker.evaluate_report(checker.TopologySpec("hybrid", ranks * threads, path))
     elif (
         workers != 1
         or "--parallel=on" in execution.arguments
@@ -82,8 +99,10 @@ def report_rows(path: Path, root: Path, *, parallel: bool) -> list[dict[str, obj
             "run_kind": "parallel" if parallel else "suite",
             "suite": suite,
             "case": name,
-            "topology": "omp" if parallel else "serial",
+            "topology": topology,
             "workers": workers,
+            "mpi_ranks": mpi_ranks,
+            "threads_per_rank": threads_per_rank,
             "runs": runs,
             "wall_median_seconds": wall.median,
             "wall_mad_seconds": wall.mad,
@@ -141,12 +160,13 @@ def write_summary(root: Path) -> tuple[Path, int]:
     if not root.is_dir():
         raise check_parallel_scaling.ScalingError(f"output directory not found: {root}")
     rows = []
-    for directory, pattern, parallel in (
-        ("suites", "*.json", False),
-        ("parallel", "omp-*.json", True),
+    for directory, pattern, topology in (
+        ("suites", "*.json", "serial"),
+        ("parallel", "omp-*.json", "omp"),
+        ("hybrid", "hybrid-*.json", "hybrid"),
     ):
         for path in sorted((root / directory).glob(pattern)):
-            rows.extend(report_rows(path, root, parallel=parallel))
+            rows.extend(report_rows(path, root, topology=topology))
 
     destination = root / "summary.csv"
     temporary: Path | None = None

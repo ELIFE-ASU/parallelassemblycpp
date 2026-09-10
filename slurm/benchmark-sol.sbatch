@@ -29,12 +29,16 @@ Usage: sbatch [SLURM OPTIONS] slurm/benchmark-sol.sbatch [OPTIONS]
   --suites LIST       Comma-separated suites (default: full,profile,scaling)
   --threads LIST     OpenMP thread counts, e.g. 2,4,8 (default: powers of two
                      up to allocated CPUs, also including the allocation size)
-  --runs N           Measured rounds per suite/thread count (default: 6)
+  --hybrid-layouts LIST
+                     Comma-separated RANKSxTHREADS, e.g. 2x2,2x4,4x2; use none
+                     to skip hybrid. Default: power-of-two MPI rank counts
+                     splitting each selected worker total, with >=2 threads/rank.
+  --runs N           Measured rounds per case/scaling layout (default: 6)
   --warmup N         Warm-up rounds (default: 1)
   --timeout SECONDS  Per-calculation timeout (default: 600)
   --help             Show this help
 All paths must be absolute. Use a new output directory for every job.
-The thread sweep measures Paclitaxel against paired serial runs.
+OpenMP and MPI/OpenMP hybrid sweeps measure Paclitaxel against paired serial runs.
 Default allocation: one exclusive Sol node, 128 physical cores, all node memory.
 EOF
 }
@@ -44,6 +48,7 @@ repo_dir="${SLURM_SUBMIT_DIR:-$PWD}"
 output_dir=""
 suites="full,profile,scaling"
 thread_list=""
+hybrid_list=""
 runs=6
 warmup=1
 timeout=600
@@ -62,6 +67,7 @@ while (( $# )); do
         --output-dir) output_dir="$2" ;;
         --suites) suites="$2" ;;
         --threads) thread_list="$2" ;;
+        --hybrid-layouts) hybrid_list="$2" ;;
         --runs) runs="$2" ;;
         --warmup) warmup="$2" ;;
         --timeout) timeout="$2" ;;
@@ -80,7 +86,7 @@ if [[ ! "$cpus" =~ ^[1-9][0-9]*$ ]] || (( cpus < 2 )); then
     exit 1
 fi
 if [[ "${SLURM_JOB_NUM_NODES:-1}" != 1 || "${SLURM_NTASKS:-1}" != 1 ]]; then
-    echo "This job measures single-node OpenMP scaling; request one node and one task." >&2
+    echo "Use one node and one driver task; MPI ranks are launched within its CPU allocation." >&2
     exit 1
 fi
 output_dir="${output_dir:-$repo_dir/build/sol-benchmarks/$SLURM_JOB_ID}"
@@ -91,6 +97,7 @@ for path in "$env_prefix" "$repo_dir" "$output_dir"; do
     fi
 done
 if [[ ! -f "$repo_dir/benchmarks/paclitaxel_scaling.py" ||
+      ! -f "$repo_dir/benchmarks/hybrid_scaling.py" ||
       ! -f "$repo_dir/benchmarks/summarize_sol.py" ||
       ! -f "$repo_dir/CMakePresets.json" ]]; then
     echo "Repository files not found in $repo_dir; submit from the root or use --repo-dir." >&2
@@ -129,6 +136,30 @@ else
     fi
 fi
 
+hybrid_layouts=()
+if [[ "$hybrid_list" == none ]]; then
+    :
+elif [[ -n "$hybrid_list" ]]; then
+    if [[ ! "$hybrid_list" =~ ^[1-9][0-9]*x[1-9][0-9]*(,[1-9][0-9]*x[1-9][0-9]*)*$ ]]; then
+        echo "--hybrid-layouts must be comma-separated RANKSxTHREADS or none." >&2
+        exit 1
+    fi
+    IFS=, read -r -a hybrid_layouts <<< "$hybrid_list"
+else
+    for workers in "${thread_counts[@]}"; do
+        for (( ranks=2; ranks<=workers/2; ranks*=2 )); do
+            if (( workers % ranks == 0 )); then
+                hybrid_layouts+=("${ranks}x$((workers / ranks))")
+            fi
+        done
+    done
+    if (( ${#hybrid_layouts[@]} == 0 )); then
+        echo "Hybrid scaling needs at least four workers; select a larger --threads value" >&2
+        echo "or set --hybrid-layouts explicitly (use none for an OpenMP-only run)." >&2
+        exit 1
+    fi
+fi
+
 cd "$repo_dir"
 module purge
 module load mamba/latest
@@ -144,13 +175,34 @@ export PYTHONUNBUFFERED=1
 # measuring. The existing sweep validates thread counts and repetition limits.
 python -c 'import matplotlib; import matplotlib.backends.backend_agg'
 build_dir="$output_dir/build"
+configure_args=(-DASSEMBLYCPP_BUILD_OPENMP=ON)
+build_targets=(AssemblyCpp AssemblyCppOMP)
+if (( ${#hybrid_layouts[@]} )); then
+    mpi_launcher="$env_prefix/bin/mpirun"
+    mpi_compiler="$env_prefix/bin/mpicxx"
+    if [[ ! -x "$mpi_launcher" || ! -x "$mpi_compiler" ]]; then
+        echo "Open MPI tools are missing from $env_prefix; update it with install-sol.sbatch." >&2
+        exit 1
+    fi
+    configure_args+=(-DASSEMBLYCPP_BUILD_HYBRID=ON "-DMPI_CXX_COMPILER=$mpi_compiler")
+    build_targets+=(AssemblyCppHybrid)
+    hybrid_args=(
+        --build-dir "$build_dir" --output-dir "$output_dir/hybrid"
+        --layouts "${hybrid_layouts[@]}" --cpus "$cpus" --mpirun "$mpi_launcher"
+        --runs "$runs" --warmup "$warmup" --timeout "$timeout"
+    )
+fi
 scaling_args=(
     --build-dir "$build_dir" --output-dir "$output_dir/parallel"
     --threads "${thread_counts[@]}" --runs "$runs" --warmup "$warmup"
     --timeout "$timeout"
 )
-srun --ntasks=1 --cpus-per-task="$cpus" --cpu-bind=cores \
+srun --mpi=none --ntasks=1 --cpus-per-task="$cpus" --cpu-bind=cores \
     python benchmarks/paclitaxel_scaling.py "${scaling_args[@]}" --dry-run
+if (( ${#hybrid_layouts[@]} )); then
+    srun --mpi=none --ntasks=1 --cpus-per-task="$cpus" --cpu-bind=cores \
+        python benchmarks/hybrid_scaling.py "${hybrid_args[@]}" --dry-run
+fi
 
 mkdir -p "$(dirname "$output_dir")"
 if ! mkdir "$output_dir"; then
@@ -186,6 +238,7 @@ trap 'exit 143' TERM
         "$repo_dir" "$env_prefix" "$output_dir"
     printf 'Suites: %s\nThreads: %s\nRuns: %s\nWarmup: %s\nTimeout: %s\n' \
         "$suites" "${thread_counts[*]}" "$runs" "$warmup" "$timeout"
+    printf 'Hybrid layouts (ranks x threads): %s\n' "${hybrid_layouts[*]:-none}"
     date --utc --iso-8601=seconds
     hostname
     git rev-parse HEAD || true
@@ -193,19 +246,23 @@ trap 'exit 143' TERM
     (set +u; module list)
     python --version
     cmake --version
+    if (( ${#hybrid_layouts[@]} )); then
+        "$mpi_launcher" --version
+        "$mpi_compiler" --showme
+    fi
     lscpu
     scontrol show job "$SLURM_JOB_ID"
 } > "$output_dir/metadata.txt" 2>&1
 
 cmake --preset performance --fresh -B "$build_dir" \
-    -DASSEMBLYCPP_BUILD_OPENMP=ON 2>&1 | tee "$output_dir/build.log"
+    "${configure_args[@]}" 2>&1 | tee "$output_dir/build.log"
 cmake --build "$build_dir" --parallel "$cpus" \
-    --target AssemblyCpp AssemblyCppOMP 2>&1 | tee -a "$output_dir/build.log"
+    --target "${build_targets[@]}" 2>&1 | tee -a "$output_dir/build.log"
 
 # Each suite uses one pinned CPU. The sweep below runs inside the full allocated
 # CPU set and pins its serial reference consistently across all thread counts.
 for suite in "${suite_names[@]}"; do
-    srun --ntasks=1 --cpus-per-task=1 --cpu-bind=cores \
+    srun --mpi=none --ntasks=1 --cpus-per-task=1 --cpu-bind=cores \
         python benchmarks/benchmark.py --executable "$build_dir/AssemblyCpp" \
         --candidate-parallel off --suite "$suite" \
         --runs "$runs" --warmup "$warmup" --timeout "$timeout" \
@@ -214,8 +271,29 @@ for suite in "${suite_names[@]}"; do
     python benchmarks/summarize_sol.py "$output_dir"
 done
 
-srun --ntasks=1 --cpus-per-task="$cpus" --cpu-bind=cores \
+srun --mpi=none --ntasks=1 --cpus-per-task="$cpus" --cpu-bind=cores \
     python benchmarks/paclitaxel_scaling.py "${scaling_args[@]}" \
     2>&1 | tee "$output_dir/parallel.txt"
+python benchmarks/summarize_sol.py "$output_dir"
+
+if (( ${#hybrid_layouts[@]} )); then
+    # The driver uses local mpirun inside this non-MPI step, with disjoint core
+    # bindings per rank; its MPI children do not request nested Slurm steps.
+    srun --mpi=none --ntasks=1 --cpus-per-task="$cpus" --cpu-bind=cores \
+        python benchmarks/hybrid_scaling.py "${hybrid_args[@]}" \
+        2>&1 | tee "$output_dir/hybrid.txt"
+fi
+
+comparison_specs=()
+for threads in "${thread_counts[@]}"; do
+    comparison_specs+=("omp:$threads:$output_dir/parallel/omp-$threads.json")
+done
+for layout in "${hybrid_layouts[@]}"; do
+    ranks="${layout%x*}"
+    threads="${layout#*x}"
+    comparison_specs+=("hybrid-$layout:$((ranks * threads)):$output_dir/hybrid/hybrid-$layout.json")
+done
+python benchmarks/check_parallel_scaling.py "${comparison_specs[@]}" \
+    2>&1 | tee "$output_dir/parallel-comparison.txt"
 
 printf '\nResults: %s\nQuick analysis: %s/summary.csv\n' "$output_dir" "$output_dir"
