@@ -9,24 +9,6 @@ This repository implements the algorithm described by Ian Seet, Keith Y.
 Patarroyo, Gage Siebert, Sara I. Walker, and Leroy Cronin in [*Rapid Exploration
 of Assembly Chemical Space of Molecular Graphs*](https://arxiv.org/abs/2410.09100).
 
-## Package rename
-
-This package was previously named `assemblycpp-v5` and now lives at
-[**parallelassemblycpp**](https://github.com/ELIFE-ASU/parallelassemblycpp).
-Update checkout URLs, scripts, and Conda activation commands to the new name.
-The executable and CMake package are `ParallelAssemblyCpp`, the imported target
-is `ParallelAssemblyCpp::Library`, and the C++ API uses
-`<parallelassemblycpp.h>` and the `parallelassemblycpp` namespace. Optional
-executables use the same prefix, such as `ParallelAssemblyCppOMP`, and CMake
-options now start with `PARALLELASSEMBLYCPP_`. The branch-lease environment
-variable is now `PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE`.
-
-When updating an existing checkout, build in a fresh directory and reinstall
-into a clean prefix; old binaries and package files are not removed
-automatically. Regenerate PGO training profiles for the renamed targets. The
-package version is 0.1.0, and the `v5/` source directory
-retains its name.
-
 ## Quick start
 
 Requirements: CMake 3.25 or newer, Ninja, and a C++20 compiler.
