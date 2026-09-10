@@ -1,4 +1,4 @@
-"""Generate GCC PGO profiles from a weighted AssemblyCpp corpus."""
+"""Generate GCC PGO profiles from a weighted ParallelAssemblyCpp corpus."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ else:
 
 DEFAULT_WEIGHTS = benchmark.BENCHMARK_DIRECTORY / "pgo-training.tsv"
 WEIGHTS_HEADER = ("name", "repetitions")
-DIRECTORY_MARKER_FILENAME = ".assemblycpp-pgo-profile-directory"
-COMPLETION_FILENAME = "assemblycpp-pgo-complete.json"
+DIRECTORY_MARKER_FILENAME = ".parallelassemblycpp-pgo-profile-directory"
+COMPLETION_FILENAME = "parallelassemblycpp-pgo-complete.json"
 COMPLETION_SCHEMA_VERSION = 2
 
 
@@ -151,10 +151,10 @@ def prepare_profile_directory(path: Path) -> tuple[Path, int]:
             if any(profile_directory.iterdir()):
                 raise benchmark.BenchmarkError(
                     "refusing to adopt non-empty PGO profile directory without "
-                    f"its AssemblyCpp marker: {profile_directory}"
+                    f"its ParallelAssemblyCpp marker: {profile_directory}"
                 )
             directory_marker.write_text(
-                "Dedicated AssemblyCpp PGO profile directory.\n",
+                "Dedicated ParallelAssemblyCpp PGO profile directory.\n",
                 encoding="utf-8",
             )
         completion_file = profile_directory / COMPLETION_FILENAME
@@ -281,7 +281,7 @@ def train(
     ]
 
     with tempfile.TemporaryDirectory(
-        prefix="assemblycpp-pgo-training-"
+        prefix="parallelassemblycpp-pgo-training-"
     ) as temp_directory:
         prepared_cases = iter(
             benchmark.prepare_cases(scheduled_cases, Path(temp_directory))
@@ -321,7 +321,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         "--executable",
         type=Path,
         required=True,
-        help="AssemblyCpp executable built with -fprofile-generate",
+        help="ParallelAssemblyCpp executable built with -fprofile-generate",
     )
     parser.add_argument(
         "--profile-dir",

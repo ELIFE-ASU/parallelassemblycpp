@@ -65,7 +65,9 @@ def repository_paths() -> list[Path]:
     return [
         REPOSITORY_ROOT / raw_path.decode("utf-8")
         for raw_path in completed.stdout.split(b"\0")
-        if raw_path and not (REPOSITORY_ROOT / raw_path.decode("utf-8")).is_symlink()
+        if raw_path
+        and (REPOSITORY_ROOT / raw_path.decode("utf-8")).is_file()
+        and not (REPOSITORY_ROOT / raw_path.decode("utf-8")).is_symlink()
     ]
 
 

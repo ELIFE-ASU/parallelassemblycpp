@@ -59,9 +59,9 @@ struct cyclicCanonPeelingWorkspace
     std::vector<std::size_t> coreVertices;
 };
 
-// Each OpenMP worker owns this scratch through ASSEMBLYCPP_SEARCH_LOCAL.
+// Each OpenMP worker owns this scratch through PARALLELASSEMBLYCPP_SEARCH_LOCAL.
 // Reusing the flat buffers avoids allocation for every cyclic miss.
-inline ASSEMBLYCPP_SEARCH_LOCAL cyclicCanonPeelingWorkspace cyclicCanonPeelingScratch;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL cyclicCanonPeelingWorkspace cyclicCanonPeelingScratch;
 
 /**
  * @brief Cached coloured-core representation with lazy exact labelling.

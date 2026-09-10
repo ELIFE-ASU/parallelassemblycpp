@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=assemblycpp-install
+#SBATCH --job-name=parallelassemblycpp-install
 #SBATCH --partition=lightwork
 #SBATCH --qos=public
 #SBATCH --nodes=1
@@ -13,7 +13,7 @@
 # Submit from the repository root on ASU Sol:
 #   sbatch slurm/install-sol.sbatch [ENV_PREFIX [REPO_DIR]]
 # Optional arguments must be absolute paths. The default environment is
-# ~/.conda/envs/assemblycpp-v5; REPO_DIR defaults to SLURM_SUBMIT_DIR because
+# ~/.conda/envs/parallelassemblycpp; REPO_DIR defaults to SLURM_SUBMIT_DIR because
 # Slurm executes a spooled copy of this script, not the file in the checkout.
 # Site guidance: https://docs.rc.asu.edu/mamba/
 # https://docs.rc.asu.edu/partitions-and-qos/#lightwork
@@ -31,7 +31,7 @@ if (( $# > 2 )); then
     exit 1
 fi
 
-env_prefix="${1:-${HOME}/.conda/envs/assemblycpp-v5}"
+env_prefix="${1:-${HOME}/.conda/envs/parallelassemblycpp}"
 repo_dir="${2:-${SLURM_SUBMIT_DIR:?Missing submission directory}}"
 if [[ "$env_prefix" != /* || "$repo_dir" != /* ]]; then
     echo "ENV_PREFIX and REPO_DIR must be absolute paths." >&2
@@ -74,8 +74,8 @@ set -u
 build_dir="$repo_dir/build/sol-release"
 cmake --preset release --fresh -B "$build_dir"
 cmake --build "$build_dir" --parallel "${SLURM_CPUS_PER_TASK:-1}"
-"$build_dir/AssemblyCpp" --help
+"$build_dir/ParallelAssemblyCpp" --help
 
 printf '\nEnvironment ready. In future Sol jobs, run:\n'
 printf 'module load mamba/latest\nsource activate %q\n' "$env_prefix"
-printf 'Executable: %s/AssemblyCpp\n' "$build_dir"
+printf 'Executable: %s/ParallelAssemblyCpp\n' "$build_dir"

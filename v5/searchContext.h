@@ -224,9 +224,9 @@ struct dagAssemblySearchFrame
     }
 };
 
-inline ASSEMBLYCPP_SEARCH_LOCAL sharedAssemblyTranspositionTable
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL sharedAssemblyTranspositionTable
     *sharedAssemblyStates = nullptr;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t sharedAssemblyWorkerIndex = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t sharedAssemblyWorkerIndex = 0;
 
 /** Mutable caches and fragmentation scratch owned by exactly one worker. */
 struct assemblySearchStorage
@@ -276,7 +276,7 @@ struct assemblySearchStorage
     }
 
     /** L1-first lookup for searches configured with a process-shared L2. */
-    ASSEMBLYCPP_NOINLINE assemblyTranspositionTable::result considerShared(
+    PARALLELASSEMBLYCPP_NOINLINE assemblyTranspositionTable::result considerShared(
         std::span<const int> key,
         int sumDupBonds
     )
@@ -414,26 +414,26 @@ struct parallelSearchTaskDescriptor
     unsigned int depth = 2;
 };
 
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksSpawned = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksExecuted = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeeperTasksSpawned = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeeperTasksExecuted = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskStealAttempts = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskSteals = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchLocalTaskExecutions = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchSchedulerIdleWaits = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchSchedulerIdleNanoseconds = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeepRefillActivations = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskQueueHighWatermark = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL unsigned int searchMaximumTaskDepthExecuted = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchWarmStartBranches = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskSerializationNanoseconds = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskExecutionNanoseconds = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksImmediatelyPruned = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersCreated = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersReused = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksRejectedAsTooSmall = 0;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskMinimumWorkUnits = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksSpawned = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDepthTwoTasksExecuted = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeeperTasksSpawned = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeeperTasksExecuted = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskStealAttempts = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskSteals = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchLocalTaskExecutions = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchSchedulerIdleWaits = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchSchedulerIdleNanoseconds = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchDeepRefillActivations = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskQueueHighWatermark = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL unsigned int searchMaximumTaskDepthExecuted = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchWarmStartBranches = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskSerializationNanoseconds = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskExecutionNanoseconds = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksImmediatelyPruned = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersCreated = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersReused = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksRejectedAsTooSmall = 0;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskMinimumWorkUnits = 0;
 
 /** Keep independent scheduler ownership domains off the same cache line. */
 template<typename Value>
@@ -1503,4 +1503,4 @@ private:
     std::atomic_bool cancelled{false};
 };
 
-ASSEMBLYCPP_SEARCH_LOCAL ParallelTaskScheduler *parallelTaskScheduler = nullptr;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL ParallelTaskScheduler *parallelTaskScheduler = nullptr;

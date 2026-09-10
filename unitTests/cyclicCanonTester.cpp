@@ -30,7 +30,7 @@ using IntegerPair = pair<int, int>;
 
 // Model the worker-local state used by the OpenMP executable. Each test thread
 // must have its own mask arena, canonical caches, interners, and scratch.
-#define ASSEMBLYCPP_SEARCH_LOCAL thread_local
+#define PARALLELASSEMBLYCPP_SEARCH_LOCAL thread_local
 #include "../v5/activeWordMask.h"
 
 constexpr int ceilLog2(int value)

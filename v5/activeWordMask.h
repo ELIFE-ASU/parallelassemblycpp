@@ -15,8 +15,8 @@
 
 #include "compilerAttributes.h"
 
-#ifndef ASSEMBLYCPP_SEARCH_LOCAL
-    #define ASSEMBLYCPP_SEARCH_LOCAL
+#ifndef PARALLELASSEMBLYCPP_SEARCH_LOCAL
+    #define PARALLELASSEMBLYCPP_SEARCH_LOCAL
 #endif
 
 /**
@@ -87,7 +87,7 @@ public:
         }
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE ~ActiveWordMask()
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE ~ActiveWordMask()
     {
         if (!isSmall() && storage_.tail != nullptr) [[unlikely]]
         {
@@ -171,7 +171,7 @@ public:
         return storage_.tail == nullptr ? 0 : storage_.tail->data()[index];
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &set(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &set(
         std::size_t position,
         bool value = true
     )
@@ -192,7 +192,7 @@ public:
     }
 
     /** Return this mask with one bit set, avoiding a COW retain/detach pair. */
-    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask withBitSet(
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask withBitSet(
         std::size_t position
     ) const
     {
@@ -206,7 +206,7 @@ public:
         return withBitSetWide(position);
     }
 
-    [[nodiscard]] ASSEMBLYCPP_NOINLINE ActiveWordMask withBitSetWide(
+    [[nodiscard]] PARALLELASSEMBLYCPP_NOINLINE ActiveWordMask withBitSetWide(
         std::size_t position
     ) const
     {
@@ -326,7 +326,7 @@ public:
         return (*this)[position];
     }
 
-    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE std::size_t count() const noexcept
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE std::size_t count() const noexcept
     {
         if (isSmall()) [[likely]]
         {
@@ -335,7 +335,7 @@ public:
         return countWide();
     }
 
-    [[nodiscard]] ASSEMBLYCPP_NOINLINE std::size_t countWide() const noexcept
+    [[nodiscard]] PARALLELASSEMBLYCPP_NOINLINE std::size_t countWide() const noexcept
     {
         if (storage_.tail == nullptr) return 0;
         std::size_t result = 0;
@@ -397,7 +397,7 @@ public:
         return word;
     }
 
-    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE bool intersects(
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE bool intersects(
         const ActiveWordMask &other
     ) const noexcept
     {
@@ -408,7 +408,7 @@ public:
         return intersectsWide(other);
     }
 
-    [[nodiscard]] ASSEMBLYCPP_NOINLINE bool intersectsWide(
+    [[nodiscard]] PARALLELASSEMBLYCPP_NOINLINE bool intersectsWide(
         const ActiveWordMask &other
     ) const noexcept
     {
@@ -537,7 +537,7 @@ public:
 
     /** Intersect with any word-oriented view without materialising a mask. */
     template<typename WordSource>
-    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &intersectWords(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &intersectWords(
         const WordSource &other
     )
     {
@@ -555,7 +555,7 @@ public:
         return *this;
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &operator|=(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &operator|=(
         const ActiveWordMask &other
     )
     {
@@ -567,7 +567,7 @@ public:
         return orAssignWide(other);
     }
 
-    ASSEMBLYCPP_NOINLINE ActiveWordMask &orAssignWide(
+    PARALLELASSEMBLYCPP_NOINLINE ActiveWordMask &orAssignWide(
         const ActiveWordMask &other
     )
     {
@@ -583,7 +583,7 @@ public:
         return *this;
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &operator^=(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &operator^=(
         const ActiveWordMask &other
     )
     {
@@ -595,7 +595,7 @@ public:
         return xorAssignWide(other);
     }
 
-    ASSEMBLYCPP_NOINLINE ActiveWordMask &xorAssignWide(
+    PARALLELASSEMBLYCPP_NOINLINE ActiveWordMask &xorAssignWide(
         const ActiveWordMask &other
     )
     {
@@ -710,7 +710,7 @@ public:
         return result;
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE friend bool operator==(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE friend bool operator==(
         const ActiveWordMask &left,
         const ActiveWordMask &right
     ) noexcept
@@ -719,7 +719,7 @@ public:
         return equalsWide(left, right);
     }
 
-    ASSEMBLYCPP_NOINLINE static bool equalsWide(
+    PARALLELASSEMBLYCPP_NOINLINE static bool equalsWide(
         const ActiveWordMask &left,
         const ActiveWordMask &right
     ) noexcept
@@ -737,7 +737,7 @@ public:
         return true;
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE friend bool operator==(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE friend bool operator==(
         const ActiveWordMask &mask,
         unsigned long long value
     ) noexcept
@@ -762,7 +762,7 @@ public:
         return mask == value;
     }
 
-    [[nodiscard]] ASSEMBLYCPP_ALWAYS_INLINE std::size_t hash() const noexcept
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE std::size_t hash() const noexcept
     {
         if (activeWordCount_ == 0) return 0;
         if (isSmall()) [[likely]]
@@ -772,7 +772,7 @@ public:
         return hashWide();
     }
 
-    [[nodiscard]] ASSEMBLYCPP_NOINLINE std::size_t hashWide() const noexcept
+    [[nodiscard]] PARALLELASSEMBLYCPP_NOINLINE std::size_t hashWide() const noexcept
     {
         std::size_t result = std::hash<word_type>{}(activeWord(0));
         for (std::size_t i = 1; i < activeWordCount_; i++)
@@ -950,7 +950,7 @@ private:
         }
     }
 
-    ASSEMBLYCPP_NOINLINE static void destroyWide(WideWords *words) noexcept
+    PARALLELASSEMBLYCPP_NOINLINE static void destroyWide(WideWords *words) noexcept
     {
         release(words);
     }
@@ -996,7 +996,7 @@ private:
         return storage_.tail;
     }
 
-    ASSEMBLYCPP_NOINLINE ActiveWordMask &setWideChanged(
+    PARALLELASSEMBLYCPP_NOINLINE ActiveWordMask &setWideChanged(
         std::size_t wordIndex,
         word_type bit,
         bool value
@@ -1117,9 +1117,9 @@ private:
         storage_.tail = replacement;
     }
 
-    inline static ASSEMBLYCPP_SEARCH_LOCAL std::size_t activeBitCount_ = wordBits;
-    inline static ASSEMBLYCPP_SEARCH_LOCAL std::size_t activeWordCount_ = 1;
-    inline static ASSEMBLYCPP_SEARCH_LOCAL ArenaState arena_;
+    inline static PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t activeBitCount_ = wordBits;
+    inline static PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t activeWordCount_ = 1;
+    inline static PARALLELASSEMBLYCPP_SEARCH_LOCAL ArenaState arena_;
     Storage storage_;
 };
 

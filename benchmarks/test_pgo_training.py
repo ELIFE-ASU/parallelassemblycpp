@@ -201,7 +201,7 @@ class PgoTrainingTests(unittest.TestCase):
                 prepared: benchmark.PreparedCase,
                 timeout: float,
             ) -> benchmark.Measurement:
-                self.assertEqual(executable, Path("AssemblyCpp"))
+                self.assertEqual(executable, Path("ParallelAssemblyCpp"))
                 self.assertEqual(timeout, 12.0)
                 calls.append(prepared.case.name)
                 working_directories.append(prepared.working_directory)
@@ -213,7 +213,7 @@ class PgoTrainingTests(unittest.TestCase):
                 contextlib.redirect_stdout(output),
             ):
                 completed = pgo_training.train(
-                    Path("AssemblyCpp"), weighted, timeout=12.0
+                    Path("ParallelAssemblyCpp"), weighted, timeout=12.0
                 )
 
             self.assertEqual(completed, 3)
@@ -225,7 +225,7 @@ class PgoTrainingTests(unittest.TestCase):
     def test_main_requires_new_profile_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
-            executable = directory / "AssemblyCpp"
+            executable = directory / "ParallelAssemblyCpp"
             executable.write_bytes(b"instrumented")
             profiles = directory / "profiles"
             stderr = io.StringIO()
@@ -250,7 +250,7 @@ class PgoTrainingTests(unittest.TestCase):
     def test_main_accepts_fresh_profile_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
-            executable = directory / "AssemblyCpp"
+            executable = directory / "ParallelAssemblyCpp"
             executable.write_bytes(b"instrumented")
             profiles = directory / "profiles"
             profiles.mkdir()
@@ -312,7 +312,7 @@ class PgoTrainingTests(unittest.TestCase):
     def test_failed_training_leaves_no_completion_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
-            executable = directory / "AssemblyCpp"
+            executable = directory / "ParallelAssemblyCpp"
             executable.write_bytes(b"instrumented")
             profiles = directory / "profiles"
             profiles.mkdir()
@@ -347,7 +347,7 @@ class PgoTrainingTests(unittest.TestCase):
     def test_changed_weights_leave_no_completion_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
-            executable = directory / "AssemblyCpp"
+            executable = directory / "ParallelAssemblyCpp"
             executable.write_bytes(b"instrumented")
             profiles = directory / "profiles"
             weights = directory / "weights.tsv"

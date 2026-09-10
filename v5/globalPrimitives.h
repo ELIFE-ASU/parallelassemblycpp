@@ -39,7 +39,7 @@ struct assemblyFragment
         connected(isConnected) {}
 
     /** Retain allowed edges, invalidating metadata only when the mask changes. */
-    ASSEMBLYCPP_ALWAYS_INLINE bool retainEdges(const EdgeMask &allowedMask)
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE bool retainEdges(const EdgeMask &allowedMask)
     {
         if (allowedMask.contains(mask)) return false;
         mask &= allowedMask;
@@ -50,7 +50,7 @@ struct assemblyFragment
     }
 
     /** Retain aggregate-mask words without materialising an owning wide mask. */
-    ASSEMBLYCPP_ALWAYS_INLINE bool retainEdges(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE bool retainEdges(
         const EdgeMaskAccumulator &allowedMask
     )
     {
@@ -67,8 +67,8 @@ static_assert(sizeof(assemblyFragment) == 2 * sizeof(uint64_t));
 
 int maximumEnumerationCount = 50000000;
 
-ASSEMBLYCPP_SEARCH_LOCAL string moleculeName;
-ASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL string moleculeName;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
 #ifdef _WIN32
     std::atomic_bool interruptFlag = false;
     std::atomic_bool userInterruptReceived = false;
@@ -79,11 +79,11 @@ ASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
 // Solver workers use a real C++ atomic for cooperative cancellation. POSIX
 // signal handlers retain sig_atomic_t flags and never write this object.
 std::atomic_bool searchCancellationFlag = false;
-ASSEMBLYCPP_SEARCH_LOCAL clock_t startTime = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL clock_t startTime = 0;
 unsigned long long maximumRuntimeTicks =
     std::numeric_limits<unsigned long long>::max();
-ASSEMBLYCPP_SEARCH_LOCAL bool runtimeLimitReached = false;
-ASSEMBLYCPP_SEARCH_LOCAL bool enumerationLimitReached = false;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL bool runtimeLimitReached = false;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL bool enumerationLimitReached = false;
 
 /** Result of a nonblocking claim against a process-local distributed chunk. */
 enum class distributedRootAvailability
@@ -115,10 +115,10 @@ public:
     virtual void progress() noexcept = 0;
 };
 
-ASSEMBLYCPP_SEARCH_LOCAL distributedSearchController
+PARALLELASSEMBLYCPP_SEARCH_LOCAL distributedSearchController
     *activeDistributedSearch = nullptr;
-ASSEMBLYCPP_SEARCH_LOCAL bool ownsDistributedSearchProgress = false;
-ASSEMBLYCPP_SEARCH_LOCAL size_t distributedSearchProgressCountdown = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL bool ownsDistributedSearchProgress = false;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t distributedSearchProgressCountdown = 0;
 
 /** One molecule edge and its position in the source atom's adjacency list. */
 struct MoleculeEdge
@@ -137,13 +137,13 @@ struct MoleculeEdge
         sourceBondIndex(sourceBondIndexValue) {}
 };
 
-ASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
-ASSEMBLYCPP_SEARCH_LOCAL vector<MoleculeEdge> originalEdgeList, universeEdgeList;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL vector<MoleculeEdge> originalEdgeList, universeEdgeList;
 
 // Parallel workers borrow the process-owned edge universe instead of copying
 // it into their otherwise thread-local search globals. Serial searches and
 // the one parallel producer continue to use universeEdgeList directly.
-inline ASSEMBLYCPP_SEARCH_LOCAL const vector<MoleculeEdge>
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const vector<MoleculeEdge>
     *sharedUniverseEdgeList = nullptr;
 
 [[nodiscard]] inline const vector<MoleculeEdge> &searchUniverseEdgeList() noexcept
@@ -153,7 +153,7 @@ inline ASSEMBLYCPP_SEARCH_LOCAL const vector<MoleculeEdge>
 }
 
 /// Hash table for edgelists for pathway algorithm
-ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, IntegerPair>
+PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, IntegerPair>
     bitsetHashTable;
 
 bool pathwayOutputEnabled = true;
@@ -176,26 +176,26 @@ enum class parallelMode
 parallelMode parallelExecutionMode = parallelMode::off;
 // Zero selects the OpenMP runtime default; positive values are per process.
 size_t parallelThreadCount = 0;
-ASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
-ASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
-ASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>>
+PARALLELASSEMBLYCPP_SEARCH_LOCAL int lastCalculatedAssemblyIndex = -1;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL int disjointFragments = 1;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL vector<pair<unsigned long long, int>>
     intermediateAssemblyIndices;
 
 // These fields describe the worker's MPI topology for telemetry and retain the
 // serial/OpenMP fallback mapping. Multi-rank searches receive root indices from
 // the distributed request queue instead of using the modulo mapping.
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionIndex = 0;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionCount = 1;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchRootBranchOrdinal = 0;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseSize = 1;
-ASSEMBLYCPP_SEARCH_LOCAL std::atomic<size_t> *sharedBranchLeaseCursor = nullptr;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseCount = 0;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchAssignmentCount = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionIndex = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchRankPartitionCount = 1;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchRootBranchOrdinal = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseSize = 1;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL std::atomic<size_t> *sharedBranchLeaseCursor = nullptr;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchLeaseCount = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchBranchAssignmentCount = 0;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchProactiveTailRefills = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchProactiveTailRefills = 0;
 #endif
-ASSEMBLYCPP_SEARCH_LOCAL std::atomic<int> *sharedAssemblyIndex = nullptr;
-ASSEMBLYCPP_SEARCH_LOCAL bool suppressSearchOutput = false;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL std::atomic<int> *sharedAssemblyIndex = nullptr;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL bool suppressSearchOutput = false;
 
 constexpr size_t parallelMinimumQueuedTasksPerWorker = 8;
 constexpr size_t parallelTargetQueuedTasksPerWorker = 16;
@@ -253,8 +253,8 @@ constexpr size_t searchStopPollInterval = 128;
 static_assert(std::has_single_bit(searchStopPollInterval));
 constexpr size_t distributedSearchProgressPollInterval = 1024;
 static_assert(std::has_single_bit(distributedSearchProgressPollInterval));
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchStopPollCountdown = 0;
-ASSEMBLYCPP_SEARCH_LOCAL size_t searchStopInnerPollCountdown = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchStopPollCountdown = 0;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchStopInnerPollCountdown = 0;
 
 bool searchShouldStop()
 {

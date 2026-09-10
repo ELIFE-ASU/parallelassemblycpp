@@ -250,7 +250,7 @@ private:
         return header;
     }
 
-    ASSEMBLYCPP_NOINLINE result insertMiss(
+    PARALLELASSEMBLYCPP_NOINLINE result insertMiss(
         std::span<const int> key,
         std::uint32_t hash,
         int sumDupBonds,

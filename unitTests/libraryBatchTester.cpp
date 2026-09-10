@@ -1,4 +1,4 @@
-#include "assemblycpp.h"
+#include "parallelassemblycpp.h"
 
 #include <chrono>
 #include <filesystem>
@@ -25,7 +25,7 @@ public:
                                 .time_since_epoch()
                                 .count();
         path = std::filesystem::temp_directory_path() /
-               ("assemblycpp-library-test-" + std::to_string(suffix));
+               ("parallelassemblycpp-library-test-" + std::to_string(suffix));
         std::filesystem::create_directory(path);
     }
 
@@ -54,8 +54,8 @@ int main(int argc, char **argv)
     }
 
     const std::vector<std::string> inputs = {argv[1], argv[2]};
-    const std::vector<assemblycpp::CalculationResult> batch =
-        assemblycpp::calculateBatch(inputs);
+    const std::vector<parallelassemblycpp::CalculationResult> batch =
+        parallelassemblycpp::calculateBatch(inputs);
     if (
         !require(batch.size() == 2, "batch result count mismatch") ||
         !require(batch[0].succeeded, "icosane batch calculation failed") ||
@@ -65,18 +65,18 @@ int main(int argc, char **argv)
     ) return 1;
 
     std::ifstream stream(argv[1]);
-    const assemblycpp::CalculationResult streamed =
-        assemblycpp::calculateMolfile(stream);
+    const parallelassemblycpp::CalculationResult streamed =
+        parallelassemblycpp::calculateMolfile(stream);
     if (
         !require(streamed.succeeded, "stream calculation failed") ||
         !require(streamed.assemblyIndex == 6, "stream calculation index mismatch")
     ) return 1;
 
     std::ifstream graphStream(argv[4]);
-    const assemblycpp::CalculationResult streamedGraph =
-        assemblycpp::calculateGraph(graphStream);
-    const assemblycpp::CalculationResult graphFile =
-        assemblycpp::calculate(argv[4]);
+    const parallelassemblycpp::CalculationResult streamedGraph =
+        parallelassemblycpp::calculateGraph(graphStream);
+    const parallelassemblycpp::CalculationResult graphFile =
+        parallelassemblycpp::calculate(argv[4]);
     if (
         !require(streamedGraph.succeeded, "graph stream calculation failed") ||
         !require(streamedGraph.input == "<stream>", "graph stream input mismatch") ||
@@ -98,13 +98,13 @@ int main(int argc, char **argv)
         "H H C C H H\n"
         "1 1 1 1 1\n";
     std::istringstream filteredGraphStream(explicitHydrogenGraph);
-    const assemblycpp::CalculationResult filteredGraph =
-        assemblycpp::calculateGraph(filteredGraphStream);
-    assemblycpp::CalculationOptions retainedHydrogenOptions;
+    const parallelassemblycpp::CalculationResult filteredGraph =
+        parallelassemblycpp::calculateGraph(filteredGraphStream);
+    parallelassemblycpp::CalculationOptions retainedHydrogenOptions;
     retainedHydrogenOptions.removeHydrogens = false;
     std::istringstream retainedGraphStream(explicitHydrogenGraph);
-    const assemblycpp::CalculationResult retainedGraph =
-        assemblycpp::calculateGraph(
+    const parallelassemblycpp::CalculationResult retainedGraph =
+        parallelassemblycpp::calculateGraph(
             retainedGraphStream,
             retainedHydrogenOptions
         );
@@ -118,8 +118,8 @@ int main(int argc, char **argv)
     std::istringstream invalidGraph(
         "invalid graph\n2\n1 3\nC C\n1\n"
     );
-    const assemblycpp::CalculationResult rejectedGraph =
-        assemblycpp::calculateGraph(invalidGraph);
+    const parallelassemblycpp::CalculationResult rejectedGraph =
+        parallelassemblycpp::calculateGraph(invalidGraph);
     if (
         !require(!rejectedGraph.succeeded, "invalid graph stream succeeded") ||
         !require(
@@ -133,8 +133,8 @@ int main(int argc, char **argv)
     const std::filesystem::path copiedInput =
         temporaryDirectory.path / "icosane.mol";
     std::filesystem::copy_file(argv[1], copiedInput);
-    const assemblycpp::CalculationResult noFileResult =
-        assemblycpp::calculate(copiedInput.string());
+    const parallelassemblycpp::CalculationResult noFileResult =
+        parallelassemblycpp::calculate(copiedInput.string());
     std::size_t fileCount = 0;
     for ([[maybe_unused]] const auto &entry :
          std::filesystem::directory_iterator(temporaryDirectory.path))
@@ -147,34 +147,34 @@ int main(int argc, char **argv)
         !require(fileCount == 1, "library calculation created an output file")
     ) return 1;
 
-    assemblycpp::CalculationOptions limitedOptions;
+    parallelassemblycpp::CalculationOptions limitedOptions;
     limitedOptions.runtimeTicks = 0;
-    const assemblycpp::CalculationResult limited =
-        assemblycpp::calculate(argv[3], limitedOptions);
+    const parallelassemblycpp::CalculationResult limited =
+        parallelassemblycpp::calculate(argv[3], limitedOptions);
     if (
         !require(limited.succeeded, "runtime-limited calculation failed") ||
         !require(limited.runtimeLimitReached, "runtime limit was not reported")
     ) return 1;
 
-    const assemblycpp::CalculationResult afterLimit =
-        assemblycpp::calculate(argv[3]);
+    const parallelassemblycpp::CalculationResult afterLimit =
+        parallelassemblycpp::calculate(argv[3]);
     if (
         !require(afterLimit.succeeded, "post-limit calculation failed") ||
         !require(!afterLimit.runtimeLimitReached, "runtime stop leaked between calls") ||
         !require(afterLimit.assemblyIndex == 2, "post-limit index mismatch")
     ) return 1;
 
-    assemblycpp::CalculationOptions invalidOptions;
+    parallelassemblycpp::CalculationOptions invalidOptions;
     invalidOptions.enumerationLimit = 0;
-    const assemblycpp::CalculationResult invalid =
-        assemblycpp::calculate(argv[1], invalidOptions);
+    const parallelassemblycpp::CalculationResult invalid =
+        parallelassemblycpp::calculate(argv[1], invalidOptions);
     if (
         !require(!invalid.succeeded, "invalid options unexpectedly succeeded") ||
         !require(!invalid.error.empty(), "invalid options omitted an error")
     ) return 1;
 
-    const assemblycpp::CalculationResult missing =
-        assemblycpp::calculate("assemblycpp-library-missing-input");
+    const parallelassemblycpp::CalculationResult missing =
+        parallelassemblycpp::calculate("parallelassemblycpp-library-missing-input");
     if (
         !require(!missing.succeeded, "missing input unexpectedly succeeded") ||
         !require(!missing.error.empty(), "missing input omitted an error")

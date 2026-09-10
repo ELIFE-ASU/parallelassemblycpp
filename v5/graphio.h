@@ -170,7 +170,7 @@ namespace graphioDetail
 }
 
 /**
- * @brief Parse AssemblyCpp's five-line native graph format transactionally.
+ * @brief Parse ParallelAssemblyCpp's five-line native graph format transactionally.
  *
  * @param inputStream input stream
  * @param molecule output molGraph, replaced only after the complete input is valid

@@ -1,4 +1,4 @@
-#define ASSEMBLYCPP_NO_MAIN
+#define PARALLELASSEMBLYCPP_NO_MAIN
 #include "../v5/main.cpp"
 
 #include <cassert>
@@ -336,7 +336,7 @@ void testMeasuredMinimumTaskSize()
     clearParallelWorkerMasks();
 }
 
-#ifdef ASSEMBLYCPP_USE_OPENMP
+#ifdef PARALLELASSEMBLYCPP_USE_OPENMP
 void testWideMasksCrossWorkerArenas()
 {
     SearchContext context = makeTransferContext(130);
@@ -391,7 +391,7 @@ int main()
     testReusedBuffersAndBounds();
     testExecutionPruningCancellationAndException();
     testMeasuredMinimumTaskSize();
-#ifdef ASSEMBLYCPP_USE_OPENMP
+#ifdef PARALLELASSEMBLYCPP_USE_OPENMP
     testWideMasksCrossWorkerArenas();
 #endif
     return 0;

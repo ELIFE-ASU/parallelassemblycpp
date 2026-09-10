@@ -241,7 +241,7 @@ struct ParallelSearchTelemetrySummary
 inline constexpr bool searchTelemetryCompiled = true;
 
 inline bool searchTelemetryEnabled = false;
-inline ASSEMBLYCPP_SEARCH_LOCAL SearchTelemetryState searchTelemetry;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL SearchTelemetryState searchTelemetry;
 inline ParallelSearchTelemetrySummary parallelSearchTelemetry;
 
 inline const char* searchTelemetryPhaseName(SearchTelemetryPhase phase)

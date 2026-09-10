@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * Adapted for AssemblyCpp v5 from the string assembly implementation in
+ * Adapted for ParallelAssemblyCpp v5 from the string assembly implementation in
  * croningroup/public/assemblycpp-public commit 2a87948, authored by Stuart
  * Marshall from work by Ian Seet and Leroy Cronin. See README.md and
  * License.md for source details and licensing.
@@ -24,7 +24,7 @@
 #include <utility>
 #include <vector>
 
-namespace assemblycpp::detail::stringAssembly
+namespace parallelassemblycpp::detail::stringAssembly
 {
 
 /** A half-open interval in the original string. */
@@ -1011,4 +1011,4 @@ inline bool writePathway(
     return true;
 }
 
-} // namespace assemblycpp::detail::stringAssembly
+} // namespace parallelassemblycpp::detail::stringAssembly

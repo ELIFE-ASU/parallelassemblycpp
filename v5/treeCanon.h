@@ -99,8 +99,8 @@ struct treeCanonWorkspace
     }
 };
 
-// Each OpenMP worker owns this scratch through ASSEMBLYCPP_SEARCH_LOCAL.
-inline ASSEMBLYCPP_SEARCH_LOCAL treeCanonWorkspace treeCanonScratch;
+// Each OpenMP worker owns this scratch through PARALLELASSEMBLYCPP_SEARCH_LOCAL.
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL treeCanonWorkspace treeCanonScratch;
 
 /**
  * @brief Exact structural key for a rooted subtree.
@@ -138,30 +138,30 @@ struct treeCanonSignatureHash
  * discards graphHashMap before resetting these interners between calculations;
  * forms from different generations must not be mixed.
  */
-inline ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
     std::string,
     treeCanonAtomId
 > treeCanonAtomInterner;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::vector<treeCanonNodeId> treeCanonLeafInterner;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::vector<treeCanonNodeId> treeCanonLeafInterner;
 inline std::unordered_map<
     treeCanonSignature,
     treeCanonNodeId,
     treeCanonSignatureHash
-> ASSEMBLYCPP_SEARCH_LOCAL treeCanonInterner;
+> PARALLELASSEMBLYCPP_SEARCH_LOCAL treeCanonInterner;
 // Parallel workers layer small mutable interners over the producer's frozen
 // generation. The seed pointers are borrowed from SearchContext for exactly
 // the lifetime of the parallel region.
-inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonAtomInterner)
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonAtomInterner)
     *sharedTreeCanonAtomInterner = nullptr;
-inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonLeafInterner)
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonLeafInterner)
     *sharedTreeCanonLeafInterner = nullptr;
-inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonInterner)
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const decltype(treeCanonInterner)
     *sharedTreeCanonInterner = nullptr;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
     treeCanonAtomId,
     treeCanonNodeId
 > treeCanonLeafInternerDelta;
-inline ASSEMBLYCPP_SEARCH_LOCAL std::uint64_t treeCanonInternerGeneration = 1;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::uint64_t treeCanonInternerGeneration = 1;
 
 void advanceTreeCanonInternerGeneration() noexcept
 {

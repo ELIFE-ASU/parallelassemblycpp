@@ -1,1 +1,1 @@
-"""Benchmark tooling for AssemblyCpp."""
+"""Benchmark tooling for ParallelAssemblyCpp."""

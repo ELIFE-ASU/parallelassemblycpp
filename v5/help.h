@@ -12,14 +12,14 @@
 
 void help()
 {
-    cout << R"(AssemblyCpp v5
+    cout << R"(ParallelAssemblyCpp v5
 
 Usage:
-  AssemblyCpp INPUT [OPTIONS]
-  AssemblyCpp --help
+  ParallelAssemblyCpp INPUT [OPTIONS]
+  ParallelAssemblyCpp --help
 
 Input:
-  By default, a V2000 MOL/SDF file or an AssemblyCpp native graph file.
+  By default, a V2000 MOL/SDF file or a ParallelAssemblyCpp native graph file.
   Existing .mol and .sdf suffixes are matched case-insensitively.
   A missing suffix tries the lowercase .mol spelling.
   An SDF input reads its first V2000 structure.
@@ -89,9 +89,9 @@ Legacy options:
 
     cout << R"(
 Examples:
-  AssemblyCpp molecule.mol
-  AssemblyCpp molecule --pathway=0 --enum-max=1000000
-  AssemblyCpp strings.txt --run-strings=1
+  ParallelAssemblyCpp molecule.mol
+  ParallelAssemblyCpp molecule --pathway=0 --enum-max=1000000
+  ParallelAssemblyCpp strings.txt --run-strings=1
 )";
 }
 

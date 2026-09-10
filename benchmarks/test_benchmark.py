@@ -2420,7 +2420,7 @@ class BenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
             executable = self.create_fake_executable(
-                directory, "AssemblyCpp", assembly_index=22, clock_ticks=100
+                directory, "ParallelAssemblyCpp", assembly_index=22, clock_ticks=100
             )
 
             stderr = io.StringIO()

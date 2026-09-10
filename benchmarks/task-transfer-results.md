@@ -1,5 +1,8 @@
 # Task-transfer benchmark results
 
+This archived report predates the rename to `parallelassemblycpp`. Executable
+names, build options, and paths below retain the names used for these measurements.
+
 **The all-benchmarks-faster requirement is not met by these measurements.**
 
 The reports contain 5,140 timed executions across 37 distinct maintained cases. All completed measurements returned the expected assembly index. All four suites meet their documented promotion repetition counts.

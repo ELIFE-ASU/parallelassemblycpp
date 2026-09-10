@@ -1,13 +1,31 @@
-# AssemblyCpp v5
+# parallelassemblycpp
 
-AssemblyCpp computes molecular assembly indices and recovers assembly pathways.
-It provides a command-line tool, a reusable C++20 library, and optional parallel
-search using OpenMP, MPI, or both together. The command-line tool also computes
-string assembly indices for files containing one string per line.
+parallelassemblycpp computes molecular assembly indices and recovers assembly
+pathways. It provides a command-line tool, a reusable C++20 library, and optional
+parallel search using OpenMP, MPI, or both together. The command-line tool also
+computes string assembly indices for files containing one string per line.
 
 This repository implements the algorithm described by Ian Seet, Keith Y.
 Patarroyo, Gage Siebert, Sara I. Walker, and Leroy Cronin in [*Rapid Exploration
 of Assembly Chemical Space of Molecular Graphs*](https://arxiv.org/abs/2410.09100).
+
+## Package rename
+
+This package was previously named `assemblycpp-v5` and now lives at
+[**parallelassemblycpp**](https://github.com/ELIFE-ASU/parallelassemblycpp).
+Update checkout URLs, scripts, and Conda activation commands to the new name.
+The executable and CMake package are `ParallelAssemblyCpp`, the imported target
+is `ParallelAssemblyCpp::Library`, and the C++ API uses
+`<parallelassemblycpp.h>` and the `parallelassemblycpp` namespace. Optional
+executables use the same prefix, such as `ParallelAssemblyCppOMP`, and CMake
+options now start with `PARALLELASSEMBLYCPP_`. The branch-lease environment
+variable is now `PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE`.
+
+When updating an existing checkout, build in a fresh directory and reinstall
+into a clean prefix; old binaries and package files are not removed
+automatically. Regenerate PGO training profiles for the renamed targets. The
+package version remains 5.0.0, and the `v5/` source directory
+retains its name.
 
 ## Quick start
 
@@ -18,7 +36,7 @@ environment:
 
 ```bash
 conda env create --file environment.yml
-conda activate assemblycpp-v5
+conda activate parallelassemblycpp
 ```
 
 Then configure, build, and run the release executable:
@@ -26,13 +44,13 @@ Then configure, build, and run the release executable:
 ```bash
 cmake --preset release
 cmake --build --preset release
-./build/release/AssemblyCpp unitTests/alanine.mol
+./build/release/ParallelAssemblyCpp unitTests/alanine.mol
 ```
 
 The command writes `unitTests/alanineOut` and, by default,
 `unitTests/alaninePathway`.
 
-This runs AssemblyCpp directly from the build directory; installation is
+This runs ParallelAssemblyCpp directly from the build directory; installation is
 optional.
 
 <details>
@@ -45,17 +63,17 @@ sbatch slurm/install-sol.sbatch
 ```
 
 The job loads Sol's `mamba/latest` module and creates
-`$HOME/.conda/envs/assemblycpp-v5` from `environment.yml`. Resubmitting updates
+`$HOME/.conda/envs/parallelassemblycpp` from `environment.yml`. Resubmitting updates
 that environment to satisfy the file. It then builds the `release` preset in
-`build/sol-release` and checks `AssemblyCpp --help`. The environment includes
-the compiler, CMake, Ninja, Open MPI, Python, Matplotlib, and Ruff; the release
-executable uses serial search. See the development section for parallel build
-presets.
+`build/sol-release` and checks `ParallelAssemblyCpp --help`. The environment
+includes the compiler, CMake, Ninja, Open MPI, Python, Matplotlib, and Ruff; the
+release executable uses serial search. See the development section for parallel
+build presets.
 
 The script requests one node, four CPUs, 16 GB RAM, and two hours in
 `lightwork` with the `public` QoS, following ASU's guidance for
 [environment creation and compilation](https://docs.rc.asu.edu/partitions-and-qos/#lightwork).
-Output and errors go to `slurm-assemblycpp-install-<job-id>.out` in the job's
+Output and errors go to `slurm-parallelassemblycpp-install-<job-id>.out` in the job's
 working directory. An account can be selected with
 `sbatch --account=<your-account> slurm/install-sol.sbatch`; use `myaccounts`
 on Sol to list available accounts.
@@ -63,7 +81,7 @@ on Sol to list available accounts.
 To choose another persistent environment location, pass an absolute prefix:
 
 ```bash
-sbatch slurm/install-sol.sbatch /data/your_group/envs/assemblycpp-v5
+sbatch slurm/install-sol.sbatch /data/your_group/envs/parallelassemblycpp
 ```
 
 An optional second argument supplies the absolute repository path when
@@ -72,8 +90,8 @@ submitting from another directory. Arguments are used because the script's
 For example:
 
 ```bash
-sbatch /path/to/assemblycpp-v5/slurm/install-sol.sbatch \
-  /data/your_group/envs/assemblycpp-v5 /path/to/assemblycpp-v5
+sbatch /path/to/parallelassemblycpp/slurm/install-sol.sbatch \
+  /data/your_group/envs/parallelassemblycpp /path/to/parallelassemblycpp
 ```
 
 After the setup job succeeds, activate the environment in subsequent jobs
@@ -81,8 +99,8 @@ using [ASU's supported activation syntax](https://docs.rc.asu.edu/mamba/):
 
 ```bash
 module load mamba/latest
-source activate "$HOME/.conda/envs/assemblycpp-v5"
-./build/sol-release/AssemblyCpp unitTests/alanine.mol
+source activate "$HOME/.conda/envs/parallelassemblycpp"
+./build/sol-release/ParallelAssemblyCpp unitTests/alanine.mol
 ```
 
 Use your chosen prefix in `source activate` if you changed the default, and
@@ -102,7 +120,7 @@ resource overrides, thread counts, and output details.
 <details>
 <summary><strong>What the code does</strong></summary>
 
-AssemblyCpp treats a molecule as a labelled graph: atoms are vertices and
+ParallelAssemblyCpp treats a molecule as a labelled graph: atoms are vertices and
 bonds are edges. Its assembly index is the smallest number of joining steps
 needed to build that graph when a fragment that has already been made can be
 reused.
@@ -155,10 +173,10 @@ The comparison below is against the original repository's `main` branch at
   where the search exposes enough work to outweigh parallel coordination
   overhead; small graphs may see little or no speed-up.
 - **Interfaces.** The original provides a C++17 `assembly` command with
-  file-based results. This project provides a C++20 `AssemblyCpp` command plus
-  an installable `AssemblyCpp::Library` with stream, file, and batch APIs that
-  return results directly. Its command-line handling also validates options
-  and reports interrupted or limited searches explicitly.
+  file-based results. This project provides a C++20 `ParallelAssemblyCpp` command
+  plus an installable `ParallelAssemblyCpp::Library` with stream, file, and batch
+  APIs that return results directly. Its command-line handling also validates
+  options and reports interrupted or limited searches explicitly.
 - **Project tooling.** This version expands the build and verification support
   with CMake presets, package installation and export, CI, focused and full
   regression suites, pathway and parallel-parity tests, telemetry, maintained
@@ -174,8 +192,8 @@ best-so-far result instead of a proven minimum.
 <details>
 <summary><strong>Installation</strong></summary>
 
-Install AssemblyCpp when you want a standalone command, reusable library, and
-CMake package outside the build directory. After the requirements above are
+Install ParallelAssemblyCpp when you want a standalone command, reusable library,
+and CMake package outside the build directory. After the requirements above are
 available, run these commands from the repository root:
 
 ```bash
@@ -189,21 +207,21 @@ The first two commands can be skipped after completing the quick start.
 is not required. Verify the installed command with:
 
 ```bash
-./build/install/bin/AssemblyCpp --help
+./build/install/bin/ParallelAssemblyCpp --help
 ```
 
 The installation contains:
 
 - The command-line tool in `<prefix>/bin`.
-- The public header in `<prefix>/include/assemblycpp`.
+- The public header in `<prefix>/include/parallelassemblycpp`.
 - The static library and CMake package files in the platform's library
   directory, typically `<prefix>/lib`.
 
 `--prefix` selects where the files are copied; it does not update `PATH`.
 Replace `build/install` with another destination if needed, and add
-`<prefix>/bin` to `PATH` to invoke `AssemblyCpp` from any directory. Installing
-to a system location may require administrator privileges. On Windows, the
-installed command is `build\install\bin\AssemblyCpp.exe`.
+`<prefix>/bin` to `PATH` to invoke `ParallelAssemblyCpp` from any directory.
+Installing to a system location may require administrator privileges. On Windows,
+the installed command is `build\install\bin\ParallelAssemblyCpp.exe`.
 
 </details>
 
@@ -211,12 +229,12 @@ installed command is `build\install\bin\AssemblyCpp.exe`.
 <summary><strong>Command line</strong></summary>
 
 ```text
-AssemblyCpp INPUT [OPTIONS]
-AssemblyCpp --help
+ParallelAssemblyCpp INPUT [OPTIONS]
+ParallelAssemblyCpp --help
 ```
 
-By default, `INPUT` may be a V2000 MOL/SDF file or an AssemblyCpp native graph
-file. With `--run-strings=1`, it is an exact text-file path instead. The
+By default, `INPUT` may be a V2000 MOL/SDF file or a ParallelAssemblyCpp native
+graph file. With `--run-strings=1`, it is an exact text-file path instead. The
 `.mol` and `.sdf` suffixes select MOL parsing case-insensitively; the `.mol`
 suffix may be omitted when the file uses the lowercase `.mol` spelling. An
 `.sdf` input reads its first V2000 structure. Native graph filenames must be
@@ -244,7 +262,7 @@ supplied in full. Options may appear before or after the input and use
 
 `--enum-max` includes one-edge masks. Runtime and enumeration limits return the
 best index found so far, which may not be the proven minimum. Run
-`AssemblyCpp --help` for full details and accepted legacy option names.
+`ParallelAssemblyCpp --help` for full details and accepted legacy option names.
 `--telemetry` is available only in telemetry-enabled executables.
 `--threads=auto` uses the OpenMP runtime default and therefore honours settings
 such as `OMP_NUM_THREADS`; an explicit thread count applies to each process.
@@ -277,7 +295,7 @@ Pass `--run-strings=1` to select the string algorithm. In this mode `INPUT` is
 opened exactly as supplied and every line is processed as a separate string:
 
 ```bash
-./build/release/AssemblyCpp strings.txt --run-strings=1
+./build/release/ParallelAssemblyCpp strings.txt --run-strings=1
 ```
 
 Results are written to `strings.txtOut`. With pathway output enabled, the
@@ -300,30 +318,30 @@ graph implementation or vendored dependencies. The legacy spellings
 <details>
 <summary><strong>C++ library</strong></summary>
 
-Installed packages export `AssemblyCpp::Library`. If AssemblyCpp is installed
-to a non-system prefix, pass that prefix when configuring the consuming
-project:
+Installed packages export `ParallelAssemblyCpp::Library`. If ParallelAssemblyCpp
+is installed to a non-system prefix, pass that prefix when configuring the
+consuming project:
 
 ```bash
 cmake -S . -B build \
-  -DCMAKE_PREFIX_PATH=/absolute/path/to/assemblycpp-v5/build/install
+  -DCMAKE_PREFIX_PATH=/absolute/path/to/parallelassemblycpp/build/install
 ```
 
 Then link the imported target in the consuming project's `CMakeLists.txt`:
 
 ```cmake
-find_package(AssemblyCpp 5 CONFIG REQUIRED)
-target_link_libraries(my_program PRIVATE AssemblyCpp::Library)
+find_package(ParallelAssemblyCpp 5 CONFIG REQUIRED)
+target_link_libraries(my_program PRIVATE ParallelAssemblyCpp::Library)
 ```
 
 ```cpp
-#include <assemblycpp.h>
+#include <parallelassemblycpp.h>
 
 #include <iostream>
 
 int main()
 {
-    const auto result = assemblycpp::calculate("molecule.mol");
+    const auto result = parallelassemblycpp::calculate("molecule.mol");
     if (!result)
     {
         std::cerr << result.error << '\n';
@@ -334,10 +352,10 @@ int main()
 ```
 
 `calculateMolfile` accepts a V2000 molfile stream, while `calculateGraph`
-accepts an AssemblyCpp native graph stream. `calculateBatch` processes several
-inputs sequentially without process startup between items. Library calls do not
-create output files. Search state is process-global, so the API is reusable but
-not thread-safe; use separate processes for concurrent work.
+accepts a ParallelAssemblyCpp native graph stream. `calculateBatch` processes
+several inputs sequentially without process startup between items. Library calls
+do not create output files. Search state is process-global, so the API is
+reusable but not thread-safe; use separate processes for concurrent work.
 
 </details>
 
@@ -366,7 +384,7 @@ details.
 ### Quality gates
 
 All C++ targets compile with high-signal warnings treated as errors by default.
-The `ASSEMBLYCPP_STRICT_WARNINGS` CMake option exists for toolchain diagnosis,
+The `PARALLELASSEMBLYCPP_STRICT_WARNINGS` CMake option exists for toolchain diagnosis,
 but changes should pass with it enabled. Check Python lint and formatting with:
 
 ```bash
@@ -379,7 +397,7 @@ C++ variables, parameters, and data members use descriptive `lowerCamelCase`
 names, while C++ macros use `UPPER_SNAKE_CASE`. Python follows PEP 8:
 `snake_case` names, `UPPER_SNAKE_CASE` constants, single leading underscores
 for private or intentionally unused names, and protocol-required double
-underscores. Project CMake variables use the `ASSEMBLYCPP_UPPER_SNAKE_CASE`
+underscores. Project CMake variables use the `PARALLELASSEMBLYCPP_UPPER_SNAKE_CASE`
 prefix. C++ project-defined identifiers avoid leading underscores and
 unexplained abbreviations. CI enforces the compiler and Python quality gates.
 
@@ -391,7 +409,7 @@ Build the optimized candidate, then run a maintained suite:
 cmake --preset performance
 cmake --build --preset performance
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp \
+  --executable build/performance/ParallelAssemblyCpp \
   --suite quick
 ```
 
@@ -419,5 +437,5 @@ from a clean checkout because CPack includes the working tree.
 
 ## License
 
-AssemblyCpp is licensed under
+ParallelAssemblyCpp is licensed under
 [Creative Commons Attribution-NonCommercial 4.0 International](License.md).

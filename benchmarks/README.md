@@ -1,6 +1,6 @@
 # Benchmarks
 
-The benchmark tools run isolated AssemblyCpp calculations, verify their
+The benchmark tools run isolated ParallelAssemblyCpp calculations, verify their
 assembly indices, and report wall time and program-reported `std::clock` ticks.
 Plotting requires Matplotlib, included in `environment.yml`. For an existing
 Conda environment, run `conda env update --file environment.yml`; for a separate
@@ -14,7 +14,7 @@ From the repository root:
 cmake --preset performance
 cmake --build --preset performance
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp \
+  --executable build/performance/ParallelAssemblyCpp \
   --suite quick
 ```
 
@@ -114,8 +114,8 @@ Customize storage, the installed environment, or the time limit:
 ```bash
 sbatch --account=<your-account> --time=2-00:00:00 \
   slurm/benchmark-sol.sbatch \
-  --env-prefix /data/your_group/envs/assemblycpp-v5 \
-  --output-dir /data/your_group/results/assemblycpp-run-001 \
+  --env-prefix /data/your_group/envs/parallelassemblycpp \
+  --output-dir /data/your_group/results/parallelassemblycpp-run-001 \
   --threads 2,4,8,16,32,64,128 \
   --hybrid-layouts 2x64,4x32,8x16,16x8,32x4,64x2 --runs 6
 ```
@@ -171,7 +171,7 @@ Run a suite and save the raw samples and summary:
 
 ```bash
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp \
+  --executable build/performance/ParallelAssemblyCpp \
   --suite full \
   --json-output build/full.json
 ```
@@ -180,7 +180,7 @@ Run one custom input:
 
 ```bash
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp \
+  --executable build/performance/ParallelAssemblyCpp \
   --input unitTests/sucrose.mol \
   --expected 8
 ```
@@ -189,8 +189,8 @@ Collect one additional, untimed telemetry run per case:
 
 ```bash
 python benchmarks/benchmark.py \
-  --executable build/performance/AssemblyCpp \
-  --telemetry-executable build/performance/AssemblyCppTelemetry \
+  --executable build/performance/ParallelAssemblyCpp \
+  --telemetry-executable build/performance/ParallelAssemblyCppTelemetry \
   --suite scaling \
   --telemetry \
   --json-output build/scaling.json
@@ -273,8 +273,8 @@ Keep the previous executable and pass it as the baseline:
 
 ```bash
 python benchmarks/benchmark.py \
-  --baseline-executable build/AssemblyCpp-before \
-  --executable build/performance/AssemblyCpp \
+  --baseline-executable build/ParallelAssemblyCpp-before \
+  --executable build/performance/ParallelAssemblyCpp \
   --suite quick \
   --json-output build/quick.json
 ```
@@ -339,24 +339,24 @@ Example launch commands:
 
 ```bash
 OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
-  ./build/parallel/AssemblyCppOMP molecule.mol \
+  ./build/parallel/ParallelAssemblyCppOMP molecule.mol \
     --pathway=0 --parallel=on --threads=4
 
 mpirun --map-by slot --bind-to core -n 4 \
-  ./build/parallel/AssemblyCppMPI molecule.mol \
+  ./build/parallel/ParallelAssemblyCppMPI molecule.mol \
     --pathway=0 --parallel=on --threads=1
 
 OMP_NUM_THREADS=2 OMP_PLACES=cores OMP_PROC_BIND=close \
   mpirun --map-by slot:PE=2 --bind-to core -n 2 \
-  ./build/parallel/AssemblyCppHybrid molecule.mol \
+  ./build/parallel/ParallelAssemblyCppHybrid molecule.mol \
     --pathway=0 --parallel=on --threads=2
 
 OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
-  ./build/parallel/AssemblyCppOMPTelemetry molecule.mol \
+  ./build/parallel/ParallelAssemblyCppOMPTelemetry molecule.mol \
     --pathway=0 --parallel=on --threads=4 --telemetry=1
 
 mpirun --map-by slot --bind-to core -n 4 \
-  ./build/parallel/AssemblyCppMPITelemetry molecule.mol \
+  ./build/parallel/ParallelAssemblyCppMPITelemetry molecule.mol \
     --pathway=0 --parallel=on --threads=1 --telemetry=1
 ```
 
@@ -403,7 +403,7 @@ cancellation so it stops issuing new chunks after an observed interrupt or
 search failure. Task transfer is disabled in an MPI-only rank with one local
 worker, but remains available within hybrid ranks.
 
-Set the positive `ASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
+Set the positive `PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
 fixed root lease size. Only MPI rank zero writes output.
 
 The runner accepts separate parallel policies, launchers, and environment
@@ -411,10 +411,10 @@ variables for each role:
 
 ```bash
 python benchmarks/benchmark.py \
-  --baseline-executable build/parallel/AssemblyCpp \
+  --baseline-executable build/parallel/ParallelAssemblyCpp \
   --baseline-launcher "taskset -c 0" \
   --baseline-parallel off \
-  --executable build/parallel/AssemblyCppOMP \
+  --executable build/parallel/ParallelAssemblyCppOMP \
   --candidate-launcher "taskset -c 0,2,4,6" \
   --candidate-parallel on \
   --candidate-env OMP_NUM_THREADS=4 \
@@ -444,8 +444,8 @@ Use the parallel build above, or build just the serial and OpenMP executables:
 
 ```bash
 cmake --preset performance -B build/paclitaxel \
-  -DASSEMBLYCPP_BUILD_OPENMP=ON
-cmake --build build/paclitaxel --target AssemblyCpp AssemblyCppOMP
+  -DPARALLELASSEMBLYCPP_BUILD_OPENMP=ON
+cmake --build build/paclitaxel --target ParallelAssemblyCpp ParallelAssemblyCppOMP
 python benchmarks/paclitaxel_scaling.py \
   --build-dir build/paclitaxel \
   --output-dir build/paclitaxel-scaling
@@ -524,7 +524,7 @@ repeat run. `--dry-run` prints the benchmark and checker commands without
 building or running anything.
 
 To collect a separate untimed telemetry calculation at each count, build
-`AssemblyCppOMPTelemetry` in the same build directory and add `--telemetry`.
+`ParallelAssemblyCppOMPTelemetry` in the same build directory and add `--telemetry`.
 Telemetry uses the candidate's thread count and placement and is excluded from
 the timing summary.
 
@@ -532,9 +532,9 @@ For a single four-thread comparison using the general runner:
 
 ```bash
 python benchmarks/benchmark.py \
-  --baseline-executable build/parallel/AssemblyCpp \
+  --baseline-executable build/parallel/ParallelAssemblyCpp \
   --baseline-parallel off \
-  --executable build/parallel/AssemblyCppOMP \
+  --executable build/parallel/ParallelAssemblyCppOMP \
   --candidate-parallel on \
   --candidate-env OMP_NUM_THREADS=4 \
   --suite profile --case paclitaxel --runs 6 \

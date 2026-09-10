@@ -27,9 +27,9 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++-18
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON
-          -DASSEMBLYCPP_BUILD_TELEMETRY=ON
-          -DASSEMBLYCPP_FULL_REGRESSION_TESTS=OFF
-          -DASSEMBLYCPP_STRICT_WARNINGS=ON
+          -DPARALLELASSEMBLYCPP_BUILD_TELEMETRY=ON
+          -DPARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS=OFF
+          -DPARALLELASSEMBLYCPP_STRICT_WARNINGS=ON
 
       - name: Build with Clang
         run: cmake --build build/clang --parallel 2
@@ -40,7 +40,7 @@ jobs:
           --no-tests=error -L unit
 
       - name: Smoke-test Clang CLI
-        run: build/clang/AssemblyCpp --help
+        run: build/clang/ParallelAssemblyCpp --help
 
   strict-msvc:
     runs-on: windows-2022
@@ -54,10 +54,10 @@ jobs:
         run: >
           cmake -S . -B build/msvc -G "Visual Studio 17 2022" -A x64
           -DBUILD_TESTING=ON
-          -DASSEMBLYCPP_BUILD_TELEMETRY=ON
-          -DASSEMBLYCPP_BUILD_OPENMP=ON
-          -DASSEMBLYCPP_FULL_REGRESSION_TESTS=OFF
-          -DASSEMBLYCPP_STRICT_WARNINGS=ON
+          -DPARALLELASSEMBLYCPP_BUILD_TELEMETRY=ON
+          -DPARALLELASSEMBLYCPP_BUILD_OPENMP=ON
+          -DPARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS=OFF
+          -DPARALLELASSEMBLYCPP_STRICT_WARNINGS=ON
 
       - name: Build with MSVC
         run: cmake --build build/msvc --config Release --parallel 2
@@ -69,8 +69,8 @@ jobs:
 
       - name: Smoke-test MSVC CLI
         run: |
-          & .\build\msvc\Release\AssemblyCpp.exe --help
-          & .\build\msvc\Release\AssemblyCppOMP.exe --help
+          & .\build\msvc\Release\ParallelAssemblyCpp.exe --help
+          & .\build\msvc\Release\ParallelAssemblyCppOMP.exe --help
 
   test:
     runs-on: ubuntu-24.04
@@ -86,7 +86,7 @@ jobs:
       - name: Create Conda environment
         uses: conda-incubator/setup-miniconda@v4
         with:
-          activate-environment: assemblycpp-v5
+          activate-environment: parallelassemblycpp
           environment-file: environment.yml
           miniforge-version: latest
           channel-priority: strict
@@ -126,23 +126,31 @@ jobs:
       - name: Verify staged install
         run: |
           cmake --install build/release --prefix build/stage
-          build/stage/bin/AssemblyCpp --help
-          test -f build/stage/include/assemblycpp/assemblycpp.h
-          test -f build/stage/lib/libassemblycpp.a
-          test -f build/stage/lib/cmake/AssemblyCpp/AssemblyCppConfig.cmake
-          if readelf -d build/stage/bin/AssemblyCpp | grep -Eq '\((RPATH|RUNPATH)\)'; then
+          build/stage/bin/ParallelAssemblyCpp --help
+          test -f build/stage/include/parallelassemblycpp/parallelassemblycpp.h
+          test -f build/stage/lib/libparallelassemblycpp.a
+          test -f build/stage/lib/cmake/ParallelAssemblyCpp/ParallelAssemblyCppConfig.cmake
+          if readelf -d build/stage/bin/ParallelAssemblyCpp | grep -Eq '\((RPATH|RUNPATH)\)'; then
             echo 'error: staged executable contains an RPATH or RUNPATH' >&2
             exit 1
           fi
-          if readelf -n build/stage/bin/AssemblyCpp | grep -Eq 'x86-64-v[234]'; then
+          if readelf -n build/stage/bin/ParallelAssemblyCpp | grep -Eq 'x86-64-v[234]'; then
             echo 'error: portable executable requires an x86-64 microarchitecture level' >&2
             exit 1
           fi
-          if ldd build/stage/bin/AssemblyCpp | grep -Fq "$CONDA_PREFIX"; then
+          if ldd build/stage/bin/ParallelAssemblyCpp | grep -Fq "$CONDA_PREFIX"; then
             echo 'error: staged executable resolves a runtime from Conda' >&2
             exit 1
           fi
-          python unitTests/unitTester.py build/stage/bin/AssemblyCpp --limit 20
+          python unitTests/unitTester.py build/stage/bin/ParallelAssemblyCpp --limit 20
+
+      - name: Verify installed CMake library package
+        run: |
+          cmake -S unitTests/packageConsumer -B build/package-consumer -G Ninja \
+            -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+            -DCMAKE_PREFIX_PATH="$PWD/build/stage"
+          cmake --build build/package-consumer
+          ctest --test-dir build/package-consumer --output-on-failure --no-tests=error
 
       - name: Verify binary and source packaging
         run: |
@@ -162,8 +170,8 @@ jobs:
           if ! tar -tvzf "$archive" | awk '
             BEGIN { bad = 0 }
             $1 ~ /^d/ && $1 != "drwxr-xr-x" { bad = 1 }
-            $1 ~ /^-/ && $NF ~ /\/bin\/AssemblyCpp$/ && $1 != "-rwxr-xr-x" { bad = 1 }
-            $1 ~ /^-/ && $NF !~ /\/bin\/AssemblyCpp$/ && $1 != "-rw-r--r--" { bad = 1 }
+            $1 ~ /^-/ && $NF ~ /\/bin\/ParallelAssemblyCpp$/ && $1 != "-rwxr-xr-x" { bad = 1 }
+            $1 ~ /^-/ && $NF !~ /\/bin\/ParallelAssemblyCpp$/ && $1 != "-rw-r--r--" { bad = 1 }
             END { exit bad }
           '; then
             echo 'error: binary package permissions are not normalized' >&2
@@ -171,7 +179,7 @@ jobs:
           fi
           cmake -E make_directory build/package-smoke
           cmake -E chdir build/package-smoke cmake -E tar xzf "$GITHUB_WORKSPACE/$archive"
-          packaged_executable=$(find build/package-smoke -type f -path '*/bin/AssemblyCpp' -print -quit)
+          packaged_executable=$(find build/package-smoke -type f -path '*/bin/ParallelAssemblyCpp' -print -quit)
           test -n "$packaged_executable"
           "$packaged_executable" --help
           if readelf -d "$packaged_executable" | grep -Eq '\((RPATH|RUNPATH)\)'; then
@@ -203,7 +211,7 @@ jobs:
           fi
           cmake -E make_directory build/source-package-smoke
           cmake -E chdir build/source-package-smoke cmake -E tar xzf "$GITHUB_WORKSPACE/$source_archive"
-          source_root=$(find build/source-package-smoke -mindepth 1 -maxdepth 1 -type d -name 'assemblycpp-*-source' -print -quit)
+          source_root=$(find build/source-package-smoke -mindepth 1 -maxdepth 1 -type d -name 'parallelassemblycpp-*-source' -print -quit)
           test -n "$source_root"
           test -f "$source_root/CMakeLists.txt"
           test -f "$source_root/CMakePresets.json"
