@@ -48,8 +48,9 @@ The job loads Sol's `mamba/latest` module and creates
 `$HOME/.conda/envs/assemblycpp-v5` from `environment.yml`. Resubmitting updates
 that environment to satisfy the file. It then builds the `release` preset in
 `build/sol-release` and checks `AssemblyCpp --help`. The environment includes
-the compiler, CMake, Ninja, Open MPI, Python, and Ruff; the release executable
-uses serial search. See the development section for parallel build presets.
+the compiler, CMake, Ninja, Open MPI, Python, Matplotlib, and Ruff; the release
+executable uses serial search. See the development section for parallel build
+presets.
 
 The script requests one node, four CPUs, 16 GB RAM, and two hours in
 `lightwork` with the `public` QoS, following ASU's guidance for

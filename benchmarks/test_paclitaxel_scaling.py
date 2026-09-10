@@ -182,6 +182,11 @@ class PaclitaxelScalingTests(unittest.TestCase):
                     "print_report",
                     wraps=check_parallel_scaling.print_report,
                 ) as report,
+                mock.patch.object(
+                    paclitaxel_scaling,
+                    "save_scaling_plot",
+                    wraps=paclitaxel_scaling.save_scaling_plot,
+                ) as plot,
             ):
                 status, stdout, stderr = self.run_main(
                     [
@@ -210,6 +215,20 @@ class PaclitaxelScalingTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             evaluate.assert_called_once()
             report.assert_called_once()
+            plot.assert_called_once()
+            saved_plot = output / "scaling.png"
+            self.assertEqual(saved_plot.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertIn(f"Scaling plot: {saved_plot}", stdout)
+            saved_pdf = output / "scaling.pdf"
+            self.assertTrue(saved_pdf.read_bytes().startswith(b"%PDF-"))
+            self.assertIn(f"Scaling plot: {saved_pdf}", stdout)
+            self.assertEqual(plot.call_args.args[1], saved_plot)
+            figure = plot.call_args.args[2]
+            speedup_axis, efficiency_axis = figure.axes
+            self.assertEqual(list(speedup_axis.lines[0].get_xdata()), [2, 4])
+            self.assertEqual(list(speedup_axis.lines[0].get_ydata()), [2.0, 4.0])
+            self.assertEqual(list(efficiency_axis.lines[0].get_xdata()), [2, 4])
+            self.assertEqual(list(efficiency_axis.lines[0].get_ydata()), [100.0, 100.0])
             specs = evaluate.call_args.args[0]
             self.assertEqual(
                 [(spec.label, spec.workers, spec.path) for spec in specs],
@@ -266,7 +285,10 @@ class PaclitaxelScalingTests(unittest.TestCase):
             directory = Path(temp_directory)
             build = directory / "missing build"
             output = directory / "missing output"
-            with mock.patch.object(benchmark, "main") as run:
+            with (
+                mock.patch.object(benchmark, "main") as run,
+                mock.patch.dict(sys.modules, {"matplotlib.backends.backend_agg": None}),
+            ):
                 status, stdout, stderr = self.run_main(
                     [
                         "--build-dir",
@@ -521,6 +543,8 @@ class PaclitaxelScalingTests(unittest.TestCase):
                 self.assertEqual(status, 17)
                 run.assert_called_once()
                 self.assertFalse((output / "scaling.txt").exists())
+                self.assertFalse((output / "scaling.png").exists())
+                self.assertFalse((output / "scaling.pdf").exists())
                 document = captured_documents[0]
                 counts = [2] if physical_only else [2, 3, 4]
                 self.assertEqual(document["schema_version"], 1)
@@ -563,9 +587,58 @@ class PaclitaxelScalingTests(unittest.TestCase):
             evaluate.assert_not_called()
             report.assert_not_called()
             self.assertFalse((output / "scaling.txt").exists())
+            self.assertFalse((output / "scaling.png").exists())
+            self.assertFalse((output / "scaling.pdf").exists())
+
+    def test_invalid_results_do_not_create_summary_or_plot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            build = self.create_build(directory)
+            output = directory / "reports"
+            with (
+                mock.patch.object(benchmark, "main", return_value=0),
+                mock.patch.object(
+                    check_parallel_scaling,
+                    "evaluate_specs",
+                    side_effect=check_parallel_scaling.ScalingError("invalid report"),
+                ),
+                mock.patch.object(paclitaxel_scaling, "save_scaling_plot") as plot,
+            ):
+                status, _, stderr = self.run_main(
+                    ["--build-dir", str(build), "--output-dir", str(output)]
+                )
+            self.assertEqual(status, 1)
+            self.assertIn("invalid report", stderr)
+            plot.assert_not_called()
+            self.assertFalse((output / "scaling.txt").exists())
+            self.assertFalse((output / "scaling.png").exists())
+            self.assertFalse((output / "scaling.pdf").exists())
+
+    def test_missing_matplotlib_is_rejected_before_measurements_or_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            build = self.create_build(directory)
+            output = directory / "reports"
+            with (
+                mock.patch.object(benchmark, "main") as run,
+                mock.patch.dict(sys.modules, {"matplotlib.backends.backend_agg": None}),
+            ):
+                status, _, stderr = self.run_main(
+                    ["--build-dir", str(build), "--output-dir", str(output)]
+                )
+            self.assertEqual(status, 1)
+            self.assertIn("Matplotlib", stderr)
+            run.assert_not_called()
+            self.assertFalse(output.exists())
 
     def test_existing_reports_are_rejected_before_any_measurement(self) -> None:
-        for filename in ("omp-4.json", "scaling.txt", "cpu-topology.json"):
+        for filename in (
+            "omp-4.json",
+            "scaling.txt",
+            "cpu-topology.json",
+            "scaling.png",
+            "scaling.pdf",
+        ):
             with (
                 self.subTest(filename=filename),
                 tempfile.TemporaryDirectory() as temp_directory,

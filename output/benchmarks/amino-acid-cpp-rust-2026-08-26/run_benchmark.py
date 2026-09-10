@@ -3,6 +3,7 @@
 
 The harness measures end-to-end CLI wall time (spawn through process exit),
 validates every assembly index, rotates variant order, and retains raw samples.
+Successful runs also save PNG and PDF runtime plots beside the JSON report.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -429,6 +431,60 @@ def write_csv(path: Path, report: dict[str, Any]) -> None:
                 )
 
 
+def require_matplotlib() -> tuple[Any, Any]:
+    """Load the headless renderer before starting expensive measurements."""
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: PLC0415
+        from matplotlib.figure import Figure  # noqa: PLC0415
+    except ImportError as error:
+        raise SystemExit(
+            "matplotlib is required to save benchmark plots; install it with "
+            "python -m pip install matplotlib"
+        ) from error
+    return Figure, FigureCanvasAgg
+
+
+def write_plot(path: Path, report: dict[str, Any]) -> None:
+    """Save the runtime figure to a PNG path and its PDF sibling."""
+    figure_type, canvas_type = require_matplotlib()
+    figure = figure_type(figsize=(10, 6), layout="constrained")
+    canvas_type(figure)
+    try:
+        axes = figure.subplots()
+        cases = sorted(report["cases"], key=lambda case: case["components"])
+        components = [case["components"] for case in cases]
+        for name, specification in report["variants"].items():
+            timings = [case["timings"][name] for case in cases]
+            axes.errorbar(
+                components,
+                [timing["median"] for timing in timings],
+                yerr=[timing["mad"] for timing in timings],
+                marker="o",
+                linestyle=(
+                    "--"
+                    if specification["implementation"] == "daymudelab-rust"
+                    else "-"
+                ),
+                markersize=4,
+                capsize=2,
+                label=specification["label"],
+            )
+        axes.set(
+            title="Amino-acid scaling: median wall time ± MAD",
+            xlabel="Amino-acid components",
+            ylabel="Wall time (seconds, log scale)",
+            yscale="log",
+            xticks=components,
+        )
+        axes.grid(True, which="both", alpha=0.2)
+        axes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2, fontsize=8)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(path, format="png", dpi=160, bbox_inches="tight")
+        figure.savefig(path.with_suffix(".pdf"), format="pdf", bbox_inches="tight")
+    finally:
+        figure.clear()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--first", type=int, default=2)
@@ -453,7 +509,10 @@ def main() -> None:
         default=list(VARIANTS),
     )
     parser.add_argument(
-        "--output", type=Path, default=Path(__file__).with_name("benchmark.json")
+        "--output",
+        type=Path,
+        default=Path(__file__).with_name("benchmark.json"),
+        help="JSON report path; also saves PNG and PDF plots with the same stem",
     )
     arguments = parser.parse_args()
     if arguments.runs < 1 or arguments.warmup < 0:
@@ -464,6 +523,21 @@ def main() -> None:
     ]
     if not selected_cases:
         raise SystemExit("no cases selected")
+    plot_path = arguments.output.with_suffix(".png")
+    pdf_path = arguments.output.with_suffix(".pdf")
+    for first_path, second_path in combinations(
+        (arguments.output, plot_path, pdf_path), 2
+    ):
+        if first_path.resolve() == second_path.resolve() or (
+            first_path.exists()
+            and second_path.exists()
+            and first_path.samefile(second_path)
+        ):
+            raise SystemExit(
+                "--output and its PNG/PDF plots must refer to different files; "
+                "choose a .json output path with separate .png and .pdf siblings"
+            )
+    require_matplotlib()
 
     rust_repository = arguments.rust_repository.resolve()
     rust_binary = (
@@ -556,8 +630,11 @@ def main() -> None:
     write_json_atomic(arguments.output, report)
     csv_path = arguments.output.with_name("summary.csv")
     write_csv(csv_path, report)
+    write_plot(plot_path, report)
     print(f"Wrote {arguments.output}", flush=True)
     print(f"Wrote {csv_path}", flush=True)
+    print(f"Wrote {plot_path}", flush=True)
+    print(f"Wrote {pdf_path}", flush=True)
 
 
 if __name__ == "__main__":

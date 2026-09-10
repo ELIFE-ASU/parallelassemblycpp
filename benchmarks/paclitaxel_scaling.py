@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from matplotlib.figure import Figure
+
 if __package__:
     from . import benchmark, check_parallel_scaling, cpu_topology
 else:
@@ -91,7 +93,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
         default=DEFAULT_OUTPUT_DIRECTORY,
         help=(
             "report directory (default: build/paclitaxel-scaling); "
-            "refuses to overwrite reports"
+            "saves scaling.txt, scaling.png and scaling.pdf; "
+            "refuses to overwrite results"
         ),
     )
     for role in ("baseline", "candidate"):
@@ -189,10 +192,19 @@ def make_runs(
 
 
 def preflight(
-    runs: Sequence[ScalingRun], summary_path: Path, topology_path: Path
+    runs: Sequence[ScalingRun],
+    summary_path: Path,
+    topology_path: Path,
+    plot_path: Path,
 ) -> None:
     """Reject unavailable tools and existing output before expensive calculations."""
-    for path in [*(run.report for run in runs), summary_path, topology_path]:
+    for path in [
+        *(run.report for run in runs),
+        summary_path,
+        topology_path,
+        plot_path,
+        plot_path.with_suffix(".pdf"),
+    ]:
         if path.exists() or path.is_symlink():
             raise benchmark.BenchmarkError(
                 f"refusing to overwrite {path}; choose a new --output-dir"
@@ -213,7 +225,55 @@ def preflight(
             role,
             parallel_mode=getattr(first, f"{role}_parallel"),
         )
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def create_scaling_figure() -> Figure:
+    """Load the headless plotting dependency before starting measurements."""
+    try:
+        # Dry runs must work without importing or configuring Matplotlib.
+        from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: PLC0415
+        from matplotlib.figure import Figure  # noqa: PLC0415
+    except ImportError as error:
+        raise benchmark.BenchmarkError(
+            "Matplotlib is required to save scaling plots; "
+            "install the benchmark dependencies before running the sweep"
+        ) from error
+    figure = Figure(figsize=(10, 4.5), constrained_layout=True)
+    FigureCanvasAgg(figure)
+    return figure
+
+
+def save_scaling_plot(
+    results: Sequence[check_parallel_scaling.ScalingResult],
+    path: Path,
+    figure: Figure,
+) -> None:
+    """Save PNG and PDF plots of validated speedup and parallel efficiency."""
+    ordered_results = sorted(results, key=lambda result: result.spec.workers)
+    threads = [result.spec.workers for result in ordered_results]
+    speedups = [result.suite_speedup for result in ordered_results]
+    efficiencies = [
+        100 * result.suite_speedup / result.spec.workers for result in ordered_results
+    ]
+    speedup_axis, efficiency_axis = figure.subplots(1, 2)
+    figure.suptitle("Paclitaxel OpenMP scaling")
+    speedup_axis.plot(threads, speedups, "o-", label="Measured paired median")
+    speedup_axis.plot([1, max(threads)], [1, max(threads)], "--", label="Ideal scaling")
+    speedup_axis.axhline(1, color="gray", linewidth=0.8, linestyle=":")
+    speedup_axis.set_ylabel("Wall-time speedup (serial / parallel)")
+    efficiency_axis.plot(threads, efficiencies, "o-", label="Measured efficiency")
+    efficiency_axis.axhline(100, color="gray", linestyle="--", label="Ideal efficiency")
+    efficiency_axis.set_ylabel("Parallel efficiency (%)")
+    for axis in (speedup_axis, efficiency_axis):
+        axis.set_xlabel("OpenMP threads")
+        axis.set_xlim(1, max(threads) + 0.5)
+        axis.set_ylim(bottom=0)
+        if len(threads) <= 16:
+            axis.set_xticks(threads)
+        axis.grid(True, alpha=0.25)
+        axis.legend(fontsize="small")
+    figure.savefig(path, format="png", dpi=160)
+    figure.savefig(path.with_suffix(".pdf"), format="pdf")
 
 
 def configure_threads(
@@ -340,6 +400,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
     summary_path = arguments.output_dir.expanduser().resolve() / "scaling.txt"
     topology_path = summary_path.with_name("cpu-topology.json")
+    plot_path = summary_path.with_name("scaling.png")
     description = describe_topology(arguments, topology)
     calculations = len(runs) * (
         2 * (arguments.runs + arguments.warmup) + int(arguments.telemetry)
@@ -366,7 +427,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        preflight(runs, summary_path, topology_path)
+        preflight(runs, summary_path, topology_path, plot_path)
+        figure = create_scaling_figure()
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
         topology_path.write_text(
             json.dumps(
                 topology_report(arguments, topology, runs, automatic=automatic),
@@ -395,9 +458,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary.write(description + "\n")
         with contextlib.redirect_stdout(summary):
             check_parallel_scaling.print_report(results)
+        save_scaling_plot(results, plot_path, figure)
         summary_path.write_text(summary.getvalue(), encoding="utf-8")
         print(f"\n{summary.getvalue()}", end="")
         print(f"\nScaling summary: {summary_path}")
+        print(f"Scaling plot: {plot_path}")
+        print(f"Scaling plot: {plot_path.with_suffix('.pdf')}")
     except (
         benchmark.BenchmarkError,
         check_parallel_scaling.ScalingError,

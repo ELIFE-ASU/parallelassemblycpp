@@ -98,3 +98,10 @@ Files:
   configuration, and source pins.
 - `summary.csv`: one median/MAD/p95 row per case and variant.
 - `run_benchmark.py`: reproducible neutral benchmark harness.
+
+Rerunning the harness requires `matplotlib` and also saves `benchmark.png` and
+`benchmark.pdf`, a headless plot of median wall time versus amino-acid components
+for the selected variants, with a logarithmic time axis and median absolute
+deviation error bars.
+With `--output path/results.json`, the plot is saved to `path/results.png` and
+`path/results.pdf`.
