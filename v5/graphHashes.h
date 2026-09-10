@@ -76,7 +76,7 @@ struct graphHash
 /**
  * @brief Hash for subgraph unordered_map
  */
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
 struct graphHashHasher
 #else
 template<>
@@ -287,7 +287,7 @@ struct canonicalisationGraphWorkspace
 
     /** Add one selected source edge without duplicating this large body in
      * the one-word and wide-mask iteration paths. */
-    ASSEMBLYCPP_NOINLINE void addSelectedEdge(
+    PARALLELASSEMBLYCPP_NOINLINE void addSelectedEdge(
         std::size_t edgeIndex,
         bool &isCyclic
     )
@@ -542,10 +542,10 @@ private:
 
 // Canonical maps, interners, and miss-path scratch are worker-local in OpenMP
 // builds and calculation-local otherwise.
-inline ASSEMBLYCPP_SEARCH_LOCAL canonicalisationGraphWorkspace
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL canonicalisationGraphWorkspace
     canonicalisationGraphScratch;
 
-inline ASSEMBLYCPP_SEARCH_LOCAL sharedCanonicalIdRegistry
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL sharedCanonicalIdRegistry
     *sharedCanonicalRegistry = nullptr;
 
 void prepareCanonicalisationGraph(
@@ -556,21 +556,21 @@ void prepareCanonicalisationGraph(
     canonicalisationGraphScratch.configure(source, edgeList);
 }
 
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
-ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
+PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<
     graphHash,
     IntegerPair,
     graphHashHasher
 > graphHashMap;
 #else
-ASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, IntegerPair>
+PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, IntegerPair>
     graphHashMap;
 #endif
 
 // The producer's canonical classes are immutable after DAG construction.
 // Workers consult this shared base and insert only post-seed classes into the
 // thread-local graphHashMap delta above.
-inline ASSEMBLYCPP_SEARCH_LOCAL const decltype(graphHashMap)
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const decltype(graphHashMap)
     *sharedGraphHashSeed = nullptr;
 
 /** Complete lazy key state once, before any worker can observe the seed. */
@@ -616,7 +616,7 @@ std::vector<std::uint64_t> serializeCanonicalMask(const EdgeMask &mask)
 }
 
 /** Keep the allocation-heavy miss path out of the cache-hit instruction body. */
-ASSEMBLYCPP_NOINLINE int canoniseCacheMiss(EdgeMask &mask)
+PARALLELASSEMBLYCPP_NOINLINE int canoniseCacheMiss(EdgeMask &mask)
 {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     if (searchTelemetryEnabled) [[unlikely]]

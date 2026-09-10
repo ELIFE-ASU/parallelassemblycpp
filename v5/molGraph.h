@@ -57,7 +57,7 @@ struct bondClassKeyHash
 };
 
 /**
- * @brief Primary graph data structure used in assemblyCpp
+ * @brief Primary graph data structure used in parallelAssemblyCpp
  */
 struct molGraph
 {
@@ -381,12 +381,12 @@ molGraph preprocessWriteback(
 }
 
 /// Global variable for the molGraph before and after preprocessing
-ASSEMBLYCPP_SEARCH_LOCAL molGraph originalMolecule, targetMolecule;
+PARALLELASSEMBLYCPP_SEARCH_LOCAL molGraph originalMolecule, targetMolecule;
 
 // A parallel worker reads the producer-owned processed molecule through this
 // view. Keeping the owning TLS object for serial calculations avoids changing
 // the public/library calculation lifetime.
-inline ASSEMBLYCPP_SEARCH_LOCAL const molGraph *sharedTargetMolecule = nullptr;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const molGraph *sharedTargetMolecule = nullptr;
 
 [[nodiscard]] inline const molGraph &searchTargetMolecule() noexcept
 {
@@ -581,7 +581,7 @@ struct ufdsMaskWorkspace
         return decompositionCacheGeneration;
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE void beginFragmentation()
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE void beginFragmentation()
     {
         if (!residualCanonicalIdBindings.empty()) [[unlikely]]
             residualCanonicalIdBindings.clear();
@@ -747,7 +747,7 @@ struct ufdsMaskWorkspace
     }
 
     /** Cache IDs resolved only after the raw child survives its bounds. */
-    ASSEMBLYCPP_ALWAYS_INLINE void cacheCanonicalIds(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE void cacheCanonicalIds(
         const vector<assemblyFragment> &output
     )
     {
@@ -755,7 +755,7 @@ struct ufdsMaskWorkspace
         cacheCanonicalIdsSlow(output);
     }
 
-    ASSEMBLYCPP_NOINLINE void cacheCanonicalIdsSlow(
+    PARALLELASSEMBLYCPP_NOINLINE void cacheCanonicalIdsSlow(
         const vector<assemblyFragment> &output
     )
     {

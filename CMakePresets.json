@@ -23,7 +23,7 @@
       },
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
-        "ASSEMBLYCPP_STRICT_WARNINGS": true
+        "PARALLELASSEMBLYCPP_STRICT_WARNINGS": true
       }
     },
     {
@@ -34,8 +34,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "BUILD_TESTING": true,
-        "ASSEMBLYCPP_BUILD_TELEMETRY": true,
-        "ASSEMBLYCPP_FULL_REGRESSION_TESTS": false
+        "PARALLELASSEMBLYCPP_BUILD_TELEMETRY": true,
+        "PARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS": false
       }
     },
     {
@@ -46,8 +46,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": true,
-        "ASSEMBLYCPP_BUILD_TELEMETRY": true,
-        "ASSEMBLYCPP_FULL_REGRESSION_TESTS": true
+        "PARALLELASSEMBLYCPP_BUILD_TELEMETRY": true,
+        "PARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS": true
       }
     },
     {
@@ -58,8 +58,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": false,
-        "ASSEMBLYCPP_BUILD_TELEMETRY": false,
-        "ASSEMBLYCPP_X86_64_V3": false
+        "PARALLELASSEMBLYCPP_BUILD_TELEMETRY": false,
+        "PARALLELASSEMBLYCPP_X86_64_V3": false
       }
     },
     {
@@ -70,8 +70,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": false,
-        "ASSEMBLYCPP_BUILD_TELEMETRY": true,
-        "ASSEMBLYCPP_X86_64_V3": true
+        "PARALLELASSEMBLYCPP_BUILD_TELEMETRY": true,
+        "PARALLELASSEMBLYCPP_X86_64_V3": true
       }
     },
     {
@@ -80,7 +80,7 @@
       "description": "Performance build with link-time optimization",
       "inherits": "performance",
       "cacheVariables": {
-        "ASSEMBLYCPP_ENABLE_LTO": true
+        "PARALLELASSEMBLYCPP_ENABLE_LTO": true
       }
     },
     {
@@ -89,9 +89,9 @@
       "description": "OpenMP, MPI, and hybrid scaling builds",
       "inherits": "performance",
       "cacheVariables": {
-        "ASSEMBLYCPP_BUILD_OPENMP": true,
-        "ASSEMBLYCPP_BUILD_MPI": true,
-        "ASSEMBLYCPP_BUILD_HYBRID": true
+        "PARALLELASSEMBLYCPP_BUILD_OPENMP": true,
+        "PARALLELASSEMBLYCPP_BUILD_MPI": true,
+        "PARALLELASSEMBLYCPP_BUILD_HYBRID": true
       }
     },
     {
@@ -101,7 +101,7 @@
       "inherits": "parallel",
       "cacheVariables": {
         "BUILD_TESTING": true,
-        "ASSEMBLYCPP_X86_64_V3": false
+        "PARALLELASSEMBLYCPP_X86_64_V3": false
       }
     },
     {
@@ -110,9 +110,9 @@
       "description": "GCC-instrumented profile generation build",
       "inherits": "performance",
       "cacheVariables": {
-        "ASSEMBLYCPP_ENABLE_LTO": true,
-        "ASSEMBLYCPP_PGO_PHASE": "GENERATE",
-        "ASSEMBLYCPP_PGO_PROFILE_DIR": "${sourceDir}/build/pgo-profiles"
+        "PARALLELASSEMBLYCPP_ENABLE_LTO": true,
+        "PARALLELASSEMBLYCPP_PGO_PHASE": "GENERATE",
+        "PARALLELASSEMBLYCPP_PGO_PROFILE_DIR": "${sourceDir}/build/pgo-profiles"
       }
     },
     {
@@ -121,9 +121,9 @@
       "description": "GCC profile-use build with LTO",
       "inherits": "performance",
       "cacheVariables": {
-        "ASSEMBLYCPP_ENABLE_LTO": true,
-        "ASSEMBLYCPP_PGO_PHASE": "USE",
-        "ASSEMBLYCPP_PGO_PROFILE_DIR": "${sourceDir}/build/pgo-profiles"
+        "PARALLELASSEMBLYCPP_ENABLE_LTO": true,
+        "PARALLELASSEMBLYCPP_PGO_PHASE": "USE",
+        "PARALLELASSEMBLYCPP_PGO_PROFILE_DIR": "${sourceDir}/build/pgo-profiles"
       }
     }
   ],

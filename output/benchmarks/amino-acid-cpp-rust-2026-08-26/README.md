@@ -4,6 +4,11 @@ This report compares the shipped AssemblyCpp reference executable, the current
 C++ branch, and the DaymudeLab Rust implementation on the maintained amino-acid
 scaling inputs from 2 through 10 components.
 
+The project is now named `parallelassemblycpp`. This archived report and its raw
+data preserve the executable names and paths used for the original measurements.
+The rerunnable harness defaults to the current `ParallelAssemblyCpp` and
+`ParallelAssemblyCppOMP` executables.
+
 ## Main result
 
 At 10 components (86 atoms, 76 bonds), all runs returned assembly index 27:

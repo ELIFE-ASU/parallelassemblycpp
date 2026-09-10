@@ -72,7 +72,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         "--build-dir",
         type=Path,
         default=paclitaxel_scaling.DEFAULT_BUILD_DIRECTORY,
-        help="directory containing AssemblyCpp and AssemblyCppHybrid",
+        help="directory containing ParallelAssemblyCpp and ParallelAssemblyCppHybrid",
     )
     parser.add_argument(
         "--output-dir",
@@ -184,11 +184,11 @@ def make_runs(
     output = arguments.output_dir.expanduser().resolve()
     common = [
         "--baseline-executable",
-        str(paclitaxel_scaling.executable_path(build, "AssemblyCpp")),
+        str(paclitaxel_scaling.executable_path(build, "ParallelAssemblyCpp")),
         "--baseline-parallel",
         "off",
         "--executable",
-        str(paclitaxel_scaling.executable_path(build, "AssemblyCppHybrid")),
+        str(paclitaxel_scaling.executable_path(build, "ParallelAssemblyCppHybrid")),
         "--candidate-parallel",
         "on",
         "--suite",

@@ -1,5 +1,5 @@
-#ifndef ASSEMBLYCPP_H
-#define ASSEMBLYCPP_H
+#ifndef PARALLELASSEMBLYCPP_H
+#define PARALLELASSEMBLYCPP_H
 
 #include <cstdint>
 #include <istream>
@@ -7,16 +7,16 @@
 #include <string>
 #include <vector>
 
-namespace assemblycpp
+namespace parallelassemblycpp
 {
 
 #if \
-    defined(ASSEMBLYCPP_LIBRARY_BUILD) && \
+    defined(PARALLELASSEMBLYCPP_LIBRARY_BUILD) && \
     defined(__GNUC__) && \
     !defined(__clang__)
-#define ASSEMBLYCPP_PUBLIC __attribute__((externally_visible))
+#define PARALLELASSEMBLYCPP_PUBLIC __attribute__((externally_visible))
 #else
-#define ASSEMBLYCPP_PUBLIC
+#define PARALLELASSEMBLYCPP_PUBLIC
 #endif
 
 /** Options for one or more in-process assembly-index calculations. */
@@ -45,19 +45,19 @@ struct CalculationResult
 };
 
 /** Calculate directly from a V2000 molfile stream without creating files. */
-ASSEMBLYCPP_PUBLIC CalculationResult calculateMolfile(
+PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateMolfile(
     std::istream& molfile,
     const CalculationOptions& options = {}
 );
 
 /** Calculate directly from a native graph stream without creating files. */
-ASSEMBLYCPP_PUBLIC CalculationResult calculateGraph(
+PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateGraph(
     std::istream& graph,
     const CalculationOptions& options = {}
 );
 
 /** Read a native graph or first V2000 MOL/SDF structure without output files. */
-ASSEMBLYCPP_PUBLIC CalculationResult calculate(
+PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculate(
     const std::string& input,
     const CalculationOptions& options = {}
 );
@@ -68,13 +68,13 @@ ASSEMBLYCPP_PUBLIC CalculationResult calculate(
  * The implementation currently uses process-global search workspaces and is
  * therefore reusable but not thread-safe. One result is returned per input.
  */
-ASSEMBLYCPP_PUBLIC std::vector<CalculationResult> calculateBatch(
+PARALLELASSEMBLYCPP_PUBLIC std::vector<CalculationResult> calculateBatch(
     const std::vector<std::string>& inputs,
     const CalculationOptions& options = {}
 );
 
-#undef ASSEMBLYCPP_PUBLIC
+#undef PARALLELASSEMBLYCPP_PUBLIC
 
-} // namespace assemblycpp
+} // namespace parallelassemblycpp
 
 #endif

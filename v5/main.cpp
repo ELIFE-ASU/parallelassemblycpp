@@ -36,29 +36,29 @@
 #include <utility>
 #include <vector>
 #include "stringAssembly.h"
-#if defined(ASSEMBLYCPP_USE_OPENMP)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
     #include <omp.h>
 #endif
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     #include <mpi.h>
 #endif
 #ifdef _WIN32
     #include <windows.h>
 #endif
 
-#if defined(ASSEMBLYCPP_USE_OPENMP)
-    #define ASSEMBLYCPP_SEARCH_LOCAL thread_local
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+    #define PARALLELASSEMBLYCPP_SEARCH_LOCAL thread_local
 #else
-    #define ASSEMBLYCPP_SEARCH_LOCAL
+    #define PARALLELASSEMBLYCPP_SEARCH_LOCAL
 #endif
 
-#if defined(ASSEMBLYCPP_USE_MPI)
-int assemblyCppMpiRank = 0;
-int assemblyCppMpiSize = 1;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+int parallelAssemblyCppMpiRank = 0;
+int parallelAssemblyCppMpiSize = 1;
 #endif
 
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
-#include "assemblycpp.h"
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
+#include "parallelassemblycpp.h"
 #endif
 
 using namespace std;
@@ -67,8 +67,8 @@ using BooleanVector = vector<bool>;
 using IntegerPair = pair<int, int>;
 #include "activeWordMask.h"
 
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
-namespace assemblycpp::detail
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
+namespace parallelassemblycpp::detail
 {
 #endif
 
@@ -212,18 +212,18 @@ bool loadMoleculeInput(
     }
 }
 
-#ifndef ASSEMBLYCPP_LIBRARY_BUILD
+#ifndef PARALLELASSEMBLYCPP_LIBRARY_BUILD
 
 bool isPrimaryProcess()
 {
-#if defined(ASSEMBLYCPP_USE_MPI)
-    return assemblyCppMpiRank == 0;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    return parallelAssemblyCppMpiRank == 0;
 #else
     return true;
 #endif
 }
 
-#if defined(ASSEMBLYCPP_USE_OPENMP) || defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
 
 struct ParallelReplicaResult
 {
@@ -248,7 +248,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     const auto environmentStatus = _dupenv_s(
         &configuredBuffer,
         &configuredLength,
-        "ASSEMBLYCPP_BRANCH_LEASE_SIZE"
+        "PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE"
     );
     const unique_ptr<char, decltype(&std::free)> configuredOwner(
         configuredBuffer,
@@ -257,7 +257,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     const char *configured = configuredOwner.get();
     bool valid = environmentStatus == 0;
 #else
-    const char *configured = std::getenv("ASSEMBLYCPP_BRANCH_LEASE_SIZE");
+    const char *configured = std::getenv("PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE");
     bool valid = true;
 #endif
     // Zero is the internal sentinel for the adaptive default. A user-provided
@@ -279,7 +279,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     }
     else if (configured != nullptr) valid = false;
 
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     const int localValid = valid ? 1 : 0;
     int allValid = localValid;
     MPI_Allreduce(
@@ -293,7 +293,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     if (allValid == 0)
     {
         if (isPrimaryProcess())
-            cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
+            cerr << "error: PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
                     "integer or unset on every MPI rank\n";
         return false;
     }
@@ -318,7 +318,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     if (minimumLeaseSize != maximumLeaseSize)
     {
         if (isPrimaryProcess())
-            cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must have the same "
+            cerr << "error: PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE must have the same "
                     "value (or be unset) on every MPI rank\n";
         return false;
     }
@@ -326,7 +326,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
 #else
     if (!valid)
     {
-        cerr << "error: ASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
+        cerr << "error: PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
                 "integer\n";
         return false;
     }
@@ -365,7 +365,7 @@ size_t adaptiveParallelBranchLeaseSize(
 
 bool configuredLocalParallelThreadCount(int &threadCount, string &reason)
 {
-#if defined(ASSEMBLYCPP_USE_OPENMP)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
     omp_set_dynamic(0);
 #if defined(_OPENMP) && _OPENMP >= 200805
     const int threadLimit = max(1, omp_get_thread_limit());
@@ -403,8 +403,8 @@ bool configuredLocalParallelThreadCount(int &threadCount, string &reason)
 
 bool hasMultipleParallelWorkers(int localThreads)
 {
-#if defined(ASSEMBLYCPP_USE_MPI)
-    return assemblyCppMpiSize > 1 || localThreads > 1;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    return parallelAssemblyCppMpiSize > 1 || localThreads > 1;
 #else
     return localThreads > 1;
 #endif
@@ -421,7 +421,7 @@ string parallelCompatibilityFallbackReason(int localThreads)
     return {};
 }
 
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
 bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
 {
     constexpr size_t optionCount = 14;
@@ -654,7 +654,7 @@ class MpiDistributedSearchController final:
 
     void serviceRootRequests() noexcept
     {
-        if (assemblyCppMpiRank != 0) return;
+        if (parallelAssemblyCppMpiRank != 0) return;
         int available = 0;
         MPI_Status status;
         do
@@ -701,7 +701,7 @@ class MpiDistributedSearchController final:
         ) return;
 
         std::array<uint64_t, 2> range{};
-        if (assemblyCppMpiRank == 0)
+        if (parallelAssemblyCppMpiRank == 0)
         {
             serviceRootRequests();
             range = reserveRootRange(refillJobCount);
@@ -809,13 +809,13 @@ public:
         if (totalRootJobs > std::numeric_limits<uint64_t>::max())
             throw std::length_error("distributed root queue exceeds capacity");
 
-        if (assemblyCppMpiRank == 0)
+        if (parallelAssemblyCppMpiRank == 0)
         {
             exposedState.globalBest = best.load(std::memory_order_relaxed);
         }
         MPI_Win_create(
-            assemblyCppMpiRank == 0 ? &exposedState : nullptr,
-            assemblyCppMpiRank == 0
+            parallelAssemblyCppMpiRank == 0 ? &exposedState : nullptr,
+            parallelAssemblyCppMpiRank == 0
                 ? static_cast<MPI_Aint>(sizeof(exposedState))
                 : 0,
             1,
@@ -824,7 +824,7 @@ public:
             &window
         );
         MPI_Win_lock_all(0, window);
-        if (assemblyCppMpiRank == 0) MPI_Win_sync(window);
+        if (parallelAssemblyCppMpiRank == 0) MPI_Win_sync(window);
         MPI_Barrier(MPI_COMM_WORLD);
     }
 
@@ -1117,10 +1117,10 @@ ParallelSearchResult runParallelSearch(
         : 0;
 #endif
     int globalWorkerCount = localThreads;
-#if defined(ASSEMBLYCPP_USE_MPI) || defined(ASSEMBLY_ENABLE_TELEMETRY)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI) || defined(ASSEMBLY_ENABLE_TELEMETRY)
     int globalWorkerOffset = 0;
 #endif
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Allreduce(
         &localThreads,
         &globalWorkerCount,
@@ -1137,7 +1137,7 @@ ParallelSearchResult runParallelSearch(
         MPI_SUM,
         MPI_COMM_WORLD
     );
-    if (assemblyCppMpiRank == 0) globalWorkerOffset = 0;
+    if (parallelAssemblyCppMpiRank == 0) globalWorkerOffset = 0;
 #endif
 
     SearchContext searchContext;
@@ -1160,7 +1160,7 @@ ParallelSearchResult runParallelSearch(
         preparationError = "unknown parallel root preparation failure";
         preparationSucceeded = 0;
     }
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     int allPreparationsSucceeded = preparationSucceeded;
     MPI_Allreduce(
         &preparationSucceeded,
@@ -1189,7 +1189,7 @@ ParallelSearchResult runParallelSearch(
     int useParallelSearch =
         parallelExecutionMode == parallelMode::on ||
         work.workUnits >= parallelAutomaticMinimumWorkUnits;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Bcast(&useParallelSearch, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
     if (useParallelSearch == 0)
@@ -1226,7 +1226,7 @@ ParallelSearchResult runParallelSearch(
                 serialSucceeded = 0;
             }
         }
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
         MPI_Bcast(&serialSucceeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
         if (isPrimaryProcess() && !serialError.empty())
@@ -1244,8 +1244,8 @@ ParallelSearchResult runParallelSearch(
     if (!configuredParallelBranchLeaseSize(branchLeaseSize))
         return {ParallelSearchOutcome::failed, {}};
 
-#if defined(ASSEMBLYCPP_USE_MPI)
-    const bool distributedRootQueue = assemblyCppMpiSize > 1;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    const bool distributedRootQueue = parallelAssemblyCppMpiSize > 1;
 #else
     constexpr bool distributedRootQueue = false;
 #endif
@@ -1272,7 +1272,7 @@ ParallelSearchResult runParallelSearch(
 
     std::atomic<int> processBest(searchContext.rootAssemblyIndex);
     std::atomic_bool warmStartReady(false);
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     std::optional<MpiDistributedSearchController> distributedSearchStorage;
     if (distributedRootQueue)
     {
@@ -1285,8 +1285,8 @@ ParallelSearchResult runParallelSearch(
             processBest
         );
     }
-    const size_t rankPartitionIndex = static_cast<size_t>(assemblyCppMpiRank);
-    const size_t rankPartitionCount = static_cast<size_t>(assemblyCppMpiSize);
+    const size_t rankPartitionIndex = static_cast<size_t>(parallelAssemblyCppMpiRank);
+    const size_t rankPartitionCount = static_cast<size_t>(parallelAssemblyCppMpiSize);
 #else
     constexpr size_t rankPartitionIndex = 0;
     constexpr size_t rankPartitionCount = 1;
@@ -1323,7 +1323,7 @@ ParallelSearchResult runParallelSearch(
         preparationError = "unknown parallel scheduler preparation failure";
         schedulerPreparationSucceeded = 0;
     }
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     int allSchedulersPrepared = schedulerPreparationSucceeded;
     MPI_Allreduce(
         &schedulerPreparationSucceeded,
@@ -1348,7 +1348,7 @@ ParallelSearchResult runParallelSearch(
         return {ParallelSearchOutcome::failed, {}};
     }
     ParallelTaskScheduler &taskScheduler = *taskSchedulerStorage;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     if (distributedSearchStorage.has_value())
         distributedSearchStorage->attachScheduler(taskScheduler);
 #endif
@@ -1357,15 +1357,15 @@ ParallelSearchResult runParallelSearch(
     {
         ParallelReplicaResult &result = replicas[threadIndex];
         result.started = true;
-#if defined(ASSEMBLYCPP_USE_MPI)
-        searchRankPartitionIndex = static_cast<size_t>(assemblyCppMpiRank);
-        searchRankPartitionCount = static_cast<size_t>(assemblyCppMpiSize);
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        searchRankPartitionIndex = static_cast<size_t>(parallelAssemblyCppMpiRank);
+        searchRankPartitionCount = static_cast<size_t>(parallelAssemblyCppMpiSize);
 #else
         searchRankPartitionIndex = 0;
         searchRankPartitionCount = 1;
 #endif
         searchBranchLeaseSize = branchLeaseSize;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
         activeDistributedSearch = distributedSearchStorage.has_value()
             ? std::addressof(*distributedSearchStorage)
             : nullptr;
@@ -1511,8 +1511,8 @@ ParallelSearchResult runParallelSearch(
                     searchTelemetryWallNanoseconds()
                 );
             result.telemetry = captureParallelSearchWorkerTelemetry(
-#if defined(ASSEMBLYCPP_USE_MPI)
-                static_cast<uint64_t>(assemblyCppMpiRank),
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+                static_cast<uint64_t>(parallelAssemblyCppMpiRank),
 #else
                 0,
 #endif
@@ -1589,7 +1589,7 @@ ParallelSearchResult runParallelSearch(
         searchTaskMinimumWorkUnits = 0;
     };
 
-#if defined(ASSEMBLYCPP_USE_OPENMP)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
     #pragma omp parallel num_threads(localThreads)
     {
         runReplica(omp_get_thread_num());
@@ -1598,7 +1598,7 @@ ParallelSearchResult runParallelSearch(
     runReplica(0);
 #endif
 
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     if (distributedSearchStorage.has_value())
         distributedSearchStorage->waitForGlobalCompletion();
 #endif
@@ -1613,7 +1613,7 @@ ParallelSearchResult runParallelSearch(
                 searchTelemetryWallNanoseconds()
             );
         globalParallelElapsedNanoseconds = localParallelElapsedNanoseconds;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
         MPI_Allreduce(
             &localParallelElapsedNanoseconds,
             &globalParallelElapsedNanoseconds,
@@ -1647,7 +1647,7 @@ ParallelSearchResult runParallelSearch(
     int globalRuntimeLimit = localRuntimeLimit;
     int globalEnumerationLimit = localEnumerationLimit;
     int globalUserInterrupt = receivedUserInterrupt() ? 1 : 0;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Allreduce(
         &localInternalAssemblyIndex,
         &globalInternalAssemblyIndex,
@@ -1719,7 +1719,7 @@ ParallelSearchResult runParallelSearch(
             localWorkerTelemetry.push_back(replica.telemetry);
 
         vector<ParallelSearchWorkerTelemetry> gatheredWorkerTelemetry;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
         const int localTelemetryBytes = static_cast<int>(
             localWorkerTelemetry.size() *
             sizeof(ParallelSearchWorkerTelemetry)
@@ -1729,10 +1729,10 @@ ParallelSearchResult runParallelSearch(
         if (isPrimaryProcess())
         {
             telemetryBytesPerRank.resize(
-                static_cast<size_t>(assemblyCppMpiSize)
+                static_cast<size_t>(parallelAssemblyCppMpiSize)
             );
             telemetryDisplacements.resize(
-                static_cast<size_t>(assemblyCppMpiSize)
+                static_cast<size_t>(parallelAssemblyCppMpiSize)
             );
         }
         MPI_Gather(
@@ -1748,7 +1748,7 @@ ParallelSearchResult runParallelSearch(
         if (isPrimaryProcess())
         {
             int gatheredBytes = 0;
-            for (int rank = 0; rank < assemblyCppMpiSize; ++rank)
+            for (int rank = 0; rank < parallelAssemblyCppMpiSize; ++rank)
             {
                 telemetryDisplacements[rank] = gatheredBytes;
                 gatheredBytes += telemetryBytesPerRank[rank];
@@ -1774,17 +1774,17 @@ ParallelSearchResult runParallelSearch(
 #endif
         if (isPrimaryProcess())
         {
-#if defined(ASSEMBLYCPP_USE_MPI) && defined(ASSEMBLYCPP_USE_OPENMP)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI) && defined(PARALLELASSEMBLYCPP_USE_OPENMP)
             constexpr const char *parallelMode = "hybrid";
-#elif defined(ASSEMBLYCPP_USE_MPI)
+#elif defined(PARALLELASSEMBLYCPP_USE_MPI)
             constexpr const char *parallelMode = "mpi";
 #else
             constexpr const char *parallelMode = "openmp";
 #endif
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
             constexpr const char *aggregationScope = "all_mpi_ranks";
             const uint64_t rankCount =
-                static_cast<uint64_t>(assemblyCppMpiSize);
+                static_cast<uint64_t>(parallelAssemblyCppMpiSize);
 #else
             constexpr const char *aggregationScope = "process";
             constexpr uint64_t rankCount = 1;
@@ -1851,7 +1851,7 @@ ParallelSearchResult runParallelSearch(
             searchTelemetryEnabled = telemetryWasEnabled;
 #endif
         }
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
         MPI_Bcast(&pathwaySucceeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
         if (isPrimaryProcess() && !pathwayError.empty())
@@ -1895,7 +1895,7 @@ ParallelSearchResult runParallelSearch(
 
 bool runConfiguredSearch(molGraph &graph, ofstream &output)
 {
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     if (!mpiGraphsAgree(graph))
     {
         if (isPrimaryProcess())
@@ -1906,7 +1906,7 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
 
     if (parallelExecutionMode != parallelMode::off)
     {
-#if defined(ASSEMBLYCPP_USE_OPENMP) || defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
         int localThreads = 1;
         string fallbackReason;
         int localThreadConfigurationValid =
@@ -1914,7 +1914,7 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
                 localThreads,
                 fallbackReason
             ) ? 1 : 0;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
         int allThreadConfigurationsValid = localThreadConfigurationValid;
         MPI_Allreduce(
             &localThreadConfigurationValid,
@@ -1969,7 +1969,7 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
 #endif
     }
 
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     int succeeded = 1;
     if (isPrimaryProcess())
     {
@@ -2053,13 +2053,13 @@ bool stringAssemblyCalculator(const string &input)
 
                     try
                     {
-                        const assemblycpp::detail::stringAssembly::Options options{
+                        const parallelassemblycpp::detail::stringAssembly::Options options{
                             acceptReversedStrings,
                             maximumRuntimeTicks,
                             interruptionRequested
                         };
-                        const assemblycpp::detail::stringAssembly::Result result =
-                            assemblycpp::detail::stringAssembly::calculate(
+                        const parallelassemblycpp::detail::stringAssembly::Result result =
+                            parallelassemblycpp::detail::stringAssembly::calculate(
                                 value,
                                 options
                             );
@@ -2077,7 +2077,7 @@ bool stringAssemblyCalculator(const string &input)
                                 to_string(lineIndex) + "_Pathway";
                             string pathwayError;
                             if (
-                                !assemblycpp::detail::stringAssembly::writePathway(
+                                !parallelassemblycpp::detail::stringAssembly::writePathway(
                                     pathwayName,
                                     value,
                                     result,
@@ -2120,7 +2120,7 @@ bool stringAssemblyCalculator(const string &input)
         }
     }
 
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Bcast(&succeeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
     return succeeded != 0;
@@ -2150,12 +2150,12 @@ bool assemblyCalculator(const string &input)
             : input;
     molGraph molecule;
     string inputError;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     const bool configuredVerbose = verbose;
     if (!isPrimaryProcess()) verbose = false;
 #endif
     int inputLoaded = loadMoleculeInput(input, molecule, inputError) ? 1 : 0;
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     verbose = configuredVerbose;
     int allInputsLoaded = inputLoaded;
     MPI_Allreduce(
@@ -2187,7 +2187,7 @@ bool assemblyCalculator(const string &input)
         outputFile.open(outputName);
         if (!outputFile.is_open()) outputReady = 0;
     }
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Bcast(&outputReady, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
     if (!outputReady)
@@ -2250,7 +2250,7 @@ bool assemblyCalculator(const string &input)
 }
 #endif
 
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
 
 namespace
 {
@@ -2268,7 +2268,7 @@ class LibraryOptionScope
         writeIntermediateAssemblyIndices;
 
 public:
-    explicit LibraryOptionScope(const assemblycpp::CalculationOptions &options)
+    explicit LibraryOptionScope(const parallelassemblycpp::CalculationOptions &options)
     {
         maximumEnumerationCount = options.enumerationLimit;
         maximumRuntimeTicks = options.runtimeTicks;
@@ -2306,12 +2306,12 @@ void prepareInProcessCalculation()
     searchCancellationFlag.store(false);
 }
 
-assemblycpp::CalculationResult calculateLoadedMolecule(
+parallelassemblycpp::CalculationResult calculateLoadedMolecule(
     molGraph &graph,
     const string &input
 )
 {
-    assemblycpp::CalculationResult result;
+    parallelassemblycpp::CalculationResult result;
     result.input = input;
     prepareInProcessCalculation();
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
@@ -2331,7 +2331,7 @@ assemblycpp::CalculationResult calculateLoadedMolecule(
 }
 
 bool validLibraryOptions(
-    const assemblycpp::CalculationOptions &options,
+    const parallelassemblycpp::CalculationOptions &options,
     string &error
 )
 {
@@ -2342,10 +2342,10 @@ bool validLibraryOptions(
 
 } // namespace
 
-} // namespace assemblycpp::detail
-using namespace assemblycpp::detail;
+} // namespace parallelassemblycpp::detail
+using namespace parallelassemblycpp::detail;
 
-assemblycpp::CalculationResult assemblycpp::calculateMolfile(
+parallelassemblycpp::CalculationResult parallelassemblycpp::calculateMolfile(
     std::istream &molfile,
     const CalculationOptions &options
 )
@@ -2368,7 +2368,7 @@ assemblycpp::CalculationResult assemblycpp::calculateMolfile(
     }
 }
 
-assemblycpp::CalculationResult assemblycpp::calculateGraph(
+parallelassemblycpp::CalculationResult parallelassemblycpp::calculateGraph(
     std::istream &graphStream,
     const CalculationOptions &options
 )
@@ -2391,7 +2391,7 @@ assemblycpp::CalculationResult assemblycpp::calculateGraph(
     }
 }
 
-assemblycpp::CalculationResult assemblycpp::calculate(
+parallelassemblycpp::CalculationResult parallelassemblycpp::calculate(
     const std::string &input,
     const CalculationOptions &options
 )
@@ -2414,7 +2414,7 @@ assemblycpp::CalculationResult assemblycpp::calculate(
     }
 }
 
-std::vector<assemblycpp::CalculationResult> assemblycpp::calculateBatch(
+std::vector<parallelassemblycpp::CalculationResult> parallelassemblycpp::calculateBatch(
     const std::vector<std::string> &inputs,
     const CalculationOptions &options
 )
@@ -2430,7 +2430,7 @@ std::vector<assemblycpp::CalculationResult> assemblycpp::calculateBatch(
 
 #endif
 
-#ifndef ASSEMBLYCPP_LIBRARY_BUILD
+#ifndef PARALLELASSEMBLYCPP_LIBRARY_BUILD
 /** Write Linux VmPeak memory usage to a file. */
 bool maxMemoryUsage(const string& outputFilename)
 {
@@ -2485,18 +2485,18 @@ bool maxMemoryUsage(const string& outputFilename)
 }
 #endif
 
-#ifndef ASSEMBLYCPP_NO_MAIN
-#if defined(ASSEMBLYCPP_USE_MPI)
-class AssemblyCppMpiSession
+#ifndef PARALLELASSEMBLYCPP_NO_MAIN
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+class ParallelAssemblyCppMpiSession
 {
     bool initialized = false;
     bool usable = false;
 
 public:
-    AssemblyCppMpiSession(int &argc, char **&argv)
+    ParallelAssemblyCppMpiSession(int &argc, char **&argv)
     {
         int provided = MPI_THREAD_SINGLE;
-#if defined(ASSEMBLYCPP_USE_OPENMP)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
         constexpr int required = MPI_THREAD_FUNNELED;
 #else
         constexpr int required = MPI_THREAD_SINGLE;
@@ -2504,12 +2504,12 @@ public:
         if (MPI_Init_thread(&argc, &argv, required, &provided) != MPI_SUCCESS)
             return;
         initialized = true;
-        MPI_Comm_rank(MPI_COMM_WORLD, &assemblyCppMpiRank);
-        MPI_Comm_size(MPI_COMM_WORLD, &assemblyCppMpiSize);
+        MPI_Comm_rank(MPI_COMM_WORLD, &parallelAssemblyCppMpiRank);
+        MPI_Comm_size(MPI_COMM_WORLD, &parallelAssemblyCppMpiSize);
         usable = provided >= required;
     }
 
-    ~AssemblyCppMpiSession()
+    ~ParallelAssemblyCppMpiSession()
     {
         if (initialized) MPI_Finalize();
     }
@@ -2521,11 +2521,11 @@ public:
 int main(int argc, char** argv)
 {
     ios::sync_with_stdio(false);
-#if defined(ASSEMBLYCPP_USE_MPI)
-    AssemblyCppMpiSession mpiSession(argc, argv);
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    ParallelAssemblyCppMpiSession mpiSession(argc, argv);
     if (!mpiSession)
     {
-        if (assemblyCppMpiRank == 0)
+        if (parallelAssemblyCppMpiRank == 0)
             cerr << "error: MPI could not provide the required thread level\n";
         return 1;
     }
@@ -2548,7 +2548,7 @@ int main(int argc, char** argv)
         argumentsValid = 0;
     }
 
-#if defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
     int allArgumentsValid = argumentsValid;
     MPI_Allreduce(
         &argumentsValid,
@@ -2565,8 +2565,8 @@ int main(int argc, char** argv)
             if (argumentError.empty())
                 argumentError = "command line was invalid on another MPI rank";
             cerr << "error: " << argumentError << "\n"
-                 << "Usage: AssemblyCpp INPUT [OPTIONS]\n"
-                 << "Try 'AssemblyCpp --help' for more information.\n";
+                 << "Usage: ParallelAssemblyCpp INPUT [OPTIONS]\n"
+                 << "Try 'ParallelAssemblyCpp --help' for more information.\n";
         }
         return 2;
     }
@@ -2580,8 +2580,8 @@ int main(int argc, char** argv)
     if (argumentsValid == 0)
     {
         cerr << "error: " << argumentError << "\n"
-             << "Usage: AssemblyCpp INPUT [OPTIONS]\n"
-             << "Try 'AssemblyCpp --help' for more information.\n";
+             << "Usage: ParallelAssemblyCpp INPUT [OPTIONS]\n"
+             << "Try 'ParallelAssemblyCpp --help' for more information.\n";
         return 2;
     }
 #endif

@@ -246,7 +246,7 @@ struct ufdsSplit
         extraVals.clear();
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE void markTouched(size_t index)
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE void markTouched(size_t index)
     {
         const size_t wordIndex = index / atomWordBits;
         const uint64_t bit = uint64_t{1} << (index % atomWordBits);
@@ -260,7 +260,7 @@ struct ufdsSplit
         markTouchedWide(wordIndex, bit);
     }
 
-    ASSEMBLYCPP_NOINLINE void markTouchedWide(size_t wordIndex, uint64_t bit)
+    PARALLELASSEMBLYCPP_NOINLINE void markTouchedWide(size_t wordIndex, uint64_t bit)
     {
         const size_t wideWordIndex = wordIndex - inlineAtomWordCount;
         if (wideWordIndex >= wideTouchedAtomWords.size())
@@ -342,7 +342,7 @@ struct ufdsSplit
      * @param tempMaskList Reusable component-mask buffer; must not alias
      * fragmentList
      */
-    ASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
+    PARALLELASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -425,7 +425,7 @@ struct ufdsSplit
         }
     }
 
-    ASSEMBLYCPP_ALWAYS_INLINE void splitWithBuffers(
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE void splitWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -443,7 +443,7 @@ struct ufdsSplit
         splitWideWithBuffers(fragmentList, tempMaskList);
     }
 
-    ASSEMBLYCPP_NOINLINE void splitTwoWordWithBuffers(
+    PARALLELASSEMBLYCPP_NOINLINE void splitTwoWordWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )
@@ -533,7 +533,7 @@ struct ufdsSplit
         }
     }
 
-    ASSEMBLYCPP_NOINLINE void splitWideWithBuffers(
+    PARALLELASSEMBLYCPP_NOINLINE void splitWideWithBuffers(
         vector<assemblyFragment> &fragmentList,
         vector<EdgeMask> &tempMaskList
     )

@@ -13,15 +13,15 @@
 
 #include "../v5/stringAssembly.h"
 
-using assemblycpp::detail::stringAssembly::Interval;
-using assemblycpp::detail::stringAssembly::Options;
-using assemblycpp::detail::stringAssembly::PathwayStep;
-using assemblycpp::detail::stringAssembly::Result;
-using assemblycpp::detail::stringAssembly::calculate;
-using assemblycpp::detail::stringAssembly::writePathway;
+using parallelassemblycpp::detail::stringAssembly::Interval;
+using parallelassemblycpp::detail::stringAssembly::Options;
+using parallelassemblycpp::detail::stringAssembly::PathwayStep;
+using parallelassemblycpp::detail::stringAssembly::Result;
+using parallelassemblycpp::detail::stringAssembly::calculate;
+using parallelassemblycpp::detail::stringAssembly::writePathway;
 
 namespace implementation =
-    assemblycpp::detail::stringAssembly::implementation;
+    parallelassemblycpp::detail::stringAssembly::implementation;
 
 namespace
 {
@@ -913,10 +913,10 @@ void testJsonAndPathwayOutput()
         .time_since_epoch().count();
     const std::filesystem::path outputPath =
         std::filesystem::temp_directory_path() /
-        ("assemblycpp-string-pathway-" + std::to_string(nonce) + ".json");
+        ("parallelassemblycpp-string-pathway-" + std::to_string(nonce) + ".json");
     const std::filesystem::path multiStepOutputPath =
         std::filesystem::temp_directory_path() /
-        ("assemblycpp-string-pathway-multi-step-" +
+        ("parallelassemblycpp-string-pathway-multi-step-" +
             std::to_string(nonce) + ".json");
 
     struct RemoveFile
@@ -1017,7 +1017,7 @@ void testJsonAndPathwayOutput()
 
     const std::filesystem::path missingDirectory =
         std::filesystem::temp_directory_path() /
-        ("assemblycpp-string-pathway-missing-" + std::to_string(nonce));
+        ("parallelassemblycpp-string-pathway-missing-" + std::to_string(nonce));
     require(
         !std::filesystem::exists(missingDirectory),
         "temporary missing-directory fixture unexpectedly exists"

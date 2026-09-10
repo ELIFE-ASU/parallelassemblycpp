@@ -54,7 +54,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_BUILD_DIRECTORY,
         help=(
-            "directory containing AssemblyCpp and AssemblyCppOMP "
+            "directory containing ParallelAssemblyCpp and ParallelAssemblyCppOMP "
             "(default: build/parallel)"
         ),
     )
@@ -107,7 +107,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--telemetry",
         action="store_true",
-        help="collect one extra untimed AssemblyCppOMPTelemetry run per thread count",
+        help=(
+            "collect one extra untimed ParallelAssemblyCppOMPTelemetry run "
+            "per thread count"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -128,11 +131,11 @@ def make_runs(
     output_directory = arguments.output_dir.expanduser().resolve()
     common = [
         "--baseline-executable",
-        str(executable_path(build_directory, "AssemblyCpp")),
+        str(executable_path(build_directory, "ParallelAssemblyCpp")),
         "--baseline-parallel",
         "off",
         "--executable",
-        str(executable_path(build_directory, "AssemblyCppOMP")),
+        str(executable_path(build_directory, "ParallelAssemblyCppOMP")),
         "--candidate-parallel",
         "on",
         "--suite",
@@ -166,7 +169,9 @@ def make_runs(
             (
                 "--telemetry",
                 "--telemetry-executable",
-                str(executable_path(build_directory, "AssemblyCppOMPTelemetry")),
+                str(
+                    executable_path(build_directory, "ParallelAssemblyCppOMPTelemetry")
+                ),
             )
         )
 

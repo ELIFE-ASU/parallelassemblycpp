@@ -341,10 +341,12 @@ def run_solver(
     environment = os.environ.copy()
     if topology is not None:
         # A default-mode test must not inherit a developer's local override.
-        environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
+        environment.pop("PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
         if branch_lease_size is not None:
             require(branch_lease_size > 0, "branch lease size must be positive")
-            environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(branch_lease_size)
+            environment["PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(
+                branch_lease_size
+            )
     if topology is not None and topology.mode in {"openmp", "hybrid"}:
         require(
             len(set(topology.threads_per_rank)) == 1,
@@ -359,7 +361,9 @@ def run_solver(
             }
         )
 
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-parallel-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="parallelassemblycpp-parallel-"
+    ) as temporary:
         working_directory = Path(temporary)
         input_name = solver_input_name(case.source)
         input_path = working_directory / input_name
@@ -1153,10 +1157,12 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
     )
     threads = topology.threads_per_rank[0]
     environment = os.environ.copy()
-    environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
+    environment.pop("PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
     if target.branch_lease_size is not None:
         require(target.branch_lease_size > 0, "branch lease size must be positive")
-        environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(target.branch_lease_size)
+        environment["PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE"] = str(
+            target.branch_lease_size
+        )
     if topology.mode in {"openmp", "hybrid"}:
         thread_text = str(threads)
         environment.update(
@@ -1176,7 +1182,7 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
         ) from error
 
     with tempfile.TemporaryDirectory(
-        prefix="assemblycpp-parallel-pathway-"
+        prefix="parallelassemblycpp-parallel-pathway-"
     ) as temporary:
         working_directory = Path(temporary)
         input_name = "input.mol"
@@ -1250,7 +1256,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
     """Check automatic fallback, forced parallelism, and hard blockers."""
     case = SPARSE_ADAPTIVE_TELEMETRY_CASE
     environment = os.environ.copy()
-    environment.pop("ASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
+    environment.pop("PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
     environment.update(
         {
             "OMP_NUM_THREADS": "2",
@@ -1357,7 +1363,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
         expect_intermediate,
     ) in scenarios:
         with tempfile.TemporaryDirectory(
-            prefix=f"assemblycpp-policy-{name}-"
+            prefix=f"parallelassemblycpp-policy-{name}-"
         ) as temporary:
             working_directory = Path(temporary)
             input_name = "input.mol"
@@ -1431,7 +1437,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
         active_mask_words=1,
     )
     with tempfile.TemporaryDirectory(
-        prefix="assemblycpp-policy-automatic-high-work-"
+        prefix="parallelassemblycpp-policy-automatic-high-work-"
     ) as temporary:
         working_directory = Path(temporary)
         input_name = "input.mol"
@@ -1441,7 +1447,7 @@ def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
         # parallel-only lease setting proves that no parallel setup was
         # attempted when --parallel is omitted.
         default_environment = environment.copy()
-        default_environment["ASSEMBLYCPP_BRANCH_LEASE_SIZE"] = "invalid"
+        default_environment["PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE"] = "invalid"
         try:
             default_completed = run_command(
                 [
@@ -1533,11 +1539,11 @@ def run_invalid_lease_configuration_suite(
                 "OMP_NUM_THREADS": "2",
                 "OMP_THREAD_LIMIT": "2",
                 "OMP_DYNAMIC": "FALSE",
-                "ASSEMBLYCPP_BRANCH_LEASE_SIZE": value,
+                "PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE": value,
             }
         )
         with tempfile.TemporaryDirectory(
-            prefix="assemblycpp-invalid-lease-"
+            prefix="parallelassemblycpp-invalid-lease-"
         ) as temporary:
             working_directory = Path(temporary)
             input_name = solver_input_name(case.source)
@@ -1565,7 +1571,7 @@ def run_invalid_lease_configuration_suite(
             f"invalid branch lease size {display_value} was accepted",
         )
         require(
-            "ASSEMBLYCPP_BRANCH_LEASE_SIZE" in completed.stderr,
+            "PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE" in completed.stderr,
             f"invalid branch lease size {display_value} did not name its "
             "environment variable in stderr",
         )
@@ -1850,29 +1856,31 @@ def run_distributed_telemetry_suite(
 def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--serial", type=Path, required=True, help="serial AssemblyCpp target"
+        "--serial", type=Path, required=True, help="serial ParallelAssemblyCpp target"
     )
-    parser.add_argument("--openmp", type=Path, help="OpenMP AssemblyCpp target")
+    parser.add_argument("--openmp", type=Path, help="OpenMP ParallelAssemblyCpp target")
     parser.add_argument(
         "--openmp-telemetry",
         type=Path,
-        help="combined OpenMP and telemetry AssemblyCpp target",
+        help="combined OpenMP and telemetry ParallelAssemblyCpp target",
     )
-    parser.add_argument("--mpi", type=Path, help="two-rank MPI AssemblyCpp target")
+    parser.add_argument(
+        "--mpi", type=Path, help="two-rank MPI ParallelAssemblyCpp target"
+    )
     parser.add_argument(
         "--mpi-telemetry",
         type=Path,
-        help="combined MPI and telemetry AssemblyCpp target",
+        help="combined MPI and telemetry ParallelAssemblyCpp target",
     )
     parser.add_argument(
         "--hybrid",
         type=Path,
-        help="two-rank, two-thread hybrid AssemblyCpp target",
+        help="two-rank, two-thread hybrid ParallelAssemblyCpp target",
     )
     parser.add_argument(
         "--hybrid-telemetry",
         type=Path,
-        help="combined hybrid and telemetry AssemblyCpp target",
+        help="combined hybrid and telemetry ParallelAssemblyCpp target",
     )
     parser.add_argument(
         "--mpiexec",

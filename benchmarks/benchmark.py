@@ -1,4 +1,4 @@
-"""Run repeatable single-input or corpus AssemblyCpp speed benchmarks."""
+"""Run repeatable single-input or corpus ParallelAssemblyCpp speed benchmarks."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent
-DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "AssemblyCpp"
+DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "ParallelAssemblyCpp"
 DEFAULT_INPUT = REPOSITORY_ROOT / "unitTests" / "ketoconazole.mol"
 DEFAULT_EXPECTED_ASSEMBLY_INDEX = 22
 DEFAULT_MANIFEST = BENCHMARK_DIRECTORY / "cases.tsv"
@@ -642,10 +642,10 @@ def parse_measurement(
         diagnostics = completed.stderr.strip() or completed.stdout.strip()
         suffix = f": {diagnostics}" if diagnostics else ""
         raise BenchmarkError(
-            f"AssemblyCpp exited with code {completed.returncode}{suffix}"
+            f"ParallelAssemblyCpp exited with code {completed.returncode}{suffix}"
         )
     if not output_path.is_file():
-        raise BenchmarkError(f"AssemblyCpp did not create {output_path.name}")
+        raise BenchmarkError(f"ParallelAssemblyCpp did not create {output_path.name}")
 
     try:
         output = output_path.read_text(encoding="utf-8")
@@ -803,7 +803,7 @@ def run_once(
         ) from error
     except OSError as error:
         raise BenchmarkError(
-            f"could not run AssemblyCpp for {prepared.case.name}: {error}"
+            f"could not run ParallelAssemblyCpp for {prepared.case.name}: {error}"
         ) from error
     wall_seconds = time.perf_counter() - started
 
@@ -953,7 +953,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             raise BenchmarkError(f"invalid cache rate in {path.name}")
 
     if not path.is_file():
-        raise BenchmarkError(f"AssemblyCpp did not create {path.name}")
+        raise BenchmarkError(f"ParallelAssemblyCpp did not create {path.name}")
     try:
         telemetry = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -1846,7 +1846,8 @@ def run_telemetry_once(
         ) from error
     except OSError as error:
         raise BenchmarkError(
-            f"could not run AssemblyCpp telemetry for {prepared.case.name}: {error}"
+            "could not run ParallelAssemblyCpp telemetry for "
+            f"{prepared.case.name}: {error}"
         ) from error
     try:
         parse_measurement(
@@ -1878,7 +1879,9 @@ def run_benchmarks(
     candidate_execution: ExecutionConfig | None = None,
     baseline_execution: ExecutionConfig | None = None,
 ) -> list[CaseResult]:
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-benchmark-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="parallelassemblycpp-benchmark-"
+    ) as directory:
         prepared_cases = prepare_cases(cases, Path(directory))
         measurements: dict[str, list[Measurement]] = {case.name: [] for case in cases}
         baseline_measurements: dict[str, list[Measurement]] = {
@@ -2593,7 +2596,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_EXECUTABLE,
         help=(
-            "AssemblyCpp executable "
+            "ParallelAssemblyCpp executable "
             f"(default: {DEFAULT_EXECUTABLE.relative_to(REPOSITORY_ROOT)})"
         ),
     )

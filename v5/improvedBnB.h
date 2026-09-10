@@ -517,7 +517,7 @@ int pairSpecificGenericBound(
     return result;
 }
 
-ASSEMBLYCPP_NOINLINE int pairSpecificGenericBound(
+PARALLELASSEMBLYCPP_NOINLINE int pairSpecificGenericBound(
     const assemblyState &target,
     int selectedSize,
     int firstFragment,
@@ -595,7 +595,7 @@ ASSEMBLYCPP_NOINLINE int pairSpecificGenericBound(
 }
 
 template<typename DuplicateMasks>
-ASSEMBLYCPP_NOINLINE bool shouldVisitFragmentPairBlocks(
+PARALLELASSEMBLYCPP_NOINLINE bool shouldVisitFragmentPairBlocks(
     assemblyState &target,
     const dagDuplicateSet &duplicates,
     const DuplicateMasks &duplicateMasks,
@@ -967,7 +967,7 @@ void recordImprovedAssemblyIndex(
     const unsigned long long time = elapsedClockTicks();
     if (!suppressSearchOutput)
     {
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
         if (verbose)
 #endif
         cout << "Best assembly index: " << bestAssemblyIndex << " (" << time
@@ -1460,7 +1460,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                         fragmentationCutoff;
                     if (candidateAssemblyIndexBound < bestAssemblyIndex)
                     {
-#if defined(ASSEMBLYCPP_USE_OPENMP) || defined(ASSEMBLYCPP_USE_MPI)
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
                         if constexpr (allowParallelDonation && !trackPath)
                         {
                             const size_t relativeDepth =
@@ -2026,7 +2026,7 @@ bool runImprovedAssemblySearch(
     {
         if (!suppressSearchOutput)
         {
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
             if (verbose)
 #endif
             cout << "status: runtime limit reached\n";
@@ -2037,7 +2037,7 @@ bool runImprovedAssemblySearch(
     {
         if (!suppressSearchOutput)
         {
-#ifdef ASSEMBLYCPP_LIBRARY_BUILD
+#ifdef PARALLELASSEMBLYCPP_LIBRARY_BUILD
             if (verbose)
 #endif
             cout << "status: enumeration limit reached\n";

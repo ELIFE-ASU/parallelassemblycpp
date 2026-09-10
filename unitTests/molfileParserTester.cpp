@@ -43,7 +43,7 @@ namespace
 {
     const string validMolfile =
         "Fixed field test\n"
-        "AssemblyCpp parser test\n"
+        "ParallelAssemblyCpp parser test\n"
         "\n"
         "  5  4  0  0  0  0  0  0  0  0999 V2000\n"
         "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n"
@@ -225,7 +225,7 @@ int main(int argc, char **argv)
     }
     assert(rejected);
 
-    char executable[] = "AssemblyCpp";
+    char executable[] = "ParallelAssemblyCpp";
     char option[] = "--verbose=1";
     char input[] = "input.mol";
     char *arguments[] = {executable, option, input};

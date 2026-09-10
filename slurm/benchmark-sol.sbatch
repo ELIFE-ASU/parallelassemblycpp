@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=assemblycpp-benchmarks
+#SBATCH --job-name=parallelassemblycpp-benchmarks
 #SBATCH --partition=public
 #SBATCH --qos=public
 #SBATCH --nodes=1
@@ -23,7 +23,7 @@ set -eo pipefail
 usage() {
     cat <<'EOF'
 Usage: sbatch [SLURM OPTIONS] slurm/benchmark-sol.sbatch [OPTIONS]
-  --env-prefix PATH   Environment (default: ~/.conda/envs/assemblycpp-v5)
+  --env-prefix PATH   Environment (default: ~/.conda/envs/parallelassemblycpp)
   --repo-dir PATH     Repository (default: SLURM_SUBMIT_DIR)
   --output-dir PATH   New result directory (default: build/sol-benchmarks/JOB_ID)
   --suites LIST       Comma-separated suites (default: full,profile,scaling)
@@ -43,7 +43,7 @@ Default allocation: one exclusive Sol node, 128 physical cores, all node memory.
 EOF
 }
 
-env_prefix="${HOME}/.conda/envs/assemblycpp-v5"
+env_prefix="${HOME}/.conda/envs/parallelassemblycpp"
 repo_dir="${SLURM_SUBMIT_DIR:-$PWD}"
 output_dir=""
 suites="full,profile,scaling"
@@ -175,8 +175,8 @@ export PYTHONUNBUFFERED=1
 # measuring. The existing sweep validates thread counts and repetition limits.
 python -c 'import matplotlib; import matplotlib.backends.backend_agg'
 build_dir="$output_dir/build"
-configure_args=(-DASSEMBLYCPP_BUILD_OPENMP=ON)
-build_targets=(AssemblyCpp AssemblyCppOMP)
+configure_args=(-DPARALLELASSEMBLYCPP_BUILD_OPENMP=ON)
+build_targets=(ParallelAssemblyCpp ParallelAssemblyCppOMP)
 if (( ${#hybrid_layouts[@]} )); then
     mpi_launcher="$env_prefix/bin/mpirun"
     mpi_compiler="$env_prefix/bin/mpicxx"
@@ -184,8 +184,8 @@ if (( ${#hybrid_layouts[@]} )); then
         echo "Open MPI tools are missing from $env_prefix; update it with install-sol.sbatch." >&2
         exit 1
     fi
-    configure_args+=(-DASSEMBLYCPP_BUILD_HYBRID=ON "-DMPI_CXX_COMPILER=$mpi_compiler")
-    build_targets+=(AssemblyCppHybrid)
+    configure_args+=(-DPARALLELASSEMBLYCPP_BUILD_HYBRID=ON "-DMPI_CXX_COMPILER=$mpi_compiler")
+    build_targets+=(ParallelAssemblyCppHybrid)
     hybrid_args=(
         --build-dir "$build_dir" --output-dir "$output_dir/hybrid"
         --layouts "${hybrid_layouts[@]}" --cpus "$cpus" --mpirun "$mpi_launcher"
@@ -263,7 +263,7 @@ cmake --build "$build_dir" --parallel "$cpus" \
 # CPU set and pins its serial reference consistently across all thread counts.
 for suite in "${suite_names[@]}"; do
     srun --mpi=none --ntasks=1 --cpus-per-task=1 --cpu-bind=cores \
-        python benchmarks/benchmark.py --executable "$build_dir/AssemblyCpp" \
+        python benchmarks/benchmark.py --executable "$build_dir/ParallelAssemblyCpp" \
         --candidate-parallel off --suite "$suite" \
         --runs "$runs" --warmup "$warmup" --timeout "$timeout" \
         --json-output "$output_dir/suites/$suite.json" \

@@ -57,7 +57,7 @@ class HybridScalingTests(unittest.TestCase):
     def create_build(self, directory: Path) -> Path:
         build = directory / "parallel build"
         build.mkdir()
-        for name in ("AssemblyCpp", "AssemblyCppHybrid"):
+        for name in ("ParallelAssemblyCpp", "ParallelAssemblyCppHybrid"):
             executable = paclitaxel_scaling.executable_path(build, name)
             executable.write_text(f"fixture for {name}\n", encoding="utf-8")
             executable.chmod(0o755)
@@ -93,8 +93,8 @@ class HybridScalingTests(unittest.TestCase):
         candidate_execution: benchmark.ExecutionConfig | None = None,
         baseline_execution: benchmark.ExecutionConfig | None = None,
     ) -> list[benchmark.CaseResult]:
-        self.assertEqual(executable.stem, "AssemblyCppHybrid")
-        self.assertEqual(baseline_executable.stem, "AssemblyCpp")
+        self.assertEqual(executable.stem, "ParallelAssemblyCppHybrid")
+        self.assertEqual(baseline_executable.stem, "ParallelAssemblyCpp")
         self.assertEqual([case.name for case in cases], ["paclitaxel"])
         self.assertEqual((runs, warmup, timeout), (2, 0, 12.5))
         self.assertIsNone(telemetry_executable)
@@ -326,14 +326,14 @@ class HybridScalingTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_missing_launcher_or_solver_is_rejected_before_output(self) -> None:
-        for missing in ("taskset", "mpirun", "AssemblyCppHybrid"):
+        for missing in ("taskset", "mpirun", "ParallelAssemblyCppHybrid"):
             with (
                 self.subTest(missing=missing),
                 tempfile.TemporaryDirectory() as temporary,
             ):
                 root = Path(temporary)
                 build, output = self.create_build(root), root / "reports"
-                if missing == "AssemblyCppHybrid":
+                if missing == "ParallelAssemblyCppHybrid":
                     paclitaxel_scaling.executable_path(build, missing).unlink()
                 real_which = hybrid_scaling.shutil.which
 

@@ -29,8 +29,8 @@ DEFAULT_REFERENCE = (
     ROOT.parent / "assemblytheorytools/assemblytheorytools/"
     "precompiled/asscpp_combined_static_linux"
 )
-DEFAULT_CURRENT_SERIAL = ROOT / "build/parallel/AssemblyCpp"
-DEFAULT_CURRENT_OMP = ROOT / "build/parallel/AssemblyCppOMP"
+DEFAULT_CURRENT_SERIAL = ROOT / "build/parallel/ParallelAssemblyCpp"
+DEFAULT_CURRENT_OMP = ROOT / "build/parallel/ParallelAssemblyCppOMP"
 DEFAULT_RUST_REPOSITORY = ROOT / "build/daymudelab-assembly-theory"
 DEFAULT_INPUT_DIRECTORY = ROOT / "benchmarks/inputs/scaling"
 CPP_RESULT_RE = re.compile(r"has assembly index:\s*(-?\d+)")
@@ -184,7 +184,7 @@ def controlled_environment(specification: dict[str, Any]) -> dict[str, str]:
         "OMP_DYNAMIC",
         "OMP_PLACES",
         "OMP_PROC_BIND",
-        "ASSEMBLYCPP_PARALLEL_MIN_BONDS",
+        "PARALLELASSEMBLYCPP_PARALLEL_MIN_BONDS",
         "RAYON_NUM_THREADS",
     ):
         environment.pop(key, None)
@@ -200,7 +200,7 @@ def controlled_environment(specification: dict[str, Any]) -> dict[str, str]:
                 "OMP_DYNAMIC": "FALSE",
                 "OMP_PLACES": "cores",
                 "OMP_PROC_BIND": "close",
-                "ASSEMBLYCPP_PARALLEL_MIN_BONDS": "0",
+                "PARALLELASSEMBLYCPP_PARALLEL_MIN_BONDS": "0",
             }
         )
     elif mode in ("rust-serial", "rust-depth-one"):
@@ -217,7 +217,7 @@ def explicit_environment(specification: dict[str, Any]) -> dict[str, str]:
         "OMP_DYNAMIC",
         "OMP_PLACES",
         "OMP_PROC_BIND",
-        "ASSEMBLYCPP_PARALLEL_MIN_BONDS",
+        "PARALLELASSEMBLYCPP_PARALLEL_MIN_BONDS",
         "RAYON_NUM_THREADS",
     )
     return {key: environment[key] for key in keys if key in environment}

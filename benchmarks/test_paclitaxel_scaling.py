@@ -57,9 +57,9 @@ class PaclitaxelScalingTests(unittest.TestCase):
     def create_build(self, directory: Path, *, telemetry: bool = False) -> Path:
         build = directory / "parallel build"
         build.mkdir()
-        names = ["AssemblyCpp", "AssemblyCppOMP"]
+        names = ["ParallelAssemblyCpp", "ParallelAssemblyCppOMP"]
         if telemetry:
-            names.append("AssemblyCppOMPTelemetry")
+            names.append("ParallelAssemblyCppOMPTelemetry")
         for name in names:
             executable = build / (name + (".exe" if os.name == "nt" else ""))
             executable.write_text(f"fixture for {name}\n", encoding="utf-8")
@@ -114,11 +114,13 @@ class PaclitaxelScalingTests(unittest.TestCase):
             candidate_execution: benchmark.ExecutionConfig | None = None,
             baseline_execution: benchmark.ExecutionConfig | None = None,
         ) -> list[benchmark.CaseResult]:
-            self.assertEqual(executable.stem, "AssemblyCppOMP")
+            self.assertEqual(executable.stem, "ParallelAssemblyCppOMP")
             self.assertIsNotNone(baseline_executable)
-            self.assertEqual(baseline_executable.stem, "AssemblyCpp")
+            self.assertEqual(baseline_executable.stem, "ParallelAssemblyCpp")
             self.assertIsNotNone(telemetry_executable)
-            self.assertEqual(telemetry_executable.stem, "AssemblyCppOMPTelemetry")
+            self.assertEqual(
+                telemetry_executable.stem, "ParallelAssemblyCppOMPTelemetry"
+            )
             self.assertEqual([case.name for case in cases], ["paclitaxel"])
             self.assertEqual((runs, warmup, timeout), (2, 0, 12.5))
             self.assertIsNotNone(candidate_execution)
@@ -676,7 +678,7 @@ class PaclitaxelScalingTests(unittest.TestCase):
                     ]
                 )
             self.assertNotEqual(status, 0)
-            self.assertIn("AssemblyCppOMPTelemetry", stderr)
+            self.assertIn("ParallelAssemblyCppOMPTelemetry", stderr)
             run.assert_not_called()
 
 

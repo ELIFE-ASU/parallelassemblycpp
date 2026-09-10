@@ -33,8 +33,8 @@ coverage.
 Run the Python harness directly when selecting cases or controlling parallelism:
 
 ```bash
-python unitTests/unitTester.py build/release/AssemblyCpp --jobs 4
-python unitTests/unitTester.py build/release/AssemblyCpp --limit 20
+python unitTests/unitTester.py build/release/ParallelAssemblyCpp --jobs 4
+python unitTests/unitTester.py build/release/ParallelAssemblyCpp --limit 20
 python unitTests/unitTester.py --build --pathways-only --verbose
 ```
 

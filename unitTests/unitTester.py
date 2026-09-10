@@ -1,4 +1,4 @@
-"""Run AssemblyCpp CLI and regression checks."""
+"""Run ParallelAssemblyCpp CLI and regression checks."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
-DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "AssemblyCpp"
+DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "ParallelAssemblyCpp"
 DEFAULT_MANIFEST = TEST_DIRECTORY / "regression_cases.tsv"
 DEFAULT_PATHWAY_MANIFEST = TEST_DIRECTORY / "pathway_cases.tsv"
 MANIFEST_HEADER = ("molecule", "expected_assembly_index")
@@ -449,7 +449,7 @@ def run_cli_checks(executable: Path) -> int:
     )
     telemetry_supported: bool | None = None
 
-    with tempfile.TemporaryDirectory(prefix="assemblycpp-cli-") as directory:
+    with tempfile.TemporaryDirectory(prefix="parallelassemblycpp-cli-") as directory:
         working_directory = Path(directory)
 
         for help_option in ("--help", "-h"):
@@ -1244,7 +1244,7 @@ def run_cli_checks(executable: Path) -> int:
 
         explicit_hydrogen_mol = (
             "Explicit hydrogens\n"
-            "AssemblyCpp CLI test\n"
+            "ParallelAssemblyCpp CLI test\n"
             "\n"
             "  6  5  0  0  0  0  0  0  0  0999 V2000\n"
             "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
@@ -1374,7 +1374,7 @@ def run_cli_checks(executable: Path) -> int:
 
         all_hydrogen_mol = (
             "Hydrogen\n"
-            "AssemblyCpp CLI test\n"
+            "ParallelAssemblyCpp CLI test\n"
             "\n"
             "  2  1  0  0  0  0  0  0  0  0999 V2000\n"
             "    0.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
@@ -1949,7 +1949,9 @@ def run_cli_checks(executable: Path) -> int:
         ("-memTest=1", True),
         ("-testMemory=1", True),
     ):
-        with tempfile.TemporaryDirectory(prefix="assemblycpp-memory-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix="parallelassemblycpp-memory-"
+        ) as directory:
             working_directory = Path(directory)
             shutil.copy2(TEST_DIRECTORY / "butane.mol", working_directory / "input.mol")
             arguments = ["input.mol", "--pathway=0"]
@@ -2000,7 +2002,7 @@ def run_cpp_unit_test(
 ) -> None:
     """Build and run one standalone C++ unit-test executable."""
     command_prefix = compiler_command(compiler)
-    prefix = f"assemblycpp-{label.replace(' ', '-')}-tests-"
+    prefix = f"parallelassemblycpp-{label.replace(' ', '-')}-tests-"
     with tempfile.TemporaryDirectory(prefix=prefix) as directory:
         test_executable = Path(directory) / source_stem
         command = [
@@ -2136,7 +2138,7 @@ def run_test_case(executable: Path, case: TestCase, timeout: float) -> TestResul
 
     try:
         with tempfile.TemporaryDirectory(
-            prefix=f"assemblycpp-{safe_name}-"
+            prefix=f"parallelassemblycpp-{safe_name}-"
         ) as directory:
             working_directory = Path(directory)
             copied_input = working_directory / case.source.name
@@ -2282,7 +2284,7 @@ def print_summary(results: Sequence[TestResult]) -> None:
 
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run AssemblyCpp CLI and regression checks."
+        description="Run ParallelAssemblyCpp CLI and regression checks."
     )
     parser.add_argument(
         "executable",
@@ -2290,7 +2292,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_EXECUTABLE,
         help=(
-            "AssemblyCpp executable "
+            "ParallelAssemblyCpp executable "
             f"(default: {DEFAULT_EXECUTABLE.relative_to(REPOSITORY_ROOT)})"
         ),
     )

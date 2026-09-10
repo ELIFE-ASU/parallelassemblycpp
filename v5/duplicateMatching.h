@@ -162,7 +162,7 @@ struct initialIncidentEdgeIndex
         }
     }
 
-    ASSEMBLYCPP_NOINLINE void addEligibleEdges(
+    PARALLELASSEMBLYCPP_NOINLINE void addEligibleEdges(
         size_t atomA,
         size_t atomB,
         const EdgeMask &fragmentMask,
@@ -445,7 +445,7 @@ struct duplicateSet
      * @return false if the visitor stopped iteration or the search should stop
     */
     template<typename Filter, typename Visitor>
-    ASSEMBLYCPP_NOINLINE bool visitMatchingsInReverse(
+    PARALLELASSEMBLYCPP_NOINLINE bool visitMatchingsInReverse(
         Filter &&filter,
         Visitor &&visitor
     )
@@ -486,7 +486,7 @@ struct duplicateSet
     }
 
     template<typename Visitor>
-    ASSEMBLYCPP_ALWAYS_INLINE bool visitMatchingsInReverse(Visitor &&visitor)
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE bool visitMatchingsInReverse(Visitor &&visitor)
     {
         if (list.size() < 2) return true;
 
@@ -530,7 +530,7 @@ struct duplicateSet
      * Unexpected interleaving, or a block layout too sparse to amortise the
      * extra dispatch, should retain legacy occurrence-pair traversal.
      */
-    ASSEMBLYCPP_NOINLINE bool hasDenseFragmentRuns() const
+    PARALLELASSEMBLYCPP_NOINLINE bool hasDenseFragmentRuns() const
     {
         if (list.size() < 2) return false;
 
@@ -565,7 +565,7 @@ struct duplicateSet
      * accidentally depend on a representative occurrence's masks.
     */
     template<typename FragmentPairFilter, typename Visitor>
-    ASSEMBLYCPP_NOINLINE bool visitMatchingsByFragmentPairInReverse(
+    PARALLELASSEMBLYCPP_NOINLINE bool visitMatchingsByFragmentPairInReverse(
         FragmentPairFilter &&fragmentPairFilter,
         Visitor &&visitor
     )
@@ -1334,7 +1334,7 @@ struct duplicateClassIndexWorkspace
 
 private:
     template<typename DuplicateSetType>
-    ASSEMBLYCPP_NOINLINE
+    PARALLELASSEMBLYCPP_NOINLINE
     typename duplicateClassLevel<DuplicateSetType>::appender create(
         duplicateClassLevel<DuplicateSetType> &level,
         int canonicalId
