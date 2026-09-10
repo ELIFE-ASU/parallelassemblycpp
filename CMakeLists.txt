@@ -823,6 +823,29 @@ if(BUILD_TESTING)
     unitTests/fragmentationMetadataTester.cpp
   )
   assemblycpp_add_unit_test(
+    parallel-task-transfer
+    assemblycpp_parallel_task_transfer_tests
+    unitTests/parallelTaskTransferTester.cpp
+  )
+  set_tests_properties(
+    unit.parallel-task-transfer
+    PROPERTIES LABELS "unit;parallel"
+  )
+  target_compile_definitions(
+    assemblycpp_parallel_task_transfer_tests
+    PRIVATE ASSEMBLY_ENABLE_TELEMETRY
+  )
+  if(TARGET OpenMP::OpenMP_CXX)
+    target_compile_definitions(
+      assemblycpp_parallel_task_transfer_tests
+      PRIVATE ASSEMBLYCPP_USE_OPENMP
+    )
+    target_link_libraries(
+      assemblycpp_parallel_task_transfer_tests
+      PRIVATE OpenMP::OpenMP_CXX
+    )
+  endif()
+  assemblycpp_add_unit_test(
     molfile-parser
     assemblycpp_molfile_parser_tests
     unitTests/molfileParserTester.cpp

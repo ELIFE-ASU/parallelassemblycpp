@@ -48,6 +48,12 @@ SCHEDULER_SUM_FIELDS = (
     "deep_refill_activations",
     "proactive_tail_refills",
     "warm_start_branches",
+    "task_serialization_nanoseconds",
+    "task_execution_nanoseconds",
+    "tasks_immediately_pruned",
+    "task_buffers_created",
+    "task_buffers_reused",
+    "tasks_rejected_as_too_small",
 )
 
 
@@ -833,6 +839,7 @@ def validate_parallel_telemetry(
     scheduler_sums = dict.fromkeys(SCHEDULER_SUM_FIELDS, 0)
     maximum_task_queue_high_watermark = 0
     maximum_task_depth_executed = 0
+    maximum_task_minimum_work_units = 0
     warm_starts_per_rank = [0 for _ in range(topology.rank_count)]
     worker_elapsed = 0
     worker_busy = 0
@@ -871,6 +878,10 @@ def validate_parallel_telemetry(
             worker.get("maximum_task_depth_executed"),
             f"{worker_path}.maximum_task_depth_executed",
         )
+        task_minimum_work_units = require_nonnegative_integer(
+            worker.get("task_minimum_work_units"),
+            f"{worker_path}.task_minimum_work_units",
+        )
         require(
             scheduler_values["task_steals"] <= scheduler_values["task_steal_attempts"],
             f"{worker_path}: successful task steals exceed attempts",
@@ -878,6 +889,14 @@ def validate_parallel_telemetry(
         executed_tasks = (
             scheduler_values["depth_two_tasks_executed"]
             + scheduler_values["deeper_tasks_executed"]
+        )
+        require(
+            scheduler_values["tasks_immediately_pruned"] <= executed_tasks,
+            f"{worker_path}: immediately pruned tasks exceed executed tasks",
+        )
+        require(
+            executed_tasks > 0 or scheduler_values["task_execution_nanoseconds"] == 0,
+            f"{worker_path}: execution time recorded without executed tasks",
         )
         require(
             scheduler_values["local_task_executions"] + scheduler_values["task_steals"]
@@ -909,6 +928,10 @@ def validate_parallel_telemetry(
             maximum_task_depth_executed,
             task_depth,
         )
+        maximum_task_minimum_work_units = max(
+            maximum_task_minimum_work_units,
+            task_minimum_work_units,
+        )
         warm_starts_per_rank[worker_ranks[index]] += warm_starts
         elapsed = require_nonnegative_integer(
             worker.get("elapsed_nanoseconds"), f"{worker_path}.elapsed_nanoseconds"
@@ -917,6 +940,11 @@ def validate_parallel_telemetry(
             worker.get("busy_nanoseconds"), f"{worker_path}.busy_nanoseconds"
         )
         require(busy <= elapsed, f"{worker_path}: busy time exceeds elapsed time")
+        require(
+            scheduler_values["task_serialization_nanoseconds"] <= busy
+            and scheduler_values["task_execution_nanoseconds"] <= busy,
+            f"{worker_path}: task timing exceeds worker busy time",
+        )
         require(
             busy
             == elapsed - min(scheduler_values["scheduler_idle_nanoseconds"], elapsed),
@@ -971,6 +999,10 @@ def validate_parallel_telemetry(
         aggregate.get("maximum_task_depth_executed"),
         f"{prefix}: parallel.aggregate.maximum_task_depth_executed",
     )
+    aggregate_task_minimum_work_units = require_nonnegative_integer(
+        aggregate.get("task_minimum_work_units"),
+        f"{prefix}: parallel.aggregate.task_minimum_work_units",
+    )
     for name, worker_sum in scheduler_sums.items():
         require(
             aggregate_scheduler_values[name] == worker_sum,
@@ -983,6 +1015,10 @@ def validate_parallel_telemetry(
     require(
         aggregate_maximum_task_depth == maximum_task_depth_executed,
         f"{prefix}: aggregate maximum task depth is not the worker maximum",
+    )
+    require(
+        aggregate_task_minimum_work_units == maximum_task_minimum_work_units,
+        f"{prefix}: aggregate minimum task work is not the worker maximum",
     )
     aggregate_depth_two_spawned = aggregate_scheduler_values["depth_two_tasks_spawned"]
     aggregate_depth_two_executed = aggregate_scheduler_values[

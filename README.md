@@ -36,6 +36,62 @@ This runs AssemblyCpp directly from the build directory; installation is
 optional.
 
 <details>
+<summary><strong>ASU Sol HPC setup</strong></summary>
+
+From the repository root on Sol, submit the environment installation job:
+
+```bash
+sbatch slurm/install-sol.sbatch
+```
+
+The job loads Sol's `mamba/latest` module and creates
+`$HOME/.conda/envs/assemblycpp-v5` from `environment.yml`. Resubmitting updates
+that environment to satisfy the file. It then builds the `release` preset in
+`build/sol-release` and checks `AssemblyCpp --help`. The environment includes
+the compiler, CMake, Ninja, Open MPI, Python, and Ruff; the release executable
+uses serial search. See the development section for parallel build presets.
+
+The script requests one node, four CPUs, 16 GB RAM, and two hours in
+`lightwork` with the `public` QoS, following ASU's guidance for
+[environment creation and compilation](https://docs.rc.asu.edu/partitions-and-qos/#lightwork).
+Output and errors go to `slurm-assemblycpp-install-<job-id>.out` in the job's
+working directory. An account can be selected with
+`sbatch --account=<your-account> slurm/install-sol.sbatch`; use `myaccounts`
+on Sol to list available accounts.
+
+To choose another persistent environment location, pass an absolute prefix:
+
+```bash
+sbatch slurm/install-sol.sbatch /data/your_group/envs/assemblycpp-v5
+```
+
+An optional second argument supplies the absolute repository path when
+submitting from another directory. Arguments are used because the script's
+`--export=NONE` does not inherit custom variables from the submitting shell.
+For example:
+
+```bash
+sbatch /path/to/assemblycpp-v5/slurm/install-sol.sbatch \
+  /data/your_group/envs/assemblycpp-v5 /path/to/assemblycpp-v5
+```
+
+After the setup job succeeds, activate the environment in subsequent jobs
+using [ASU's supported activation syntax](https://docs.rc.asu.edu/mamba/):
+
+```bash
+module load mamba/latest
+source activate "$HOME/.conda/envs/assemblycpp-v5"
+./build/sol-release/AssemblyCpp unitTests/alanine.mol
+```
+
+Use your chosen prefix in `source activate` if you changed the default, and
+run the executable from the repository root inside a compute allocation.
+Finish jobs using the environment before resubmitting the installer, since
+an update can replace their dependencies.
+
+</details>
+
+<details>
 <summary><strong>What the code does</strong></summary>
 
 AssemblyCpp treats a molecule as a labelled graph: atoms are vertices and

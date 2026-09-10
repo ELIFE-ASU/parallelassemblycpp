@@ -8,6 +8,7 @@ __pycache__/
 /dist/
 /stage/
 CMakeUserPresets.json
+/slurm-*.out
 
 # Editor metadata
 /.vscode/

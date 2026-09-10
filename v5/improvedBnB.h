@@ -992,7 +992,8 @@ bool continueCanonicalAssemblySearchWithWorkspace(
     int &bestAssemblyIndex,
     ufdsMaskWorkspace &fragmentationWorkspace,
     assemblySearchStorage &searchStorage,
-    validMatchings *matching = nullptr
+    validMatchings *matching = nullptr,
+    bool *immediatelyPruned = nullptr
 )
 {
     if (searchShouldStop()) return false;
@@ -1021,6 +1022,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
 
     if (result == assemblyTranspositionTable::result::dominated)
     {
+        if (immediatelyPruned != nullptr) *immediatelyPruned = true;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         if (searchTelemetryEnabled) [[unlikely]]
             ++searchTelemetry.counters.assemblyCachePrunedHits;
@@ -2595,7 +2597,8 @@ void warmStartParallelIncumbent(
 
 void reconstructParallelTask(
     const parallelSearchTaskDescriptor &task,
-    assemblyState &state
+    assemblyState &state,
+    std::size_t receiverWorkerIndex
 )
 {
     state.clearFragments();
@@ -2610,10 +2613,19 @@ void reconstructParallelTask(
         EdgeMask mask = EdgeMask::fromActiveWords(
             task.fragmentWords.data() + fragment.wordOffset
         );
+        // The immutable root seed and active process registry share one ID
+        // namespace across workers. Other post-seed IDs belong only to their
+        // producer and must be resolved again when a peer steals the task.
+        const bool reusableCanonicalId = fragment.canonicalId >= 0 && (
+            static_cast<std::size_t>(fragment.canonicalId) <
+                task.canonicalSeedSize ||
+            (task.sharedCanonicalIds && sharedCanonicalRegistry != nullptr) ||
+            receiverWorkerIndex == task.originWorkerIndex
+        );
         state.appendFragment(
             mask,
             static_cast<int>(fragment.edgeCount),
-            unknownCanonicalId,
+            reusableCanonicalId ? fragment.canonicalId : unknownCanonicalId,
             fragment.connected
         );
     }
@@ -2624,9 +2636,12 @@ template<matchingEquivalenceMode equivalenceMode, bool useSharedStates>
 bool runParallelTaskImpl(
     const SearchContext &context,
     const parallelSearchTaskDescriptor &task,
-    WorkerContext &worker
+    WorkerContext &worker,
+    bool &immediatelyPruned
 )
 {
+    immediatelyPruned = false;
+    if (searchShouldStop()) return false;
     if (sharedAssemblyIndex != nullptr)
     {
         worker.assemblyIndex = min(
@@ -2634,11 +2649,19 @@ bool runParallelTaskImpl(
             sharedAssemblyIndex->load(std::memory_order_relaxed)
         );
     }
-    if (task.lowerBoundAssemblyIndex >= worker.assemblyIndex) return true;
+    if (task.lowerBoundAssemblyIndex >= worker.assemblyIndex)
+    {
+        immediatelyPruned = true;
+        return true;
+    }
     // The previous root may have ended on a bound-pruned raw fragmentation.
     // Its deferred cache binding does not describe this transferred state.
     worker.fragmentation.beginFragmentation();
-    reconstructParallelTask(task, worker.candidate);
+    reconstructParallelTask(
+        task,
+        worker.candidate,
+        worker.search.parallelWorkerIndex
+    );
     worker.search.parallelTaskDepth = task.depth;
     if (searchShouldStop()) return false;
 
@@ -2660,7 +2683,9 @@ bool runParallelTaskImpl(
         worker.candidate.sumDupBonds,
         worker.assemblyIndex,
         worker.fragmentation,
-        worker.search
+        worker.search,
+        nullptr,
+        &immediatelyPruned
     );
 }
 
@@ -2668,7 +2693,8 @@ template<bool useSharedStates>
 bool runParallelTask(
     const SearchContext &context,
     const parallelSearchTaskDescriptor &task,
-    WorkerContext &worker
+    WorkerContext &worker,
+    bool &immediatelyPruned
 )
 {
     if (!worker.fragmentation.homogeneousPathEdgePositions.empty())
@@ -2676,12 +2702,60 @@ bool runParallelTask(
         return runParallelTaskImpl<
             matchingEquivalenceMode::homogeneousPath,
             useSharedStates
-        >(context, task, worker);
+        >(context, task, worker, immediatelyPruned);
     }
     return runParallelTaskImpl<
         matchingEquivalenceMode::none,
         useSharedStates
-    >(context, task, worker);
+    >(context, task, worker, immediatelyPruned);
+}
+
+/** Return transfer storage and balance task accounting on every search exit. */
+template<bool useSharedStates>
+bool runAndRecycleParallelTask(
+    const SearchContext &context,
+    parallelSearchTaskDescriptor &task,
+    WorkerContext &worker,
+    ParallelTaskScheduler &scheduler
+)
+{
+    bool completed = false;
+    bool immediatelyPruned = false;
+    const unsigned int taskDepth = task.depth;
+    const auto executionStarted = std::chrono::steady_clock::now();
+    const auto finishTask = [&]
+    {
+        const auto elapsed = std::chrono::duration_cast<
+            std::chrono::nanoseconds
+        >(std::chrono::steady_clock::now() - executionStarted).count();
+        // A task is immediately pruned only by the initial incumbent bound
+        // or its first transposition-table lookup, before recursive search.
+        // Cancellation and exceptions are timed without counting as pruning.
+        scheduler.recordTaskExecution(
+            task,
+            elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0,
+            immediatelyPruned
+        );
+        scheduler.recycleTask(task);
+        scheduler.completeTask(taskDepth);
+    };
+    try
+    {
+        completed = runParallelTask<useSharedStates>(
+            context,
+            task,
+            worker,
+            immediatelyPruned
+        );
+    }
+    catch (...)
+    {
+        immediatelyPruned = false;
+        finishTask();
+        throw;
+    }
+    finishTask();
+    return completed;
 }
 
 /** Dynamically lease roots and consume adaptively exposed depth-two work. */
@@ -2780,21 +2854,12 @@ void runParallelRootJobs(
                 task.depth
             );
 #endif
-            bool completed = false;
-            try
-            {
-                completed = runParallelTask<useSharedStates>(
-                    context,
-                    task,
-                    worker
-                );
-            }
-            catch (...)
-            {
-                scheduler.completeTask(task.depth);
-                throw;
-            }
-            scheduler.completeTask(task.depth);
+            const bool completed = runAndRecycleParallelTask<useSharedStates>(
+                context,
+                task,
+                worker,
+                scheduler
+            );
             if (!completed) return;
             continue;
         }
