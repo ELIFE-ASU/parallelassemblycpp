@@ -11,7 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "../v5/stringAssembly.h"
+#include "../src/stringAssembly.h"
 
 using parallelassemblycpp::detail::stringAssembly::Interval;
 using parallelassemblycpp::detail::stringAssembly::Options;

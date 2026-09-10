@@ -1,7 +1,7 @@
 #pragma once
 
 /*
- * Adapted for ParallelAssemblyCpp v5 from the string assembly implementation in
+ * Adapted for ParallelAssemblyCpp from the string assembly implementation in
  * croningroup/public/assemblycpp-public commit 2a87948, authored by Stuart
  * Marshall from work by Ian Seet and Leroy Cronin. See README.md and
  * License.md for source details and licensing.

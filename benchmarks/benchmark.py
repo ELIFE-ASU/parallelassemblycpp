@@ -610,7 +610,7 @@ def build_executable(
 
     command = [
         *compiler_command,
-        str(REPOSITORY_ROOT / "v5" / "main.cpp"),
+        str(REPOSITORY_ROOT / "src" / "main.cpp"),
         "-std=c++20",
         "-O3",
         "-DNDEBUG",
@@ -2735,7 +2735,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--build",
         action="store_true",
-        help="compile v5/main.cpp for x86-64-v3 before benchmarking",
+        help="compile src/main.cpp for x86-64-v3 before benchmarking",
     )
     parser.add_argument(
         "--compiler",

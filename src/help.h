@@ -12,7 +12,7 @@
 
 void help()
 {
-    cout << R"(ParallelAssemblyCpp v5
+    cout << R"(ParallelAssemblyCpp
 
 Usage:
   ParallelAssemblyCpp INPUT [OPTIONS]

@@ -3,7 +3,7 @@
 #undef NDEBUG
 #endif
 
-#include "../v5/activeWordMask.h"
+#include "../src/activeWordMask.h"
 
 #include <algorithm>
 #include <array>
