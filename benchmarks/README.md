@@ -21,6 +21,95 @@ python benchmarks/benchmark.py \
 Use `--list-cases` to inspect the selected cases and
 `python benchmarks/benchmark.py --help` for all runner options.
 
+## ASU Sol batch job
+
+After the [Sol environment setup](../README.md#quick-start) job succeeds,
+submit from the repository root:
+
+```bash
+sbatch slurm/benchmark-sol.sbatch
+```
+
+The job builds optimized serial and OpenMP executables in its own result
+directory, runs the `full`, `profile`, and `scaling` suites, then measures
+Paclitaxel OpenMP scaling at 2, 4, 8, 16, 32, 64, and 128 threads against paired
+serial runs.
+`full` includes every `quick` case. Workload scaling measures the amino-acid
+and mask-boundary series; thread scaling holds Paclitaxel fixed while changing
+the worker count. Every calculation checks its expected assembly index and
+disables pathway reconstruction. The default is six measured rounds and one
+warm-up round per case or thread count, with a 600-second timeout per
+calculation. These counts are for exploration, not the promotion gate.
+
+The allocation reserves one whole standard Sol CPU node exclusively: one task
+with 128 physical cores, SMT excluded, and all node memory (`--mem=0`, normally
+512 GiB). This matches
+[Sol's standard compute hardware](https://docs.rc.asu.edu/supercomputer-hardware/).
+The time limit is 24 hours in the `public` partition and QoS, using
+[Sol's compute partitions](https://docs.rc.asu.edu/partitions-and-qos/).
+Suite runs use one CPU; the thread sweep gets the full allocated CPU set via
+`srun` and uses the existing driver's CPU placement logic. This script measures
+single-node OpenMP scaling. MPI and hybrid experiments use the separate
+commands below.
+
+Results default to `build/sol-benchmarks/<job-id>/`. Start with **`summary.csv`**:
+
+| File | Contents |
+| --- | --- |
+| `summary.csv` | One row per case plus a suite-total row: wall-time median, MAD, p95, paired speedup, and parallel efficiency. |
+| `status.txt` | `running`, `completed`, or a failure with its exit code. |
+| `metadata.txt` | Job allocation, CPU hardware, Git revision/working-tree status, environment path, and run settings. |
+| `suites/*.json` | Full timing samples, expected results, fingerprints, and summaries for each suite. |
+| `suites/scaling.png`, `suites/scaling.pdf` | Wall time against workload size. |
+| `parallel/omp-*.json` | Paired serial/OpenMP timing samples for each thread count. |
+| `parallel/scaling.txt`, `parallel/scaling.png`, `parallel/scaling.pdf` | Validated thread-scaling summary and plots. |
+| `parallel/cpu-topology.json` | CPU affinity, topology, and selected placement. |
+| `build.log`, `suites/*.txt`, `parallel.txt` | Build and runner logs. |
+
+CSV speedup is the median of paired serial/parallel wall-time ratios;
+efficiency is speedup divided by worker count, expressed as a fraction.
+Values above 1 for speedup indicate improvement. Serial-only suite rows have
+blank baseline, speedup, and efficiency fields. The `report` column points to
+the raw JSON relative to the result directory. Rows with `case=__suite__`
+summarize the per-round sum of all case wall times.
+
+The CSV is refreshed after each suite and when the job exits, including on
+ordinary failures. Completed thread reports survive a later failed count.
+Check `status.txt` before treating a result set as complete; a forced kill may
+leave it marked `running`. To regenerate the CSV from retained reports:
+
+```bash
+python benchmarks/summarize_sol.py build/sol-benchmarks/<job-id>
+```
+
+For a shorter first run on the reserved node (still including Paclitaxel):
+
+```bash
+sbatch --time=04:00:00 \
+  slurm/benchmark-sol.sbatch --suites quick --threads 2,4 --runs 2 --warmup 0
+```
+
+Customize storage, the installed environment, or the time limit:
+
+```bash
+sbatch --account=<your-account> --time=2-00:00:00 \
+  slurm/benchmark-sol.sbatch \
+  --env-prefix /data/your_group/envs/assemblycpp-v5 \
+  --output-dir /data/your_group/results/assemblycpp-run-001 \
+  --threads 2,4,8,16,32,64,128 --runs 6
+```
+
+Use absolute paths for `--env-prefix`, `--output-dir`, and the optional
+`--repo-dir` when submitting from outside the checkout. Existing output
+directories are rejected. If `--threads` is omitted, the script selects powers
+of two up to the allocated CPU count and adds that count if it is not a power
+of two. `--suites`, `--threads`, `--runs`, `--warmup`, and `--timeout` follow the
+script path; Slurm options such as `--account` and `--time` precede it.
+Choosing fewer thread counts still reserves the whole node.
+The job activates the existing mamba environment without updating it.
+
+## Direct build shortcut
+
 The runner's `--build` option is a direct `-O3 -DNDEBUG` x86-64-v3 shortcut.
 Use the CMake presets for compiler-flag comparisons so target-specific GCC,
 LTO, and PGO options are included.

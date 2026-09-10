@@ -90,6 +90,12 @@ run the executable from the repository root inside a compute allocation.
 Finish jobs using the environment before resubmitting the installer, since
 an update can replace their dependencies.
 
+To run the benchmark suites and OpenMP scaling sweep on a whole 128-core Sol
+node, submit `sbatch slurm/benchmark-sol.sbatch`. It saves a combined
+`summary.csv`, raw JSON, and plots in `build/sol-benchmarks/<job-id>/`. See the
+[Sol benchmark job instructions](benchmarks/README.md#asu-sol-batch-job) for
+resource overrides, thread counts, and output details.
+
 </details>
 
 <details>
