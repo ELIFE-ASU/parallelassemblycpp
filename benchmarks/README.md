@@ -304,9 +304,102 @@ complete candidate execution configuration, so its mode, MPI rank count, and
 hybrid thread placement match the timed candidate. On POSIX, a timeout or
 interrupt terminates the launcher's process group.
 
-Paclitaxel is a deliberately long, complex profile case. To compare a
-four-thread OpenMP calculation with the serial solver without running the rest
-of the profile suite:
+### Paclitaxel thread sweep
+
+`paclitaxel_scaling.py` detects the available CPUs and measures Paclitaxel at
+every OpenMP thread count from 2 up to that limit. Each count gets its own
+paired comparison with the same serial solver, with alternating AB/BA order
+and assembly index validation against the manifest's provisional value of 23.
+Only Paclitaxel runs; the other profile cases are excluded. Timings use
+`--pathway=0`, excluding pathway reconstruction.
+
+Use the parallel build above, or build just the serial and OpenMP executables:
+
+```bash
+cmake --preset performance -B build/paclitaxel \
+  -DASSEMBLYCPP_BUILD_OPENMP=ON
+cmake --build build/paclitaxel --target AssemblyCpp AssemblyCppOMP
+python benchmarks/paclitaxel_scaling.py \
+  --build-dir build/paclitaxel \
+  --output-dir build/paclitaxel-scaling
+```
+
+On Linux, detection intersects CPU topology with the driver's process affinity
+and respects `SLURM_CPUS_PER_TASK` when set. It counts physical cores separately
+from logical CPUs and orders one CPU from each physical core before adding
+SMT siblings. For example, a host with 20 physical cores and 28 logical CPUs
+runs 2, 3, 4, ..., 28 threads by default. `--physical-cores-only` stops at 20 in
+that example. Use `--threads 2 4 8` to select a smaller subset. Requested counts
+above the detected capacity are rejected.
+
+Preview the detected CPU, selected counts, calculation count, and commands:
+
+```bash
+python benchmarks/paclitaxel_scaling.py --dry-run
+python benchmarks/paclitaxel_scaling.py --physical-cores-only --dry-run
+```
+
+The default is six measured pairs plus one warm-up pair per thread count, or
+`14 * (N - 1)` calculations for `N` available CPUs. A 28-CPU sweep makes 378
+calculations. Paclitaxel can take several minutes per calculation, so a full
+sweep can take many hours. `--timeout` sets the per-calculation limit in seconds
+(default 600). For a smoke run:
+
+```bash
+python benchmarks/paclitaxel_scaling.py \
+  --build-dir build/paclitaxel \
+  --threads 2 --runs 1 --warmup 0 \
+  --output-dir build/paclitaxel-smoke
+```
+
+Use an even `--runs` count for balanced timing evidence. Thread counts must be
+distinct and at least two: the one-worker reference is the serial solver, and
+the solver rejects forced parallel search with only one worker. The runner
+sets `OMP_NUM_THREADS` and `OMP_THREAD_LIMIT` for each role, disables dynamic
+teams, and uses `OMP_PROC_BIND=close`. When CPU IDs are available, each count
+gets an explicit `OMP_PLACES` list with one logical CPU per place. This uses
+physical cores before SMT siblings when physical topology is available,
+including on CPUs with mixed core types. Otherwise it uses sorted CPU IDs.
+When `taskset` is available, the serial reference is pinned to the first CPU
+in that order. Otherwise it inherits the driver's affinity.
+
+Run the driver itself inside a placement launcher or Slurm allocation so that
+detection sees the intended CPUs, for example:
+
+```bash
+taskset -c 0,2,4,6 python benchmarks/paclitaxel_scaling.py --dry-run
+```
+
+The separate `--baseline-launcher` override remains available. A
+`--candidate-launcher` requires explicit `--threads` and cannot be combined
+with `--physical-cores-only`: the driver cannot inspect a launcher's target
+allocation. In that mode, candidate CPU placement uses `OMP_PLACES=threads`
+within the launcher's allocation; driver CPU IDs and capacity checks are not
+applied to it. Keep serial placement fixed across the sweep.
+
+When process affinity or physical topology is unavailable, the report states
+the detection source and any unknown physical core count. CPU-count fallback
+uses the process CPU count where supported, otherwise the system CPU count;
+it does not invent CPU IDs. `--physical-cores-only` requires known topology.
+
+`cpu-topology.json` records the detected topology, affinity, Slurm limit,
+selected counts, baseline launcher, and CPU IDs for every planned run. Each
+`omp-N.json` contains the usual schema-v2 paired samples and fingerprints.
+After every count succeeds, the existing scaling checker validates the reports
+and writes `scaling.txt` with CPU details, paired wall-time speedup and efficiency
+(`speedup / threads`). Slowdowns are reported without failing the benchmark;
+these measurements have no CI timing threshold. Errors, incorrect assembly
+indices, timeouts, and interrupts stop the sweep without writing a summary.
+Existing reports are never overwritten; use a new output directory for a
+repeat run. `--dry-run` prints the benchmark and checker commands without
+building or running anything.
+
+To collect a separate untimed telemetry calculation at each count, build
+`AssemblyCppOMPTelemetry` in the same build directory and add `--telemetry`.
+Telemetry uses the candidate's thread count and placement and is excluded from
+the timing summary.
+
+For a single four-thread comparison using the general runner:
 
 ```bash
 python benchmarks/benchmark.py \
@@ -315,15 +408,17 @@ python benchmarks/benchmark.py \
   --executable build/parallel/AssemblyCppOMP \
   --candidate-parallel on \
   --candidate-env OMP_NUM_THREADS=4 \
-  --case paclitaxel --runs 6 \
+  --suite profile --case paclitaxel --runs 6 \
   --json-output build/parallel-paclitaxel-omp-4.json
 ```
+
+### Comparing topology reports
 
 Compare topology reports with:
 
 ```bash
 python benchmarks/check_parallel_scaling.py \
-  omp:1:build/parallel-omp-1.json \
+  omp:2:build/parallel-omp-2.json \
   omp:4:build/parallel-omp-4.json \
   mpi:4:build/parallel-mpi-4.json \
   hybrid:8:build/parallel-hybrid-8.json
