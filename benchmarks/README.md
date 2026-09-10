@@ -2,6 +2,9 @@
 
 The benchmark tools run isolated AssemblyCpp calculations, verify their
 assembly indices, and report wall time and program-reported `std::clock` ticks.
+Plotting requires Matplotlib, included in `environment.yml`. For an existing
+Conda environment, run `conda env update --file environment.yml`; for a separate
+Python installation, run `python -m pip install matplotlib`.
 
 ## Quick start
 
@@ -78,6 +81,16 @@ python benchmarks/benchmark.py \
   --telemetry \
   --json-output build/scaling.json
 ```
+
+Runs containing scaling cases automatically save PNG and PDF plots beside the
+JSON report (`build/scaling.png` and `build/scaling.pdf` in this example), or at
+those default paths when no JSON output is requested. This also applies when
+selecting individual amino-acid cases with `--case`. Use `--plot-output PATH` to
+choose another PNG path, with a matching `.pdf` sibling, or request plots for
+another suite. The plot shows measured wall-time medians
+with MAD error bars on a logarithmic axis, including the baseline for paired
+runs. Amino-acid components and mask-boundary bond counts use separate panels.
+Plots render without a display and are written only after successful validation.
 
 Telemetry is excluded from timing aggregates. It records graph size, retained
 masks, matching and canonicalisation activity, cache rates, phase clock ticks,
@@ -387,8 +400,10 @@ selected counts, baseline launcher, and CPU IDs for every planned run. Each
 `omp-N.json` contains the usual schema-v2 paired samples and fingerprints.
 After every count succeeds, the existing scaling checker validates the reports
 and writes `scaling.txt` with CPU details, paired wall-time speedup and efficiency
-(`speedup / threads`). Slowdowns are reported without failing the benchmark;
-these measurements have no CI timing threshold. Errors, incorrect assembly
+(`speedup / threads`). It also saves `scaling.png` and `scaling.pdf` in the output directory,
+plotting speedup and efficiency against thread count. Slowdowns are reported
+without failing the benchmark; these measurements have no CI timing threshold.
+Errors, incorrect assembly
 indices, timeouts, and interrupts stop the sweep without writing a summary.
 Existing reports are never overwritten; use a new output directory for a
 repeat run. `--dry-run` prints the benchmark and checker commands without

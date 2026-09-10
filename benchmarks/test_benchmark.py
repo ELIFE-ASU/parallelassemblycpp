@@ -1422,6 +1422,184 @@ class BenchmarkTests(unittest.TestCase):
             [True, True, True, True, True, True],
         )
 
+    def test_scaling_cli_saves_png_and_pdf_with_and_without_json(self) -> None:
+        for paired, save_json, explicit_plot in (
+            (False, True, False),
+            (True, True, True),
+            (False, False, False),
+        ):
+            with (
+                self.subTest(paired=paired, json=save_json, explicit=explicit_plot),
+                tempfile.TemporaryDirectory() as temp_directory,
+            ):
+                directory = Path(temp_directory)
+                self.create_fixture(directory)
+                manifest = self.create_manifest(
+                    directory,
+                    [
+                        (
+                            "amino-acid-scale-02c",
+                            "input.mol",
+                            7,
+                            "provisional",
+                            "scaling",
+                            "18 atoms / 16 bonds / 2 comps",
+                        )
+                    ],
+                )
+                candidate = self.create_fake_executable(directory, "candidate", 7, 100)
+                arguments = [
+                    "--manifest",
+                    str(manifest),
+                    "--case",
+                    "amino-acid-scale-02c",
+                    "--executable",
+                    str(candidate),
+                    "--runs",
+                    "2",
+                    "--warmup",
+                    "0",
+                ]
+                report = directory / "reports" / "results.json"
+                report.parent.mkdir()
+                plot = directory / "build" / "scaling.png"
+                if save_json:
+                    arguments.extend(("--json-output", str(report)))
+                    plot = report.with_suffix(".png")
+                if explicit_plot:
+                    plot = directory / "custom" / "amino.png"
+                    arguments.extend(("--plot-output", str(plot)))
+                if paired:
+                    baseline = self.create_fake_executable(
+                        directory, "baseline", 7, 200
+                    )
+                    arguments.extend(("--baseline-executable", str(baseline)))
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(
+                        benchmark,
+                        "DEFAULT_PLOT_OUTPUT",
+                        directory / "build" / "scaling.png",
+                    ),
+                    contextlib.redirect_stdout(stdout),
+                ):
+                    status = benchmark.main(arguments)
+                self.assertEqual(status, 0)
+                self.assertTrue(plot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+                pdf = plot.with_suffix(".pdf")
+                self.assertTrue(pdf.read_bytes().startswith(b"%PDF-"))
+                self.assertIn(f"Plot: {plot}", stdout.getvalue())
+                self.assertIn(f"Plot: {pdf}", stdout.getvalue())
+                self.assertEqual(report.exists(), save_json)
+
+    def test_workload_plot_keeps_families_separate_and_sorts_sizes(self) -> None:
+        results = [
+            benchmark.CaseResult(
+                benchmark.BenchmarkCase(
+                    name, Path("input.mol"), 7, "provisional", ("scaling",), "fixture"
+                ),
+                tuple(benchmark.Measurement(value, 10, 7) for value in times),
+                tuple(benchmark.Measurement(value * 2, 20, 7) for value in times),
+            )
+            for name, times in (
+                ("amino-acid-scale-10c", (5.0, 7.0, 9.0)),
+                ("mask-boundary-path-064b", (0.1, 0.2, 0.3)),
+                ("amino-acid-scale-02c", (1.0, 2.0, 3.0)),
+            )
+        ]
+        with tempfile.TemporaryDirectory() as temp_directory:
+            figure = benchmark.create_workload_figure()
+            benchmark.write_workload_plot(
+                Path(temp_directory) / "plot.png", results, figure
+            )
+            self.assertEqual(len(figure.axes), 2)
+            amino, boundary = figure.axes
+            self.assertEqual(amino.get_xlabel(), "Components")
+            self.assertEqual(boundary.get_xlabel(), "Bonds")
+            self.assertEqual(amino.get_yscale(), "log")
+            baseline, candidate = amino.containers
+            self.assertEqual(list(candidate.lines[0].get_xdata()), [2, 10])
+            self.assertEqual(list(candidate.lines[0].get_ydata()), [2.0, 7.0])
+            self.assertEqual(list(baseline.lines[0].get_ydata()), [4.0, 14.0])
+
+    def test_plot_output_rejects_aliases_before_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            candidate = self.create_fake_executable(directory, "candidate", 7, 100)
+            report = directory / "report.json"
+            alias = directory / "alias.png"
+            alias.hardlink_to(source)
+            pdf_input_alias = directory / "input-alias.pdf"
+            pdf_input_alias.hardlink_to(source)
+            pdf_report_alias = directory / "report-alias.pdf"
+            pdf_report_alias.symlink_to(report)
+            png = directory / "sibling.png"
+            png.write_bytes(b"existing plot")
+            png.with_suffix(".pdf").hardlink_to(png)
+            for plot in (
+                candidate,
+                source,
+                alias,
+                report,
+                pdf_input_alias.with_suffix(".png"),
+                pdf_report_alias.with_suffix(".png"),
+                directory / "same.pdf",
+                png,
+            ):
+                with (
+                    self.subTest(plot=plot),
+                    mock.patch.object(benchmark, "run_benchmarks") as run,
+                    contextlib.redirect_stderr(io.StringIO()) as stderr,
+                ):
+                    status = benchmark.main(
+                        [
+                            "--input",
+                            str(source),
+                            "--executable",
+                            str(candidate),
+                            "--json-output",
+                            str(report),
+                            "--plot-output",
+                            str(plot),
+                        ]
+                    )
+                    self.assertEqual(status, 1)
+                    self.assertIn("plot output", stderr.getvalue())
+                    run.assert_not_called()
+            self.assertEqual(png.read_bytes(), b"existing plot")
+            self.assertEqual(source.read_text(encoding="utf-8"), "fixture\n")
+
+    def test_failed_scaling_run_does_not_write_plot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            candidate = self.create_fake_executable(directory, "candidate", 7, 100)
+            plot = directory / "failed.png"
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                status = benchmark.main(
+                    [
+                        "--input",
+                        str(source),
+                        "--executable",
+                        str(candidate),
+                        "--expected",
+                        "8",
+                        "--runs",
+                        "1",
+                        "--warmup",
+                        "0",
+                        "--plot-output",
+                        str(plot),
+                    ]
+                )
+            self.assertEqual(status, 1)
+            self.assertFalse(plot.exists())
+            self.assertFalse(plot.with_suffix(".pdf").exists())
+
     def test_corpus_run_and_json_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)

@@ -26,12 +26,15 @@ from typing import TYPE_CHECKING, NoReturn, TypeGuard, cast
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from matplotlib.figure import Figure
+
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent
 DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "AssemblyCpp"
 DEFAULT_INPUT = REPOSITORY_ROOT / "unitTests" / "ketoconazole.mol"
 DEFAULT_EXPECTED_ASSEMBLY_INDEX = 22
 DEFAULT_MANIFEST = BENCHMARK_DIRECTORY / "cases.tsv"
+DEFAULT_PLOT_OUTPUT = REPOSITORY_ROOT / "build" / "scaling.png"
 MANIFEST_HEADER = (
     "name",
     "input",
@@ -374,6 +377,7 @@ def ensure_json_output_is_distinct(
     telemetry: Path | None,
     manifest: Path | None,
     cases: Sequence[BenchmarkCase],
+    option: str = "--json-output",
 ) -> None:
     """Refuse to overwrite an executable or benchmark corpus source."""
     protected_paths: list[tuple[str, Path]] = [
@@ -392,8 +396,7 @@ def ensure_json_output_is_distinct(
     for description, protected_path in protected_paths:
         if paths_alias(output, protected_path):
             raise BenchmarkError(
-                f"--json-output resolves to or aliases the {description}: "
-                f"{protected_path}"
+                f"{option} resolves to or aliases the {description}: {protected_path}"
             )
 
 
@@ -2325,6 +2328,79 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
         )
 
 
+def create_workload_figure() -> Figure:
+    """Load the headless plot backend before starting expensive measurements."""
+    try:
+        # Listing cases and non-plotting runs do not need Matplotlib.
+        from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: PLC0415
+        from matplotlib.figure import Figure  # noqa: PLC0415
+    except ImportError as error:
+        raise BenchmarkError(
+            "Matplotlib is required to save benchmark plots; install the "
+            "environment.yml dependencies or run 'python -m pip install matplotlib'"
+        ) from error
+    figure = Figure(figsize=(10, 5), layout="constrained")
+    FigureCanvasAgg(figure)
+    return figure
+
+
+def write_workload_plot(
+    path: Path, results: Sequence[CaseResult], figure: Figure
+) -> None:
+    """Plot measured wall-time medians and MAD, keeping workload families apart."""
+    families: dict[str, list[tuple[int, CaseResult]]] = {}
+    for index, result in enumerate(results):
+        amino = re.fullmatch(r"amino-acid-scale-(\d+)c", result.case.name)
+        boundary = re.fullmatch(r"mask-boundary-path-(\d+)b", result.case.name)
+        if amino:
+            family, size = "Amino-acid scaling", int(amino[1])
+        elif boundary:
+            family, size = "Mask-boundary scaling", int(boundary[1])
+        else:
+            family, size = "Other workloads", index
+        families.setdefault(family, []).append((size, result))
+
+    figure.set_size_inches(6 * len(families), 5)
+    axes = figure.subplots(1, len(families), squeeze=False)[0]
+    for axis, (family, members) in zip(axes, families.items(), strict=True):
+        members.sort(key=lambda member: member[0])
+        sizes = [size for size, _ in members]
+        roles = [("Candidate", False)]
+        if members[0][1].baseline_measurements:
+            roles.insert(0, ("Baseline", True))
+        for label, baseline in roles:
+            summaries = [
+                result_summaries(result, baseline=baseline)[0] for _, result in members
+            ]
+            axis.errorbar(
+                sizes,
+                [summary.median for summary in summaries],
+                yerr=[summary.mad for summary in summaries],
+                marker="o",
+                capsize=3,
+                label=label,
+            )
+        axis.set_title(family)
+        axis.set_ylabel("Wall time (seconds, log scale)")
+        axis.set_yscale("log")
+        axis.set_xticks(sizes)
+        if family == "Other workloads":
+            axis.set_xticklabels(
+                [result.case.name for _, result in members],
+                rotation=30,
+                ha="right",
+            )
+            axis.set_xlabel("Case")
+        else:
+            axis.set_xlabel("Components" if family == "Amino-acid scaling" else "Bonds")
+        axis.grid(True, alpha=0.25)
+        axis.legend()
+    figure.suptitle("Benchmark wall time — median ± MAD (measured runs only)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, format="png", dpi=160)
+    figure.savefig(path.with_suffix(".pdf"), format="pdf")
+
+
 def write_json_report(
     path: Path,
     candidate_metadata: dict[str, object],
@@ -2635,6 +2711,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help="write a JSON report",
     )
     parser.add_argument(
+        "--plot-output",
+        type=Path,
+        help=(
+            "write a PNG plot and matching PDF; automatic for scaling cases, "
+            "beside --json-output with .png/.pdf suffixes or at "
+            "build/scaling.png and build/scaling.pdf when no JSON is requested"
+        ),
+    )
+    parser.add_argument(
         "--telemetry",
         action="store_true",
         help="run each case once more with untimed telemetry",
@@ -2831,6 +2916,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                 manifest=manifest_path,
                 cases=cases,
             )
+        plot_path = arguments.plot_output
+        if plot_path is None and (
+            arguments.suite == "scaling"
+            or any("scaling" in case.suites for case in cases)
+        ):
+            plot_path = (
+                arguments.json_output.with_suffix(".png")
+                if arguments.json_output is not None
+                else DEFAULT_PLOT_OUTPUT
+            )
+        figure = None
+        if plot_path is not None:
+            pdf_path = plot_path.with_suffix(".pdf")
+            for output_path in (plot_path, pdf_path):
+                ensure_json_output_is_distinct(
+                    output=output_path,
+                    candidate=executable,
+                    baseline=baseline_executable,
+                    telemetry=telemetry_executable,
+                    manifest=manifest_path,
+                    cases=cases,
+                    option="plot output",
+                )
+                if arguments.json_output is not None and paths_alias(
+                    output_path, arguments.json_output
+                ):
+                    raise BenchmarkError(
+                        "plot output and --json-output must be distinct"
+                    )
+            if paths_alias(plot_path, pdf_path):
+                raise BenchmarkError(
+                    "PNG and PDF plot outputs must be distinct; "
+                    "choose a --plot-output PNG path with a separate .pdf sibling"
+                )
+            figure = create_workload_figure()
         candidate_metadata = executable_metadata(executable)
         baseline_metadata = (
             None
@@ -2944,6 +3064,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 baseline_execution=baseline_execution,
             )
             print(f"JSON report: {arguments.json_output}")
+        if plot_path is not None and figure is not None:
+            write_workload_plot(plot_path, results, figure)
+            print(f"Plot: {plot_path}")
+            print(f"Plot: {plot_path.with_suffix('.pdf')}")
     except (BenchmarkError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
