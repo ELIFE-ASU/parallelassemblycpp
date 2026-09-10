@@ -389,7 +389,10 @@ python benchmarks/benchmark.py \
 
 The `performance` preset targets x86-64-v3. See
 [benchmarks/README.md](benchmarks/README.md) for the benchmark corpus, paired
-comparisons, parallel builds, telemetry, LTO, PGO, and scaling guidance.
+comparisons, parallel builds, telemetry, LTO, PGO, and scaling guidance. The
+[Paclitaxel thread sweep](benchmarks/README.md#paclitaxel-thread-sweep) automates
+paired serial/OpenMP measurements across every available CPU count, with
+automatic topology detection and an optional physical-core-only sweep.
 
 ### Packaging
 
