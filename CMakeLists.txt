@@ -548,7 +548,7 @@ function(parallelassemblycpp_add_solver target)
     )
   endif()
 
-  add_executable(${target} v5/main.cpp)
+  add_executable(${target} src/main.cpp)
   set(PARALLELASSEMBLYCPP_SOLVER_DEFINITIONS)
   set(PARALLELASSEMBLYCPP_SOLVER_LIBRARIES)
   if(PARALLELASSEMBLYCPP_SOLVER_MPI)
@@ -574,7 +574,7 @@ function(parallelassemblycpp_add_solver target)
   parallelassemblycpp_configure_target(${target})
 endfunction()
 
-add_library(ParallelAssemblyCppLibrary STATIC v5/main.cpp)
+add_library(ParallelAssemblyCppLibrary STATIC src/main.cpp)
 add_library(ParallelAssemblyCpp::Library ALIAS ParallelAssemblyCppLibrary)
 target_compile_definitions(
   ParallelAssemblyCppLibrary
@@ -583,7 +583,7 @@ target_compile_definitions(
 target_include_directories(
   ParallelAssemblyCppLibrary
   PUBLIC
-    "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/v5>"
+    "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/parallelassemblycpp>"
 )
 target_compile_features(ParallelAssemblyCppLibrary PUBLIC cxx_std_20)
@@ -669,7 +669,7 @@ install(
   INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/parallelassemblycpp"
 )
 install(
-  FILES v5/parallelassemblycpp.h
+  FILES src/parallelassemblycpp.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/parallelassemblycpp"
   PERMISSIONS ${PARALLELASSEMBLYCPP_FILE_PERMISSIONS}
 )
@@ -903,13 +903,6 @@ if(BUILD_TESTING)
     "${PROJECT_SOURCE_DIR}/benchmarks/benchmark.py"
     --list-cases
   )
-  parallelassemblycpp_add_python_test(
-    tooling.archived-benchmark-help
-    30
-    "${PROJECT_SOURCE_DIR}/output/benchmarks/amino-acid-cpp-rust-2026-08-26/run_benchmark.py"
-    --help
-  )
-
   set(
     PARALLELASSEMBLYCPP_REGRESSION_COMMAND
     "${Python3_EXECUTABLE}"

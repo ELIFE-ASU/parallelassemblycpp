@@ -1,5 +1,5 @@
 #define PARALLELASSEMBLYCPP_NO_MAIN
-#include "../v5/main.cpp"
+#include "../src/main.cpp"
 
 #include <cassert>
 

@@ -2075,7 +2075,7 @@ def build_executable(executable: Path, compiler: str) -> Path:
 
     command = [
         *command_prefix,
-        str(REPOSITORY_ROOT / "v5" / "main.cpp"),
+        str(REPOSITORY_ROOT / "src" / "main.cpp"),
         "-std=c++20",
         "-O3",
         "-DNDEBUG",

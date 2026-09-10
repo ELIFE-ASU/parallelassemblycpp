@@ -3,7 +3,7 @@
 #undef NDEBUG
 #endif
 
-#include "../v5/assemblyTranspositionTable.h"
+#include "../src/assemblyTranspositionTable.h"
 
 #include <algorithm>
 #include <array>

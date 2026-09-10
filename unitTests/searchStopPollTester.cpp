@@ -18,9 +18,9 @@ using IntegerVector = vector<int>;
 using BooleanVector = vector<bool>;
 using IntegerPair = pair<int, int>;
 
-#include "../v5/activeWordMask.h"
-#include "../v5/distributedRootMapping.h"
-#include "../v5/globalPrimitives.h"
+#include "../src/activeWordMask.h"
+#include "../src/distributedRootMapping.h"
+#include "../src/globalPrimitives.h"
 
 bool distributedRootMappingHasExactCoverage(
     size_t rootJobCount,

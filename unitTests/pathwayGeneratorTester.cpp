@@ -1,7 +1,7 @@
 // Compile this file directly to exercise the pathway JSON helpers without
 // writing output files or running an assembly search.
 #define PARALLELASSEMBLYCPP_NO_MAIN
-#include "../v5/main.cpp"
+#include "../src/main.cpp"
 
 #include <cstdlib>
 #include <limits>

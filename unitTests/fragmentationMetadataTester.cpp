@@ -24,23 +24,23 @@ using IntegerVector = vector<int>;
 using BooleanVector = vector<bool>;
 using IntegerPair = pair<int, int>;
 
-#include "../v5/activeWordMask.h"
+#include "../src/activeWordMask.h"
 
 constexpr int ceilLog2(int value)
 {
     return std::bit_width(static_cast<unsigned int>(value - 1));
 }
 
-#include "../v5/globalPrimitives.h"
-#include "../v5/ufds.h"
-#include "../v5/molGraph.h"
-#include "../v5/treeCanon.h"
-#include "../v5/cyclicCanon.h"
-#include "../v5/assemblyState.h"
-#include "../v5/graphHashes.h"
-#include "../v5/dagEnumeration.h"
-#include "../v5/duplicateMatching.h"
-#include "../v5/fragmentation.h"
+#include "../src/globalPrimitives.h"
+#include "../src/ufds.h"
+#include "../src/molGraph.h"
+#include "../src/treeCanon.h"
+#include "../src/cyclicCanon.h"
+#include "../src/assemblyState.h"
+#include "../src/graphHashes.h"
+#include "../src/dagEnumeration.h"
+#include "../src/duplicateMatching.h"
+#include "../src/fragmentation.h"
 
 void require(bool condition)
 {

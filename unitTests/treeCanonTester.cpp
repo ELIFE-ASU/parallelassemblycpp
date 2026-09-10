@@ -28,17 +28,17 @@ using IntegerVector = vector<int>;
 using BooleanVector = vector<bool>;
 using IntegerPair = pair<int, int>;
 
-#include "../v5/activeWordMask.h"
+#include "../src/activeWordMask.h"
 
 constexpr int ceilLog2(int value)
 {
     return std::bit_width(static_cast<unsigned int>(value - 1));
 }
 
-#include "../v5/globalPrimitives.h"
-#include "../v5/ufds.h"
-#include "../v5/molGraph.h"
-#include "../v5/treeCanon.h"
+#include "../src/globalPrimitives.h"
+#include "../src/ufds.h"
+#include "../src/molGraph.h"
+#include "../src/treeCanon.h"
 
 using edgeSpec = tuple<int, int, short>;
 
