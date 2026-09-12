@@ -818,6 +818,24 @@ if(BUILD_TESTING)
     unitTests/searchStopPollTester.cpp
   )
   parallelassemblycpp_add_unit_test(
+    matching-bound-refresh
+    parallelassemblycpp_matching_bound_refresh_tests
+    unitTests/matchingBoundRefreshTester.cpp
+  )
+  parallelassemblycpp_add_unit_test(
+    matching-bound-refresh-telemetry
+    parallelassemblycpp_matching_bound_refresh_telemetry_tests
+    unitTests/matchingBoundRefreshTester.cpp
+  )
+  target_compile_definitions(
+    parallelassemblycpp_matching_bound_refresh_telemetry_tests
+    PRIVATE ASSEMBLY_ENABLE_TELEMETRY
+  )
+  set_tests_properties(
+    unit.matching-bound-refresh-telemetry
+    PROPERTIES LABELS "unit;telemetry"
+  )
+  parallelassemblycpp_add_unit_test(
     fragmentation-metadata
     parallelassemblycpp_fragmentation_metadata_tests
     unitTests/fragmentationMetadataTester.cpp

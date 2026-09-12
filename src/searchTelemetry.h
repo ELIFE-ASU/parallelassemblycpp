@@ -47,6 +47,12 @@ struct SearchTelemetryCounters
     uint64_t duplicateMaskAttempts = 0;
     uint64_t rejectedMasks = 0;
     uint64_t matchingVisits = 0;
+    uint64_t matchingBoundRefreshPolls = 0;
+    uint64_t matchingBoundRefreshes = 0;
+    uint64_t matchingBoundClassesPruned = 0;
+    uint64_t matchingBoundPairsPruned = 0;
+    uint64_t matchingBoundBlocksPruned = 0;
+    uint64_t matchingBoundCandidatesPruned = 0;
 
     uint64_t canonicalisationCalls = 0;
     uint64_t canonicalisationMaskCacheHits = 0;
@@ -535,6 +541,13 @@ inline void addSearchTelemetryCounters(
     destination.duplicateMaskAttempts += source.duplicateMaskAttempts;
     destination.rejectedMasks += source.rejectedMasks;
     destination.matchingVisits += source.matchingVisits;
+    destination.matchingBoundRefreshPolls += source.matchingBoundRefreshPolls;
+    destination.matchingBoundRefreshes += source.matchingBoundRefreshes;
+    destination.matchingBoundClassesPruned += source.matchingBoundClassesPruned;
+    destination.matchingBoundPairsPruned += source.matchingBoundPairsPruned;
+    destination.matchingBoundBlocksPruned += source.matchingBoundBlocksPruned;
+    destination.matchingBoundCandidatesPruned +=
+        source.matchingBoundCandidatesPruned;
 
     destination.canonicalisationCalls += source.canonicalisationCalls;
     destination.canonicalisationMaskCacheHits +=
@@ -852,6 +865,18 @@ inline void writeAllSearchTelemetryCounters(
            << counters.rejectedMasks << ",\n"
            << indent << "  \"matching_visits\": "
            << counters.matchingVisits << ",\n"
+           << indent << "  \"matching_bound_refresh_polls\": "
+           << counters.matchingBoundRefreshPolls << ",\n"
+           << indent << "  \"matching_bound_refreshes\": "
+           << counters.matchingBoundRefreshes << ",\n"
+           << indent << "  \"matching_bound_classes_pruned\": "
+           << counters.matchingBoundClassesPruned << ",\n"
+           << indent << "  \"matching_bound_pairs_pruned\": "
+           << counters.matchingBoundPairsPruned << ",\n"
+           << indent << "  \"matching_bound_blocks_pruned\": "
+           << counters.matchingBoundBlocksPruned << ",\n"
+           << indent << "  \"matching_bound_candidates_pruned\": "
+           << counters.matchingBoundCandidatesPruned << ",\n"
            << indent << "  \"canonicalisation_calls\": "
            << counters.canonicalisationCalls << ",\n"
            << indent << "  \"canonicalisation_mask_cache_hits\": "
@@ -1238,6 +1263,18 @@ inline bool writeSearchTelemetry(const std::string &filename)
            << counters.duplicateMaskAttempts << ",\n"
            << "    \"rejected_masks\": " << counters.rejectedMasks << ",\n"
            << "    \"matching_visits\": " << counters.matchingVisits << ",\n"
+           << "    \"matching_bound_refresh_polls\": "
+           << counters.matchingBoundRefreshPolls << ",\n"
+           << "    \"matching_bound_refreshes\": "
+           << counters.matchingBoundRefreshes << ",\n"
+           << "    \"matching_bound_classes_pruned\": "
+           << counters.matchingBoundClassesPruned << ",\n"
+           << "    \"matching_bound_pairs_pruned\": "
+           << counters.matchingBoundPairsPruned << ",\n"
+           << "    \"matching_bound_blocks_pruned\": "
+           << counters.matchingBoundBlocksPruned << ",\n"
+           << "    \"matching_bound_candidates_pruned\": "
+           << counters.matchingBoundCandidatesPruned << ",\n"
            << "    \"canonicalisation_calls\": "
            << counters.canonicalisationCalls << ",\n"
            << "    \"vf2_calls\": " << counters.vf2Calls << ",\n"

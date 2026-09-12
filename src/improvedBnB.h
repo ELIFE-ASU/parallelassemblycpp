@@ -888,6 +888,8 @@ private:
     }
 };
 
+#include "matchingBoundRefresh.h"
+
 enum class matchingEquivalenceMode
 {
     none,
@@ -1203,6 +1205,11 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
 {
     const bool usePairBound =
         fragmentationWorkspace.edgeCount >= pairBoundMinimumMoleculeEdges;
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+    matchingBoundRefresh<true> boundRefresh(sharedAssemblyIndex);
+#else
+    matchingBoundRefresh<false> boundRefresh(nullptr);
+#endif
     recordImprovedAssemblyIndex<trackPath>(
         input,
         bestAssemblyIndex,
@@ -1296,8 +1303,18 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                 adjacentSizeBound
             );
 
+            [[maybe_unused]] const int classBestBeforeRefresh =
+                boundRefresh.atClassBoundary(bestAssemblyIndex);
             int earlyAssemblyIndexBound = static_cast<int>(totalBonds) -
                 input.sumDupBonds - 1 - initialDuplicateBondBound;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            boundRefresh.recordPrune(
+                earlyAssemblyIndexBound,
+                classBestBeforeRefresh,
+                bestAssemblyIndex,
+                matchingBoundWork::duplicateClass
+            );
+#endif
             if (earlyAssemblyIndexBound < bestAssemblyIndex)
             {
                 int matchingClassBound = numeric_limits<int>::min();
@@ -1321,12 +1338,33 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             ) <= pairBoundLimit
                         )
                         {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                            boundRefresh.recordPrune(
+                                static_cast<int>(totalBonds) -
+                                    input.sumDupBonds - 1 - max(
+                                        maximumFragmentDuplicateBonds - 1,
+                                        min(
+                                            maximumFragmentDuplicateBonds,
+                                            matchingClassBound
+                                        )
+                                    ),
+                                classBestBeforeRefresh,
+                                bestAssemblyIndex,
+                                matchingBoundWork::duplicateClass
+                            );
+#endif
                             continue;
                         }
                     }
                 }
                 auto pairBoundFiltersMatching = [&](validMatchings &matching)
                 {
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+                    [[maybe_unused]] const int pairBestBeforeRefresh =
+                        boundRefresh.beforeMatchingBound(bestAssemblyIndex);
+#elif defined(ASSEMBLY_ENABLE_TELEMETRY)
+                    const int pairBestBeforeRefresh = bestAssemblyIndex;
+#endif
                     if (usePairBound)
                     {
                         const int pairBoundLimit = static_cast<int>(totalBonds) -
@@ -1355,6 +1393,12 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
 
                             if (targetedBoundsFit)
                             {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                int requiredDuplicateBonds = max(
+                                    maximumFragmentDuplicateBonds - 1,
+                                    min(maximumFragmentDuplicateBonds, matchingClassBound)
+                                );
+#endif
                                 bool genericBoundFits =
                                     matching.maximumFragmentSize == 2;
                                 if (!genericBoundFits)
@@ -1419,8 +1463,27 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                     }
                                     genericBoundFits =
                                         genericRouteBound <= pairBoundLimit;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                    requiredDuplicateBonds = max(
+                                        requiredDuplicateBonds,
+                                        genericRouteBound
+                                    );
+#endif
                                 }
-                                if (genericBoundFits) return true;
+                                if (genericBoundFits)
+                                {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                    boundRefresh.recordPrune(
+                                        static_cast<int>(totalBonds) -
+                                            input.sumDupBonds - 1 -
+                                            requiredDuplicateBonds,
+                                        pairBestBeforeRefresh,
+                                        bestAssemblyIndex,
+                                        matchingBoundWork::occurrencePair
+                                    );
+#endif
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -1448,6 +1511,12 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                         input.sumDupBonds +
                         matching.maximumFragmentSize - 1;
                     candidate.sumDupBonds = sumDupBonds;
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+                    [[maybe_unused]] const int candidateBestBeforeRefresh =
+                        boundRefresh.beforeMatchingBound(bestAssemblyIndex);
+#elif defined(ASSEMBLY_ENABLE_TELEMETRY)
+                    const int candidateBestBeforeRefresh = bestAssemblyIndex;
+#endif
                     int fragmentationCutoff = postFragmentationCutoff(
                         candidate,
                         classMask,
@@ -1458,6 +1527,14 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                     const int candidateAssemblyIndexBound =
                         static_cast<int>(totalBonds) - sumDupBonds - 1 -
                         fragmentationCutoff;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                    boundRefresh.recordPrune(
+                        candidateAssemblyIndexBound,
+                        candidateBestBeforeRefresh,
+                        bestAssemblyIndex,
+                        matchingBoundWork::candidate
+                    );
+#endif
                     if (candidateAssemblyIndexBound < bestAssemblyIndex)
                     {
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
@@ -1602,6 +1679,12 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                 int selectedSize
                             )
                             {
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+                                [[maybe_unused]] const int blockBestBeforeRefresh =
+                                    boundRefresh.beforeMatchingBound(bestAssemblyIndex);
+#elif defined(ASSEMBLY_ENABLE_TELEMETRY)
+                                const int blockBestBeforeRefresh = bestAssemblyIndex;
+#endif
                                 if (usePairBound)
                                 {
                                     const int currentPairBoundLimit =
@@ -1636,6 +1719,12 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
 
                                         if (targetedBoundsFit)
                                         {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                            int requiredDuplicateBonds = max(
+                                                maximumFragmentDuplicateBonds - 1,
+                                                min(maximumFragmentDuplicateBonds, matchingClassBound)
+                                            );
+#endif
                                             bool genericBoundFits =
                                                 selectedSize == 2;
                                             if (!genericBoundFits)
@@ -1712,8 +1801,27 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                                 genericBoundFits =
                                                     genericRouteBound <=
                                                     currentPairBoundLimit;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                                requiredDuplicateBonds = max(
+                                                    requiredDuplicateBonds,
+                                                    genericRouteBound
+                                                );
+#endif
                                             }
-                                            if (genericBoundFits) return true;
+                                            if (genericBoundFits)
+                                            {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                                boundRefresh.recordPrune(
+                                                    static_cast<int>(totalBonds) -
+                                                        input.sumDupBonds - 1 -
+                                                        requiredDuplicateBonds,
+                                                    blockBestBeforeRefresh,
+                                                    bestAssemblyIndex,
+                                                    matchingBoundWork::fragmentPairBlock
+                                                );
+#endif
+                                                return true;
+                                            }
                                         }
                                     }
                                 }

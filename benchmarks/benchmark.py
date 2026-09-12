@@ -95,6 +95,16 @@ PARALLEL_TELEMETRY_COUNTERS = frozenset(
         "pair_bound_cache_misses",
     )
 )
+MATCHING_BOUND_TELEMETRY_COUNTERS = frozenset(
+    (
+        "matching_bound_refresh_polls",
+        "matching_bound_refreshes",
+        "matching_bound_classes_pruned",
+        "matching_bound_pairs_pruned",
+        "matching_bound_blocks_pruned",
+        "matching_bound_candidates_pruned",
+    )
+)
 ADAPTIVE_SPLITTING_POLICY = {
     "minimum_queued_tasks_per_worker": 8,
     "target_queued_tasks_per_worker": 16,
@@ -825,6 +835,25 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     def invalid_parallel(detail: str) -> NoReturn:
         raise BenchmarkError(f"invalid parallel telemetry in {path.name}: {detail}")
 
+    def matching_bound_counters(value: dict[str, object], context: str) -> bool:
+        present = MATCHING_BOUND_TELEMETRY_COUNTERS.intersection(value)
+        if not present:
+            return False
+        if present != MATCHING_BOUND_TELEMETRY_COUNTERS or any(
+            not is_nonnegative_integer(value.get(name)) for name in present
+        ):
+            raise BenchmarkError(
+                f"invalid {context} matching-bound counters in {path.name}"
+            )
+        refreshes = value["matching_bound_refreshes"]
+        if refreshes > value["matching_bound_refresh_polls"] or any(
+            value[name] > refreshes for name in present if name.endswith("_pruned")
+        ):
+            raise BenchmarkError(
+                f"inconsistent {context} matching-bound counters in {path.name}"
+            )
+        return True
+
     def parallel_counters(
         value: object,
         context: str,
@@ -838,6 +867,8 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             )
         ):
             invalid_parallel(f"invalid {context} counters")
+        if matching_bound_counters(value, context) != has_matching_bound_counters:
+            invalid_parallel(f"inconsistent {context} matching-bound counter group")
         if value["retained_mask_attempts"] != (
             value["retained_masks"]
             + value["duplicate_mask_attempts"]
@@ -980,6 +1011,12 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         raise BenchmarkError(f"missing search counters in {path.name}")
     if any(not is_nonnegative_integer(counters[name]) for name in required_counters):
         raise BenchmarkError(f"invalid search counter in {path.name}")
+    # Additive schema-v1 fields must appear together; historical reports omit
+    # the complete group, including their parallel worker and aggregate records.
+    has_matching_bound_counters = matching_bound_counters(counters, "search")
+    parallel_counter_names = PARALLEL_TELEMETRY_COUNTERS | (
+        MATCHING_BOUND_TELEMETRY_COUNTERS if has_matching_bound_counters else set()
+    )
     if counters["retained_mask_attempts"] != sum(
         counters[name]
         for name in (
@@ -1723,7 +1760,7 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         )
     ):
         invalid_parallel("invalid aggregate maximum task depth")
-    for name in PARALLEL_TELEMETRY_COUNTERS:
+    for name in parallel_counter_names:
         if aggregate_counters[name] != sum(
             counters[name] for counters in worker_counters
         ):
@@ -1790,9 +1827,13 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         "pair_bound_cache_hits": pair_bound_cache["hits"],
         "pair_bound_cache_misses": pair_bound_cache["misses"],
     }
+    if has_matching_bound_counters:
+        legacy_counters.update(
+            (name, counters[name]) for name in MATCHING_BOUND_TELEMETRY_COUNTERS
+        )
     if any(
         aggregate_counters[name] != legacy_counters[name]
-        for name in PARALLEL_TELEMETRY_COUNTERS
+        for name in parallel_counter_names
     ):
         invalid_parallel("aggregate counters do not match legacy telemetry")
     return telemetry

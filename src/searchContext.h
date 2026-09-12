@@ -1221,8 +1221,11 @@ private:
     ) const noexcept
     {
         if (!adaptiveRootLeases) return leaseSize;
-        // A small initial lease is already fine grained; shrinking it further
-        // only adds claim traffic on compact searches.
+        // Leave the last roots available to separate workers, even when the
+        // initial lease is already small.
+        if (remainingRootJobs <= workerCount) return 1;
+        // Keep small leases intact outside that narrow tail to avoid extra
+        // claim traffic on compact searches.
         if (leaseSize <= parallelPromisingFrontierLeaseSize) return leaseSize;
         if (claimedRootJobs < lowWatermark)
         {

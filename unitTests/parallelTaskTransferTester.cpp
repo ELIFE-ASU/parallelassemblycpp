@@ -336,7 +336,121 @@ void testMeasuredMinimumTaskSize()
     clearParallelWorkerMasks();
 }
 
+void testSmallRootLeaseTailAndRankCoverage()
+{
+    for (const bool adaptive : {false, true})
+    for (const size_t leaseSize : {1, 2, 3, 4, 16})
+    {
+        for (const size_t workerCount : {1, 2, 4, 8})
+        for (const size_t rankCount : {1, 3, 7})
+        for (const size_t rootCount : {
+            size_t{0},
+            size_t{1},
+            rankCount * workerCount - 1,
+            rankCount * workerCount,
+            rankCount * (workerCount + leaseSize) - 1,
+            rankCount * (workerCount + leaseSize) + 1
+        })
+        {
+            // Also check that a compact frontier reaches the tail clamp
+            // before the startup rule for larger adaptive leases.
+            if (adaptive && leaseSize > 4 && rootCount > rankCount * workerCount)
+                continue;
+            vector<size_t> visits(rootCount, 0);
+            for (size_t rank = 0; rank < rankCount; ++rank)
+            {
+                ParallelTaskScheduler scheduler(
+                    rootCount, rank, rankCount, workerCount, leaseSize,
+                    adaptive, false, workerCount * rankCount
+                );
+                const size_t rankRootCount = rootCount <= rank
+                    ? 0 : 1 + (rootCount - 1 - rank) / rankCount;
+                size_t nextOrdinal = 0;
+                size_t begin = 0;
+                size_t end = 0;
+                while (scheduler.claimRootLease(begin, end) ==
+                    distributedRootAvailability::lease)
+                {
+                    assert(begin == nextOrdinal);
+                    assert(begin < end && end <= rankRootCount);
+                    const size_t remaining = rankRootCount - begin;
+                    // Small adaptive leases stay intact until at most one
+                    // root per worker remains. Explicit leases keep their
+                    // requested size even when starting inside that tail.
+                    const size_t expected = adaptive && remaining <= workerCount
+                        ? 1 : min(leaseSize, remaining);
+                    assert(end - begin == expected);
+                    for (size_t ordinal = begin; ordinal < end; ++ordinal)
+                    {
+                        const size_t root = scheduler.rootJobIndex(ordinal);
+                        assert(root < rootCount);
+                        assert(root % rankCount == rank);
+                        assert(visits[root]++ == 0);
+                    }
+                    nextOrdinal = end;
+                    scheduler.completeRootLease(end - begin);
+                }
+                assert(nextOrdinal == rankRootCount);
+                parallelSearchTaskDescriptor task;
+                assert(scheduler.nextWork(0, task) ==
+                    ParallelTaskScheduler::WorkAvailability::complete);
+            }
+            for (const size_t count : visits) assert(count == 1);
+        }
+    }
+}
+
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP
+void testConcurrentSmallRootLeaseCoverage()
+{
+    constexpr size_t workerCount = 4;
+    constexpr size_t rankCount = 3;
+    constexpr size_t rootCount = 257;
+    omp_set_dynamic(0);
+    for (const bool adaptive : {false, true})
+    for (const size_t leaseSize : {1, 2, 3, 4})
+    {
+        vector<atomic<size_t>> visits(rootCount);
+        for (auto &count : visits) count.store(0, memory_order_relaxed);
+        for (size_t rank = 0; rank < rankCount; ++rank)
+        {
+            ParallelTaskScheduler scheduler(
+                rootCount, rank, rankCount, workerCount, leaseSize,
+                adaptive, false, workerCount * rankCount
+            );
+            const size_t rankRootCount = 1 + (rootCount - 1 - rank) / rankCount;
+            #pragma omp parallel num_threads(workerCount)
+            {
+                assert(static_cast<size_t>(omp_get_num_threads()) == workerCount);
+                size_t begin = 0;
+                size_t end = 0;
+                while (scheduler.claimRootLease(begin, end) ==
+                    distributedRootAvailability::lease)
+                {
+                    assert(begin < end && end <= rankRootCount);
+                    const size_t remaining = rankRootCount - begin;
+                    const size_t expected = adaptive && remaining <= workerCount
+                        ? 1 : min(leaseSize, remaining);
+                    assert(end - begin == expected);
+                    for (size_t ordinal = begin; ordinal < end; ++ordinal)
+                    {
+                        const size_t root = scheduler.rootJobIndex(ordinal);
+                        assert(root < rootCount);
+                        assert(root % rankCount == rank);
+                        assert(visits[root].fetch_add(1, memory_order_relaxed) == 0);
+                    }
+                    scheduler.completeRootLease(end - begin);
+                }
+            }
+            parallelSearchTaskDescriptor task;
+            assert(scheduler.nextWork(0, task) ==
+                ParallelTaskScheduler::WorkAvailability::complete);
+        }
+        for (const auto &count : visits)
+            assert(count.load(memory_order_relaxed) == 1);
+    }
+}
+
 void testWorkloadAwareThreadBudget()
 {
     constexpr uint64_t unit = parallelAutomaticWorkUnitsPerWorker;
@@ -430,7 +544,9 @@ int main()
     testReusedBuffersAndBounds();
     testExecutionPruningCancellationAndException();
     testMeasuredMinimumTaskSize();
+    testSmallRootLeaseTailAndRankCoverage();
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP
+    testConcurrentSmallRootLeaseCoverage();
     testWorkloadAwareThreadBudget();
     testWideMasksCrossWorkerArenas();
 #endif
