@@ -337,6 +337,45 @@ void testMeasuredMinimumTaskSize()
 }
 
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP
+void testWorkloadAwareThreadBudget()
+{
+    constexpr uint64_t unit = parallelAutomaticWorkUnitsPerWorker;
+    // Above the parallel-search cutoff, the budget retains a useful minimum
+    // team and grows in powers of two independently of the runtime's supply.
+    assert(workloadAwareLocalThreadCount(0, 28, 1, false) == 1);
+    assert(workloadAwareLocalThreadCount(
+        parallelAutomaticMinimumWorkUnits - 1, 28, 1, false
+    ) == 1);
+    assert(workloadAwareLocalThreadCount(
+        parallelAutomaticMinimumWorkUnits, 28, 1, false
+    ) == static_cast<int>(parallelAutomaticMinimumWorkerBudget));
+    assert(workloadAwareLocalThreadCount(8 * unit, 28, 1, false) == 8);
+    assert(workloadAwareLocalThreadCount(8 * unit + 1, 28, 1, false) == 16);
+    assert(workloadAwareLocalThreadCount(8 * unit, 4, 1, false) == 4);
+
+    // Forced parallel execution retains at least two workers when available.
+    assert(workloadAwareLocalThreadCount(0, 28, 1, true) == 2);
+    assert(workloadAwareLocalThreadCount(0, 1, 1, true) == 1);
+    assert(workloadAwareLocalThreadCount(8 * unit, 28, 1, true) == 8);
+
+    // MPI ranks share one useful-work budget, but launched ranks stay active.
+    assert(workloadAwareLocalThreadCount(8 * unit, 28, 2, false) == 4);
+    assert(workloadAwareLocalThreadCount(8 * unit, 28, 3, false) == 2);
+    assert(workloadAwareLocalThreadCount(8 * unit + 1, 28, 3, false) == 5);
+    assert(workloadAwareLocalThreadCount(0, 28, 4, false) == 1);
+    assert(workloadAwareLocalThreadCount(0, 28, 2, true) == 1);
+
+    // Saturated estimates and defensive bounds must not overflow the cap.
+    assert(workloadAwareLocalThreadCount(
+        numeric_limits<uint64_t>::max(),
+        numeric_limits<int>::max(),
+        1,
+        false
+    ) == numeric_limits<int>::max());
+    assert(workloadAwareLocalThreadCount(8 * unit, 0, 1, false) == 1);
+    assert(workloadAwareLocalThreadCount(8 * unit, 28, 0, false) == 8);
+}
+
 void testWideMasksCrossWorkerArenas()
 {
     SearchContext context = makeTransferContext(130);
@@ -392,6 +431,7 @@ int main()
     testExecutionPruningCancellationAndException();
     testMeasuredMinimumTaskSize();
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP
+    testWorkloadAwareThreadBudget();
     testWideMasksCrossWorkerArenas();
 #endif
     return 0;

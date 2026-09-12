@@ -239,6 +239,38 @@ struct ParallelReplicaResult
 };
 
 constexpr uint64_t parallelAutomaticMinimumWorkUnits = UINT64_C(32768);
+constexpr uint64_t parallelAutomaticWorkUnitsPerWorker = UINT64_C(32768);
+constexpr uint64_t parallelAutomaticMinimumWorkerBudget = 8;
+
+/** Budget automatic threads from useful work, keeping launched MPI ranks. */
+int workloadAwareLocalThreadCount(
+    uint64_t workUnits,
+    int availableThreads,
+    int rankCount,
+    bool requireParallel
+) noexcept
+{
+    rankCount = max(1, rankCount);
+    // Root/DAG size is a coarse proxy for uneven recursive work. Round the
+    // budget up into teams of 8, 16, 32, ... once parallel search is useful.
+    // Smaller budgets serialized or slowed labelled molecules in the corpus;
+    // eight workers also retain Ketoconazole's speedup with much less CPU.
+    // The division bounds usefulWorkers at 2^49, so bit_ceil cannot overflow.
+    const uint64_t usefulWorkers = workUnits == 0
+        ? 1
+        : 1 + (workUnits - 1) / parallelAutomaticWorkUnitsPerWorker;
+    const uint64_t workerBudget = workUnits < parallelAutomaticMinimumWorkUnits
+        ? 1
+        : max(parallelAutomaticMinimumWorkerBudget, std::bit_ceil(usefulWorkers));
+    const uint64_t usefulThreads = workerBudget / static_cast<uint64_t>(rankCount);
+    // --parallel=on requires two workers even for an empty frontier. MPI
+    // already supplies parallelism when more than one rank was launched.
+    const uint64_t minimumThreads = requireParallel && rankCount == 1 ? 2 : 1;
+    return static_cast<int>(min<uint64_t>(
+        static_cast<uint64_t>(max(1, availableThreads)),
+        max(minimumThreads, usefulThreads)
+    ));
+}
 
 bool configuredParallelBranchLeaseSize(size_t &leaseSize)
 {
@@ -1116,30 +1148,6 @@ ParallelSearchResult runParallelSearch(
         ? searchTelemetryWallNanoseconds()
         : 0;
 #endif
-    int globalWorkerCount = localThreads;
-#if defined(PARALLELASSEMBLYCPP_USE_MPI) || defined(ASSEMBLY_ENABLE_TELEMETRY)
-    int globalWorkerOffset = 0;
-#endif
-#if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    MPI_Allreduce(
-        &localThreads,
-        &globalWorkerCount,
-        1,
-        MPI_INT,
-        MPI_SUM,
-        MPI_COMM_WORLD
-    );
-    MPI_Exscan(
-        &localThreads,
-        &globalWorkerOffset,
-        1,
-        MPI_INT,
-        MPI_SUM,
-        MPI_COMM_WORLD
-    );
-    if (parallelAssemblyCppMpiRank == 0) globalWorkerOffset = 0;
-#endif
-
     SearchContext searchContext;
     string preparationError;
     int preparationSucceeded = 1;
@@ -1186,16 +1194,34 @@ ParallelSearchResult runParallelSearch(
 
     const PreparedSearchWorkEstimate work =
         estimatePreparedSearchWork(searchContext);
+    uint64_t workUnits = work.workUnits;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    // Every rank uses the same budget, including with different runtime
+    // thread limits. Recompute worker offsets only after applying the cap.
+    MPI_Bcast(&workUnits, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+    const int availableRanks = parallelAssemblyCppMpiSize;
+#else
+    constexpr int availableRanks = 1;
+#endif
+    if (parallelThreadCount == 0)
+    {
+        localThreads = workloadAwareLocalThreadCount(
+            workUnits,
+            localThreads,
+            availableRanks,
+            parallelExecutionMode == parallelMode::on
+        );
+    }
     int useParallelSearch =
         parallelExecutionMode == parallelMode::on ||
-        work.workUnits >= parallelAutomaticMinimumWorkUnits;
+        workUnits >= parallelAutomaticMinimumWorkUnits;
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Bcast(&useParallelSearch, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
     if (useParallelSearch == 0)
     {
         ostringstream reason;
-        reason << "estimated work " << work.workUnits << " ("
+        reason << "estimated work " << workUnits << " ("
                << work.rootJobCount << " root jobs x "
                << work.retainedDagNodeCount << " retained DAG nodes) is below "
                << parallelAutomaticMinimumWorkUnits;
@@ -1239,6 +1265,30 @@ ParallelSearchResult runParallelSearch(
             reason.str()
         };
     }
+
+    int globalWorkerCount = localThreads;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI) || defined(ASSEMBLY_ENABLE_TELEMETRY)
+    int globalWorkerOffset = 0;
+#endif
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    MPI_Allreduce(
+        &localThreads,
+        &globalWorkerCount,
+        1,
+        MPI_INT,
+        MPI_SUM,
+        MPI_COMM_WORLD
+    );
+    MPI_Exscan(
+        &localThreads,
+        &globalWorkerOffset,
+        1,
+        MPI_INT,
+        MPI_SUM,
+        MPI_COMM_WORLD
+    );
+    if (parallelAssemblyCppMpiRank == 0) globalWorkerOffset = 0;
+#endif
 
     size_t branchLeaseSize = 1;
     if (!configuredParallelBranchLeaseSize(branchLeaseSize))

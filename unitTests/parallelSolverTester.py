@@ -337,6 +337,8 @@ def run_solver(
     numproc_flag: str = "-n",
     branch_lease_size: int | None = None,
     telemetry: bool = False,
+    automatic_threads: bool = False,
+    parallel_mode: str | None = None,
 ) -> tuple[int, dict[str, Any] | None]:
     environment = os.environ.copy()
     if topology is not None:
@@ -376,12 +378,16 @@ def run_solver(
             )
             solver_arguments.extend(
                 [
-                    (
+                    f"--parallel={parallel_mode}"
+                    if parallel_mode is not None
+                    else (
                         "--parallel=on"
                         if topology.worker_count > 1
                         else "--parallel=off"
                     ),
-                    f"--threads={topology.threads_per_rank[0]}",
+                    "--threads=auto"
+                    if automatic_threads
+                    else f"--threads={topology.threads_per_rank[0]}",
                 ]
             )
         if telemetry:
@@ -1670,6 +1676,109 @@ def run_telemetry_suite(
     return runs
 
 
+def run_automatic_thread_selection_suite(
+    target: ParallelTarget,
+    timeout: float,
+) -> int:
+    """Check actual worker counts after applying the automatic work budget."""
+    sparse = SPARSE_ADAPTIVE_TELEMETRY_CASE
+    # A forced search still uses at least two workers in one process, while
+    # launched MPI ranks already supply parallelism with one thread each.
+    minimum_threads = 2 if target.topology.rank_count == 1 else 1
+    scenarios = [
+        ("forced-minimum", sparse, 4, "on", True, minimum_threads),
+        ("explicit-forced-count", sparse, 4, "on", False, 4),
+    ]
+    if target.topology.mode == "openmp":
+        ketoconazole = SolverCase(
+            "automatic-ketoconazole",
+            PATHWAY_PARITY_SOURCE,
+            PATHWAY_PARITY_EXPECTED_INDEX,
+            38,
+            1,
+        )
+        intermediate_work = SolverCase(
+            "automatic-amino-acid-scale-04c",
+            REPOSITORY_ROOT
+            / "benchmarks"
+            / "inputs"
+            / "scaling"
+            / "amino_acid_scaling_04c_036a.mol",
+            15,
+            31,
+            1,
+        )
+        scenarios.extend(
+            [
+                ("sparse-serial-fallback", sparse, 28, "auto", True, 1),
+                ("small-workload-cap", intermediate_work, 28, "auto", True, 8),
+                ("workload-cap", ketoconazole, 28, "auto", True, None),
+                ("runtime-bound", ketoconazole, 2, "auto", True, 2),
+                ("explicit-automatic-count", intermediate_work, 12, "auto", False, 12),
+            ]
+        )
+
+    for name, case, available_threads, mode, automatic, expected_threads in scenarios:
+        available_topology = ParallelTopology(
+            target.topology.mode,
+            (available_threads,) * target.topology.rank_count,
+        )
+        index, document = run_solver(
+            target.executable,
+            case,
+            timeout,
+            topology=available_topology,
+            mpiexec=target.mpiexec,
+            numproc_flag=target.numproc_flag,
+            telemetry=True,
+            automatic_threads=automatic,
+            parallel_mode=mode,
+        )
+        prefix = f"automatic thread selection {target.label}/{name}"
+        require(
+            index == case.expected_index,
+            f"{prefix}: index {index}, expected {case.expected_index}",
+        )
+        require(document is not None, f"{prefix}: telemetry document is absent")
+        if expected_threads == 1 and target.topology.rank_count == 1:
+            require(
+                "parallel" not in document,
+                f"{prefix}: insufficient useful work did not select serial execution",
+            )
+            continue
+
+        parallel = require_mapping(document.get("parallel"), f"{prefix}: parallel")
+        selected_threads = require_nonnegative_integer(
+            parallel.get("local_threads"), f"{prefix}: parallel.local_threads"
+        )
+        if expected_threads is None:
+            require(
+                1 < selected_threads < available_threads,
+                f"{prefix}: expected useful parallelism below the runtime's "
+                f"{available_threads} threads, selected {selected_threads}",
+            )
+        else:
+            require(
+                selected_threads == expected_threads,
+                f"{prefix}: selected {selected_threads} threads, "
+                f"expected {expected_threads}",
+            )
+        validate_parallel_telemetry(
+            document,
+            case,
+            ParallelTopology(
+                target.topology.mode,
+                (selected_threads,) * target.topology.rank_count,
+            ),
+        )
+
+    print(
+        f"PASS automatic thread selection {target.label}: workload/runtime caps, "
+        "forced minimum, explicit counts, and telemetry/index parity"
+    )
+    return len(scenarios)
+
+
 def run_sparse_adaptive_telemetry_suite(
     serial: Path,
     telemetry_openmp: Path,
@@ -1965,6 +2074,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.timeout,
             )
         if options.openmp_telemetry is not None:
+            runs += run_automatic_thread_selection_suite(
+                ParallelTarget(
+                    "openmp-auto",
+                    options.openmp_telemetry,
+                    ParallelTopology("openmp", (4,)),
+                ),
+                options.timeout,
+            )
             runs += run_telemetry_suite(
                 options.serial,
                 options.openmp_telemetry,
@@ -2026,6 +2143,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
             runs += run_pathway_parity_suite(hybrid_target, options.timeout)
         if options.hybrid_telemetry is not None:
+            runs += run_automatic_thread_selection_suite(
+                ParallelTarget(
+                    "hybrid-auto",
+                    options.hybrid_telemetry,
+                    HYBRID_TOPOLOGY,
+                    options.mpiexec,
+                    options.mpiexec_numproc_flag,
+                ),
+                options.timeout,
+            )
             runs += run_distributed_telemetry_suite(
                 options.serial,
                 ParallelTarget(
