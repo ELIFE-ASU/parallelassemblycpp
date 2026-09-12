@@ -45,10 +45,12 @@ Notes:
   Boolean values are 0 or 1.
   In a parallel-enabled executable, --parallel=auto uses a work estimate from
   the prepared root jobs and DAG. If it selects serial execution, it reports
-  the reason. --parallel=on bypasses the estimate, but fails when parallel
+  the reason. --parallel=on forces parallel search, but fails when parallel
   execution cannot be honored. --parallel=off always runs serially.
-  --threads sets the local thread count for each process; auto uses the OpenMP
-  runtime default.
+  --threads sets the local thread count for each process. Auto caps the OpenMP
+  runtime default by estimated work per worker, shared across MPI ranks with
+  at least one thread per rank (at least two total workers for --parallel=on).
+  Explicit counts are never reduced by the workload cap.
   Finite --runtime budgets and --write-intermediate-mas require serial search;
   a parallel-enabled executable reports an auto fallback or an on-mode error.
   Pathway output is supported after parallel optimization by deterministic

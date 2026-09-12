@@ -246,13 +246,19 @@ supplied in full. Options may appear before or after the input and use
 best index found so far, which may not be the proven minimum. Run
 `ParallelAssemblyCpp --help` for full details and accepted legacy option names.
 `--telemetry` is available only in telemetry-enabled executables.
-`--threads=auto` uses the OpenMP runtime default and therefore honours settings
-such as `OMP_NUM_THREADS`; an explicit thread count applies to each process.
+`--threads=auto` treats the OpenMP runtime default (including `OMP_NUM_THREADS`)
+as an upper limit. Once the prepared root jobs and DAG indicate enough work
+for parallel search, it estimates one worker per 32,768 work units and rounds
+the budget up to teams of 8, 16, 32, and so on. The eight-worker starting budget
+leaves room for recursive work that this estimate can understate. The budget is
+divided across launched MPI ranks, retaining at least one thread per rank.
+Explicit thread counts apply to each process and are never reduced by this cap.
 
 In a parallel-enabled executable, `--parallel=auto` prepares the root jobs and
 DAG, then uses their estimated search work to choose parallel or serial
-execution. A serial fallback reports its reason. `--parallel=on` bypasses only
-that work estimate: it fails if parallel execution cannot be honored, such as
+execution. A serial fallback reports its reason. `--parallel=on` forces parallel
+search; automatic threads still use the workload cap, with at least two workers
+in a single process. It fails if parallel execution cannot be honored, such as
 when only one worker is available. `--parallel=off` always uses serial search.
 Finite `--runtime` budgets and `--write-intermediate-mas=1` require serial
 search, so `auto` reports a fallback and `on` reports an error. Pathway output
