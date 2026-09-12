@@ -304,6 +304,114 @@ graph implementation or vendored dependencies. The legacy spellings
 </details>
 
 <details>
+<summary><strong>Parallel execution</strong></summary>
+
+The default `release` build is serial, and rejects `--parallel=on` with
+`this executable was built without parallel support`. The `parallel` preset
+adds the parallel executables and needs OpenMP and MPI alongside the
+requirements above:
+
+```bash
+cmake --preset parallel
+cmake --build --preset parallel
+```
+
+`build/parallel` then contains:
+
+| Executable | Workers |
+| --- | --- |
+| `ParallelAssemblyCpp` | Serial search only. |
+| `ParallelAssemblyCppOMP` | OpenMP threads in one process. |
+| `ParallelAssemblyCppMPI` | One thread per MPI rank. |
+| `ParallelAssemblyCppHybrid` | OpenMP threads inside each MPI rank. |
+
+Each parallel executable has a `...Telemetry` sibling that also accepts
+`--telemetry=1`.
+
+### OpenMP
+
+Run the OpenMP executable directly and ask for a thread count:
+
+```bash
+OMP_NUM_THREADS=8 OMP_PLACES=cores OMP_PROC_BIND=close \
+  ./build/parallel/ParallelAssemblyCppOMP benchmarks/inputs/paclitaxel.mol \
+    --parallel=on --threads=8
+```
+
+Parallel search does not change the outputs: this writes
+`benchmarks/inputs/paclitaxelOut` and `benchmarks/inputs/paclitaxelPathway`
+exactly as a serial run would. An explicit `--threads` count applies to the
+process as given, while `OMP_PLACES` and `OMP_PROC_BIND` pin the threads to
+distinct cores so each worker keeps its caches local.
+
+`--parallel=auto` chooses after preparing the root jobs and DAG, and explains a
+serial choice on standard error:
+
+```bash
+./build/parallel/ParallelAssemblyCppOMP unitTests/alanine.mol --parallel=auto
+```
+
+```text
+parallel: serial fallback: estimated work 0 (0 root jobs x 3 retained DAG nodes) is below 32768
+```
+
+Alanine is far too small to repay coordination. `--parallel=on` turns that same
+condition into an error, which is what a scaling script wants when a serial run
+would be measured by mistake.
+
+### MPI
+
+Launch the MPI executable with one rank per worker:
+
+```bash
+mpirun --map-by slot --bind-to core -n 8 \
+  ./build/parallel/ParallelAssemblyCppMPI benchmarks/inputs/paclitaxel.mol \
+    --parallel=on --threads=1
+```
+
+Every rank parses the same command line, compares its options with the others
+during start-up, and the run stops with `MPI ranks received different
+command-line options` if they disagree, so pass identical arguments to all of
+them. Rank zero writes the output files and any diagnostic message. This
+executable is built without OpenMP, so ranks are its only workers and
+`--threads` above `1` is rejected. Ranks claim disjoint chunks of root work
+from a queue on rank zero, so a rank that finishes early asks for more instead
+of waiting.
+
+### Hybrid MPI and OpenMP
+
+The hybrid executable uses both: threads within a rank, ranks across sockets or
+nodes. Give each rank the cores its threads need:
+
+```bash
+OMP_NUM_THREADS=4 OMP_PLACES=cores OMP_PROC_BIND=close \
+  mpirun --map-by slot:PE=4 --bind-to core -n 4 \
+  ./build/parallel/ParallelAssemblyCppHybrid benchmarks/inputs/paclitaxel.mol \
+    --parallel=on --threads=4
+```
+
+That is sixteen workers as four ranks of four threads. With `--threads=auto`
+the automatic budget is divided across the launched ranks, keeping at least one
+thread per rank. These placement flags are Open MPI syntax; other launchers
+spell them differently. Under a scheduler, launch with the `mpirun` from the
+MPI installation the executable was built against: `slurm/benchmark-sol.sbatch`
+runs the Conda environment's own `mpirun` inside a single-task
+`srun --mpi=none` step.
+
+### Notes
+
+- Parallel search optimizes the index first, then deterministically
+  reconstructs a winning pathway, so `--pathway=1` still works. Add
+  `--pathway=0` to skip reconstruction when only the index is wanted.
+- Finite `--runtime` budgets and `--write-intermediate-mas=1` require serial
+  search, and string mode (`--run-strings=1`) is serial throughout.
+- Speed-up depends on how much search a graph exposes, so measure rather than
+  assume. [benchmarks/README.md](benchmarks/README.md#parallel-scaling) covers
+  paired serial/parallel comparisons, thread sweeps, and parallel telemetry.
+
+</details>
+
+<details>
 <summary><strong>C++ library</strong></summary>
 
 Installed packages export `ParallelAssemblyCpp::Library`. If ParallelAssemblyCpp

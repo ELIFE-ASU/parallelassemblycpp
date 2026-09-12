@@ -213,7 +213,7 @@ distributed root-queue participation, dynamic branch leases, global root-branch
 coverage, depth-two and deeper task transfers, local executions and steals,
 scheduler idle waits, deep-refill activations, task-queue high-water marks,
 maximum executed task depth, incumbent warm starts, steady-clock worker timing,
-and all 31 raw search counters per worker plus their exact aggregate. The
+and all 37 raw search counters per worker plus their exact aggregate. The
 parallel aggregate also reports shared-L2 hits, misses, collision-chain probe
 steps, retained entry bytes, and contended shard-lock waits and wait time.
 Parallel phase memory is disabled because `/proc` peak resets are process-wide.
@@ -224,6 +224,30 @@ wait time, not CPU utilization. The aggregate queue high-water mark and maximum
 task depth and minimum useful task work are maxima across workers; the other
 scheduler event fields are sums. Legacy VF2 counters remain in the schema but
 are zero with the exact cyclic canonicaliser.
+
+Matching scans refresh the shared best bound at class boundaries and
+periodically before matching bounds. Their untimed telemetry records:
+
+- `matching_bound_refresh_polls`: relaxed atomic loads at these scan refresh
+  sites; recursion-entry refreshes are excluded.
+- `matching_bound_refreshes`: polls that strictly improve the local best bound.
+- `matching_bound_classes_pruned`: whole classes skipped by the immediately
+  following class bound after a successful refresh.
+- `matching_bound_pairs_pruned`: occurrence pairs rejected before fragmentation
+  by the immediately following bound after a successful refresh.
+- `matching_bound_blocks_pruned`: fragment-pair blocks rejected by the
+  immediately following bound after a successful refresh.
+- `matching_bound_candidates_pruned`: fragmented candidates rejected by the
+  immediately following lower bound after a successful refresh, avoiding
+  canonicalisation.
+
+Each pruning counter requires that the previous local bound would have
+admitted the work at that decision. These conservatively attribute immediate
+avoided work to a refresh; later pruning from the improved bound is excluded.
+Classes, pairs, blocks, and candidates have different units and must not be
+summed as total work or interpreted as elapsed time saved. Current benchmarks
+do not establish stale bounds during matching scans as a major bottleneck.
+Historical schema-v1 reports without this counter group remain readable.
 
 The aggregate and worker records expose `deeper_tasks_spawned`,
 `deeper_tasks_executed`, `task_steal_attempts`, `task_steals`,
