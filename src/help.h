@@ -22,7 +22,7 @@ Input:
   By default, a V2000 MOL/SDF file or a ParallelAssemblyCpp native graph file.
   Existing .mol and .sdf suffixes are matched case-insensitively.
   A missing suffix tries the lowercase .mol spelling.
-  An SDF input reads its first V2000 structure.
+  An SDF input reads only its first record, which must be V2000.
   Molfile output names omit a recognised suffix.
   With --run-strings=1, INPUT is read exactly as a text file containing one
   string per line.
