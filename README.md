@@ -212,6 +212,7 @@ the installed command is `build\install\bin\ParallelAssemblyCpp.exe`.
 
 ```text
 ParallelAssemblyCpp INPUT [OPTIONS]
+ParallelAssemblyCpp [OPTIONS] -- INPUT
 ParallelAssemblyCpp --help
 ```
 
@@ -224,11 +225,23 @@ file is ignored. Native graph filenames must be supplied in full. Options may
 appear before or after the input and use `--name=value` syntax. Boolean values
 are `0` or `1`.
 
+A lone `--` ends option parsing, and every later argument is read as `INPUT`.
+Use it to pass an input whose name begins with a dash, which is otherwise
+rejected as an unknown option:
+
+```bash
+./build/release/ParallelAssemblyCpp -- -dashed-name.mol
+```
+
+Nothing after `--` is treated as an option, so a later `--help` or
+`--name=value` is read as `INPUT` instead, and a second `INPUT` is an error.
+
 ### Options
 
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `-h`, `--help` | — | Show command help. |
+| `--` | — | Stop parsing options; read every later argument as `INPUT`. |
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |

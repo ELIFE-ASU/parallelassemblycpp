@@ -16,6 +16,7 @@ void help()
 
 Usage:
   ParallelAssemblyCpp INPUT [OPTIONS]
+  ParallelAssemblyCpp [OPTIONS] -- INPUT
   ParallelAssemblyCpp --help
 
 Input:
@@ -30,6 +31,8 @@ Input:
 Options:
   -h, --help
       Show this help and exit.
+  --
+      Stop parsing options. Every later argument is read as INPUT.
 )";
 
     for (const InputFlagDefinition& definition : inputFlagDefinitions())
@@ -43,6 +46,9 @@ Options:
 Notes:
   Options may appear before or after INPUT. Use --name=value.
   Boolean values are 0 or 1.
+  A lone -- ends option parsing, so an INPUT whose name begins with a dash
+  must follow it. Nothing after -- is an option: a later --help or
+  --name=value is read as INPUT instead.
   In a parallel-enabled executable, --parallel=auto uses a work estimate from
   the prepared root jobs and DAG. If it selects serial execution, it reports
   the reason. --parallel=on forces parallel search, but fails when parallel
@@ -94,6 +100,7 @@ Examples:
   ParallelAssemblyCpp molecule.mol
   ParallelAssemblyCpp molecule --pathway=0 --enum-max=1000000
   ParallelAssemblyCpp strings.txt --run-strings=1
+  ParallelAssemblyCpp --pathway=0 -- -dashed-name.mol
 )";
 }
 
