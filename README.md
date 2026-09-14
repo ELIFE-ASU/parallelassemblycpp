@@ -526,8 +526,10 @@ cpack --preset release
 cmake --build --preset release --target package_source
 ```
 
-Use CMake 4.3 or newer to normalize archive ownership. Create source archives
-from a clean checkout because CPack includes the working tree.
+Packaging only: CMake 4.3 or newer normalizes archive ownership, and the Conda
+environment supplies it. Building the project still requires only CMake 3.25.
+Create source archives from a clean checkout because CPack includes the working
+tree.
 
 </details>
 
