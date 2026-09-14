@@ -56,7 +56,11 @@ PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateGraph(
     const CalculationOptions& options = {}
 );
 
-/** Read a native graph or first V2000 MOL/SDF structure without output files. */
+/**
+ * Read a native graph or MOL/SDF file without creating output files.
+ *
+ * An SDF input reads only its first record, which must be V2000.
+ */
 PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculate(
     const std::string& input,
     const CalculationOptions& options = {}

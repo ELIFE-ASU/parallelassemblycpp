@@ -2181,7 +2181,8 @@ bool stringAssemblyCalculator(const string &input)
  *
  * Existing molfile paths may use a case-insensitive .mol or .sdf extension.
  * An omitted extension probes the lowercase .mol spelling. Native graph paths
- * are used exactly as provided. An SDF input reads its first V2000 structure.
+ * are used exactly as provided. An SDF input reads only its first record,
+ * which must be V2000.
  *
  * @param input Input path supplied on the command line.
  * @return true if the input was read and the calculation output was written.

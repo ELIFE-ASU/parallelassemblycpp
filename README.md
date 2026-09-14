@@ -219,9 +219,10 @@ By default, `INPUT` may be a V2000 MOL/SDF file or a ParallelAssemblyCpp native
 graph file. With `--run-strings=1`, it is an exact text-file path instead. The
 `.mol` and `.sdf` suffixes select MOL parsing case-insensitively; the `.mol`
 suffix may be omitted when the file uses the lowercase `.mol` spelling. An
-`.sdf` input reads its first V2000 structure. Native graph filenames must be
-supplied in full. Options may appear before or after the input and use
-`--name=value` syntax. Boolean values are `0` or `1`.
+`.sdf` input reads only the first record, which must be V2000; the rest of the
+file is ignored. Native graph filenames must be supplied in full. Options may
+appear before or after the input and use `--name=value` syntax. Boolean values
+are `0` or `1`.
 
 ### Options
 

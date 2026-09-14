@@ -979,7 +979,7 @@ def run_cli_checks(executable: Path) -> int:
             )
             require_cli(
                 read_first_line_assembly_index(case_directory / "inputOut") == 2,
-                f"a {extension} input should use its first V2000 structure",
+                f"a {extension} input should use only its first record",
                 completed,
             )
             require_cli(
