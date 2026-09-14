@@ -19,6 +19,13 @@ namespace parallelassemblycpp
 #define PARALLELASSEMBLYCPP_PUBLIC
 #endif
 
+/**
+ * Thread safety: every entry point below reads and writes process-global
+ * option and search state, so the API is reusable but not thread-safe. Only
+ * one calculation may run at a time in a process; use separate processes for
+ * concurrent work.
+ */
+
 /** Options for one or more in-process assembly-index calculations. */
 struct CalculationOptions
 {
@@ -69,8 +76,7 @@ PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculate(
 /**
  * Calculate several files sequentially in the current process.
  *
- * The implementation currently uses process-global search workspaces and is
- * therefore reusable but not thread-safe. One result is returned per input.
+ * One result is returned per input.
  */
 PARALLELASSEMBLYCPP_PUBLIC std::vector<CalculationResult> calculateBatch(
     const std::vector<std::string>& inputs,
