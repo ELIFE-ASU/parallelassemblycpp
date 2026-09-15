@@ -933,16 +933,12 @@ private:
     static void retain(WideWords *words) noexcept
     {
         if (words == nullptr) return;
-        if (words->references != std::numeric_limits<std::size_t>::max())
-        {
-            ++words->references;
-        }
+        ++words->references;
     }
 
     static void release(WideWords *words) noexcept
     {
-        if (words == nullptr ||
-            words->references == std::numeric_limits<std::size_t>::max()) return;
+        if (words == nullptr) return;
         if (--words->references == 0)
         {
             words->nextFree = arena_.freeWords;

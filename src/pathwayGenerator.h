@@ -58,34 +58,14 @@ void printMaskAsEdgeList(ofstream &outputStream)
 
 /**
  * @brief Write one JSON string, escaping every required ASCII character.
+ *
+ * Delegates to the shared escaper defined in stringAssembly.h, which main.cpp
+ * includes before this header.
  */
 void printJsonString(const string &value, ostream &output)
 {
-    static constexpr char hexDigits[] = "0123456789ABCDEF";
-    output.put('"');
-    for (const unsigned char character : value)
-    {
-        switch (character)
-        {
-            case '"': output << "\\\""; break;
-            case '\\': output << "\\\\"; break;
-            case '\b': output << "\\b"; break;
-            case '\f': output << "\\f"; break;
-            case '\n': output << "\\n"; break;
-            case '\r': output << "\\r"; break;
-            case '\t': output << "\\t"; break;
-            default:
-                if (character < 0x20)
-                {
-                    output << "\\u00"
-                           << hexDigits[character >> 4]
-                           << hexDigits[character & 0x0f];
-                }
-                else output.put(static_cast<char>(character));
-                break;
-        }
-    }
-    output.put('"');
+    parallelassemblycpp::detail::stringAssembly::implementation::
+        writeJsonString(value, output);
 }
 
 /**

@@ -194,24 +194,6 @@ public:
         rebuild([](const atom &) { return false; });
     }
 
-    /** Mark one atom for removal by removeAndCollapse(). */
-    void removeAtom(size_t i)
-    {
-        if (i >= atoms.size()) return;
-        atoms[i].atomType = "COLLAPSE";
-    }
-
-    /** Remove atoms marked by removeAtom(), then rebuild the graph. */
-    void removeAndCollapse()
-    {
-        rebuild(
-            [](const atom &candidate)
-            {
-                return candidate.atomType == "COLLAPSE";
-            }
-        );
-    }
-
     /** Remove every explicitly represented hydrogen atom and its bonds. */
     void removeExplicitHydrogens()
     {
@@ -494,7 +476,6 @@ struct ufdsMaskWorkspace
     );
 
     ufdsSplit sets;
-    vector<EdgeMask> components;
     IntegerVector boundTotals;
     vector<lowResidualDecompositionCacheEntry> lowDecompositionCache;
     vector<wideResidualDecompositionCacheEntry> wideDecompositionCache;
@@ -552,7 +533,6 @@ struct ufdsMaskWorkspace
             throw logic_error("fragmentation edge universe size mismatch");
         sets.elements.resize(atomCount);
         sets.extraVals.reserve(moleculeEdgeCount);
-        components.reserve(atomCount);
         boundTotals.reserve(moleculeEdgeCount);
         residualCanonicalIdBindings.reserve(4);
         if (reuseResidualDecompositions)
@@ -879,8 +859,7 @@ struct ufdsMaskWorkspace
  *
  * @param mask Target bitset as input
  * @param fragmentList Connected residual fragments returned
- * @param workspace Reusable disjoint-set and component buffers. Its component
- * buffer must not alias fragmentList.
+ * @param workspace Reusable disjoint-set and component-mask buffers
  */
 void ufdsMaskConstructWithoutCacheWithWorkspace(
     const EdgeMask &mask,
@@ -942,7 +921,7 @@ void ufdsMaskConstructWithoutCacheWithWorkspace(
     }
     else forEachSetBitWithWideLimit(mask, edgeList.size(), visitEdge);
     if (!initialised) return;
-    sets.splitWithBuffers(fragmentList, workspace.components);
+    sets.splitWithBuffers(fragmentList);
 }
 
 /**
