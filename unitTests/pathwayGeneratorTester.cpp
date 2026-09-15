@@ -57,6 +57,38 @@ void testJsonStringEscaping()
     }
 }
 
+// Atom labels used to reach the pathway file as raw bytes, so a mis-encoded
+// molfile produced JSON that no reader could decode.
+void testNonAsciiJsonStringEscaping()
+{
+    requireEqual(jsonString("\xc3\x85"), "\"\\u00C5\"");
+    requireEqual(jsonString("\xe2\x88\x9e"), "\"\\u221E\"");
+    requireEqual(jsonString("\xf0\x9f\x98\x80"), "\"\\uD83D\\uDE00\"");
+    requireEqual(jsonString("C\xc3\x85N"), "\"C\\u00C5N\"");
+
+    const string malformed[] = {
+        "\x80",
+        "\xc3",
+        "\xc3\x28",
+        "\xc0\xaf",
+        "\xed\xa0\x80",
+        "\xf5\x80\x80\x80"
+    };
+    for (const string &value : malformed)
+    {
+        bool rejected = false;
+        try
+        {
+            static_cast<void>(jsonString(value));
+        }
+        catch (const runtime_error &)
+        {
+            rejected = true;
+        }
+        if (!rejected) abort();
+    }
+}
+
 void testBondColoursAreAlwaysJsonValues()
 {
     requireEqual(
@@ -78,6 +110,7 @@ void testBondColoursAreAlwaysJsonValues()
 int main()
 {
     testJsonStringEscaping();
+    testNonAsciiJsonStringEscaping();
     testBondColoursAreAlwaysJsonValues();
     return 0;
 }

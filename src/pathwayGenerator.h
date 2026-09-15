@@ -57,10 +57,13 @@ void printMaskAsEdgeList(ofstream &outputStream)
 }
 
 /**
- * @brief Write one JSON string, escaping every required ASCII character.
+ * @brief Write one JSON string, escaping control bytes and all non-ASCII text.
  *
  * Delegates to the shared escaper defined in stringAssembly.h, which main.cpp
- * includes before this header.
+ * includes before this header. Atom labels reach it already validated by the
+ * input parsers, so the escaper only throws when that validation is bypassed.
+ *
+ * @throws std::runtime_error when @p value is not valid UTF-8
  */
 void printJsonString(const string &value, ostream &output)
 {
@@ -254,38 +257,47 @@ bool recoverPathway2(
         return false;
     }
 
-    outputStream << "{\n";
-    outputStream << "\"file_graph\":[\n";
-    outputStream << "{\n";
-    printOriginalGraph(outputStream);
-    outputStream << "}\n";
-    outputStream << "],\n";
-    outputStream << "\"remnant\":[\n";
-    outputStream << "{\n";
-    printRemnantGraph(allTakenEdges, outputStream);
-    outputStream << "}\n";
-    outputStream << "],\n";
-    outputStream << "\"duplicates\":[\n";
-    for (size_t stepIndex = 0; stepIndex < pathway.size(); stepIndex++)
+    try
     {
-        printMatching(pathway[stepIndex], outputStream);
-        if (stepIndex < pathway.size() - 1) outputStream << ",\n";
+        outputStream << "{\n";
+        outputStream << "\"file_graph\":[\n";
+        outputStream << "{\n";
+        printOriginalGraph(outputStream);
+        outputStream << "}\n";
+        outputStream << "],\n";
+        outputStream << "\"remnant\":[\n";
+        outputStream << "{\n";
+        printRemnantGraph(allTakenEdges, outputStream);
+        outputStream << "}\n";
+        outputStream << "],\n";
+        outputStream << "\"duplicates\":[\n";
+        for (size_t stepIndex = 0; stepIndex < pathway.size(); stepIndex++)
+        {
+            printMatching(pathway[stepIndex], outputStream);
+            if (stepIndex < pathway.size() - 1) outputStream << ",\n";
+        }
+        outputStream << "\n],\n";
+        outputStream << "\"removed_edges\":[";
+        for (
+            size_t removedEdgeIndex = 0;
+            removedEdgeIndex < removedEdges.size();
+            removedEdgeIndex++
+        )
+        {
+            outputStream
+                << "[" << removedEdges[removedEdgeIndex].sourceAtomIndex << ","
+                << removedEdges[removedEdgeIndex].targetAtomIndex << "]";
+            if (removedEdgeIndex < removedEdges.size() - 1) outputStream << ',';
+        }
+        outputStream << "]\n";
+        outputStream << "}\n";
     }
-    outputStream << "\n],\n";
-    outputStream << "\"removed_edges\":[";
-    for (
-        size_t removedEdgeIndex = 0;
-        removedEdgeIndex < removedEdges.size();
-        removedEdgeIndex++
-    )
+    catch (const std::exception &failure)
     {
-        outputStream
-            << "[" << removedEdges[removedEdgeIndex].sourceAtomIndex << ","
-            << removedEdges[removedEdgeIndex].targetAtomIndex << "]";
-        if (removedEdgeIndex < removedEdges.size() - 1) outputStream << ',';
+        cerr << "error: could not write output file '" << moleculeName
+             << "': " << failure.what() << '\n';
+        return false;
     }
-    outputStream << "]\n";
-    outputStream << "}\n";
 
     outputStream.close();
     if (!outputStream)

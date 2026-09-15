@@ -24,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+#include "utf8.h"
+
 namespace parallelassemblycpp::detail::stringAssembly
 {
 
@@ -868,30 +870,69 @@ public:
     }
 };
 
+/**
+ * @brief Write one JSON string, escaping control bytes and all non-ASCII text.
+ *
+ * Non-ASCII text is decoded and re-emitted as \\uXXXX escapes rather than raw
+ * bytes, so the pathway file is pure ASCII and stays readable whatever encoding
+ * the consumer opens it with. Text that is not valid UTF-8 has no JSON
+ * spelling at all, so it is reported instead of written.
+ *
+ * @throws std::runtime_error when @p value is not valid UTF-8
+ */
 inline void writeJsonString(std::string_view value, std::ostream &output)
 {
     static constexpr char hexDigits[] = "0123456789ABCDEF";
-    output.put('"');
-    for (const unsigned char character : value)
+    const auto writeUnitEscape = [&output](char32_t unit)
     {
-        switch (character)
+        output << "\\u"
+               << hexDigits[(unit >> 12) & 0x0f]
+               << hexDigits[(unit >> 8) & 0x0f]
+               << hexDigits[(unit >> 4) & 0x0f]
+               << hexDigits[unit & 0x0f];
+    };
+
+    output.put('"');
+    std::size_t offset = 0;
+    while (offset < value.size())
+    {
+        const unsigned char character =
+            static_cast<unsigned char>(value[offset]);
+        if (character < 0x80)
         {
-            case '"': output << "\\\""; break;
-            case '\\': output << "\\\\"; break;
-            case '\b': output << "\\b"; break;
-            case '\f': output << "\\f"; break;
-            case '\n': output << "\\n"; break;
-            case '\r': output << "\\r"; break;
-            case '\t': output << "\\t"; break;
-            default:
-                if (character < 0x20)
-                {
-                    output << "\\u00"
-                           << hexDigits[character >> 4]
-                           << hexDigits[character & 0x0f];
-                }
-                else output.put(static_cast<char>(character));
-                break;
+            offset++;
+            switch (character)
+            {
+                case '"': output << "\\\""; break;
+                case '\\': output << "\\\\"; break;
+                case '\b': output << "\\b"; break;
+                case '\f': output << "\\f"; break;
+                case '\n': output << "\\n"; break;
+                case '\r': output << "\\r"; break;
+                case '\t': output << "\\t"; break;
+                default:
+                    if (character < 0x20) writeUnitEscape(character);
+                    else output.put(static_cast<char>(character));
+                    break;
+            }
+            continue;
+        }
+
+        const utf8::DecodedCharacter decoded = utf8::decode(value, offset);
+        if (decoded.length == 0)
+        {
+            throw std::runtime_error(
+                "cannot write JSON: text is not valid UTF-8"
+            );
+        }
+        offset += decoded.length;
+
+        if (decoded.codePoint < 0x10000) writeUnitEscape(decoded.codePoint);
+        else
+        {
+            const char32_t remainder = decoded.codePoint - 0x10000;
+            writeUnitEscape(0xD800 + (remainder >> 10));
+            writeUnitEscape(0xDC00 + (remainder & 0x3FF));
         }
     }
     output.put('"');
@@ -966,42 +1007,51 @@ inline bool writePathway(
         return false;
     }
 
-    output << "{\n  \"file_graph\": [\n    {\n      \"Fragments\": [";
-    implementation::writeJsonString(input, output);
-    output << "],\n      \"Positions\": [0]\n    }\n  ],\n";
+    try
+    {
+        output << "{\n  \"file_graph\": [\n    {\n      \"Fragments\": [";
+        implementation::writeJsonString(input, output);
+        output << "],\n      \"Positions\": [0]\n    }\n  ],\n";
 
-    const std::vector<Interval> remnants =
-        implementation::remnantIntervals(input.size(), result.pathway);
-    output << "  \"remnant\": [\n    {\n      \"Fragments\": [";
-    for (size_t index = 0; index < remnants.size(); index++)
-    {
-        if (index > 0) output << ',';
-        implementation::writeJsonString(
-            std::string_view(input).substr(
-                static_cast<size_t>(remnants[index].offset),
-                static_cast<size_t>(remnants[index].length)
-            ),
-            output
-        );
+        const std::vector<Interval> remnants =
+            implementation::remnantIntervals(input.size(), result.pathway);
+        output << "  \"remnant\": [\n    {\n      \"Fragments\": [";
+        for (size_t index = 0; index < remnants.size(); index++)
+        {
+            if (index > 0) output << ',';
+            implementation::writeJsonString(
+                std::string_view(input).substr(
+                    static_cast<size_t>(remnants[index].offset),
+                    static_cast<size_t>(remnants[index].length)
+                ),
+                output
+            );
+        }
+        output << "],\n      \"Positions\": [";
+        for (size_t index = 0; index < remnants.size(); index++)
+        {
+            if (index > 0) output << ',';
+            output << remnants[index].offset;
+        }
+        output << "]\n    }\n  ],\n  \"duplicates\": [";
+        for (size_t index = 0; index < result.pathway.size(); index++)
+        {
+            if (index > 0) output << ',';
+            const PathwayStep &step = result.pathway[index];
+            output << "\n    {\"Left\":[" << step.match.offset << ','
+                   << step.match.length << "],\"Right\":["
+                   << step.duplicate.offset << ',' << step.duplicate.length
+                   << "]}";
+        }
+        if (!result.pathway.empty()) output << '\n';
+        output << "  ]\n}\n";
     }
-    output << "],\n      \"Positions\": [";
-    for (size_t index = 0; index < remnants.size(); index++)
+    catch (const std::exception &failure)
     {
-        if (index > 0) output << ',';
-        output << remnants[index].offset;
+        error = "could not write output file '" + filename + "': " +
+            failure.what();
+        return false;
     }
-    output << "]\n    }\n  ],\n  \"duplicates\": [";
-    for (size_t index = 0; index < result.pathway.size(); index++)
-    {
-        if (index > 0) output << ',';
-        const PathwayStep &step = result.pathway[index];
-        output << "\n    {\"Left\":[" << step.match.offset << ','
-               << step.match.length << "],\"Right\":["
-               << step.duplicate.offset << ',' << step.duplicate.length
-               << "]}";
-    }
-    if (!result.pathway.empty()) output << '\n';
-    output << "  ]\n}\n";
     output.close();
     if (!output)
     {

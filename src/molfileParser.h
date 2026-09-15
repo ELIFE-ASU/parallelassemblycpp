@@ -1,12 +1,17 @@
 #pragma once
 
+#include <algorithm>
 #include <charconv>
+#include <cstdint>
 #include <iostream>
 #include <istream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
+
+#include "utf8.h"
 
 namespace molfileParserDetail
 {
@@ -24,6 +29,14 @@ namespace molfileParserDetail
             );
         }
         return std::string_view(line).substr(offset, width);
+    }
+
+    /** Order-independent key identifying the atom pair a bond line joins. */
+    [[nodiscard]] inline std::uint64_t atomPairKey(int atomA, int atomB)
+    {
+        return (
+            static_cast<std::uint64_t>(std::min(atomA, atomB)) << 32
+        ) | static_cast<std::uint64_t>(std::max(atomA, atomB));
     }
 
     [[nodiscard]] inline std::string_view trimSpaces(std::string_view field)
@@ -127,10 +140,16 @@ void molfileParser(std::istream &molfile, molGraph &molecule)
         );
         if (atomField.empty())
             throw std::runtime_error("invalid molfile: missing atom type");
+        if (!utf8::wellFormed(atomField))
+            throw std::runtime_error(
+                "invalid molfile: atom type is not valid UTF-8"
+            );
 
         std::string atomType(atomField);
         parsed.addAtom(std::move(atomType));
     }
+    std::unordered_set<std::uint64_t> bondedAtomPairs;
+    bondedAtomPairs.reserve(static_cast<std::size_t>(bondCount));
     for (int bondIndex = 0; bondIndex < bondCount; bondIndex++)
     {
         molfileParserDetail::readLine(molfile, currLine, "bond line");
@@ -154,6 +173,16 @@ void molfileParser(std::istream &molfile, molGraph &molecule)
         {
             throw std::runtime_error(
                 "invalid molfile: bond endpoint is outside the atom range"
+            );
+        }
+        if (
+            !bondedAtomPairs.insert(
+                molfileParserDetail::atomPairKey(atomA, atomB)
+            ).second
+        )
+        {
+            throw std::runtime_error(
+                "invalid molfile: duplicate bond between the same atom pair"
             );
         }
         if (bondOrder < 0)
