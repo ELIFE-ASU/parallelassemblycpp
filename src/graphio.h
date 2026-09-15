@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <charconv>
+#include <cstdint>
 #include <iostream>
 #include <istream>
 #include <limits>
@@ -9,8 +11,11 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "utf8.h"
 
 namespace graphioDetail
 {
@@ -106,6 +111,8 @@ namespace graphioDetail
         std::vector<std::pair<int, int>> result;
         result.reserve(fields.size() / 2);
         std::vector<std::size_t> degrees(vertexCount, 0);
+        std::unordered_set<std::uint64_t> joinedVertexPairs;
+        joinedVertexPairs.reserve(fields.size() / 2);
         constexpr std::size_t maximumDegree =
             static_cast<std::size_t>(std::numeric_limits<short>::max()) + 1;
         for (std::size_t field = 0; field < fields.size(); field += 2)
@@ -135,6 +142,17 @@ namespace graphioDetail
             }
             const std::size_t firstIndex = static_cast<std::size_t>(first - 1);
             const std::size_t secondIndex = static_cast<std::size_t>(second - 1);
+            const std::uint64_t vertexPairKey = (
+                static_cast<std::uint64_t>(std::min(firstIndex, secondIndex))
+                    << 32
+            ) | static_cast<std::uint64_t>(std::max(firstIndex, secondIndex));
+            if (!joinedVertexPairs.insert(vertexPairKey).second)
+            {
+                throw std::runtime_error(
+                    "invalid native graph: duplicate edge between the same "
+                    "vertex pair"
+                );
+            }
             if (
                 ++degrees[firstIndex] > maximumDegree ||
                 ++degrees[secondIndex] > maximumDegree
@@ -199,6 +217,15 @@ inline void graphio(std::istream &inputStream, molGraph &molecule)
     graphioDetail::requireCardinality(
         bondFields.size(), edgeList.size(), "bond label"
     );
+    for (const std::string &label : atomLabels)
+    {
+        if (!utf8::wellFormed(label))
+        {
+            throw std::runtime_error(
+                "invalid native graph: atom label is not valid UTF-8"
+            );
+        }
+    }
 
     std::vector<short> bondLabels;
     bondLabels.reserve(bondFields.size());

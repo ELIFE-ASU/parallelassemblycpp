@@ -225,6 +225,12 @@ file is ignored. Native graph filenames must be supplied in full. Options may
 appear before or after the input and use `--name=value` syntax. Boolean values
 are `0` or `1`.
 
+Both graph formats are validated before the search starts. A bond is rejected
+when it repeats an atom pair, joins an atom to itself, names an atom outside
+the declared range, or has order zero, and an atom label is rejected when it is
+not valid UTF-8. A rejected input produces a diagnostic on standard error and a
+non-zero exit status, and writes no output files.
+
 A lone `--` ends option parsing, and every later argument is read as `INPUT`.
 Use it to pass an input whose name begins with a dash, which is otherwise
 rejected as an unknown option:
@@ -290,6 +296,10 @@ For a MOL/SDF file, `INPUT` below excludes its recognised suffix.
 | `INPUTIntermediateMAs` | Improved indices when `--write-intermediate-mas=1`. |
 | `INPUTTelemetry.json` | Search counters from a telemetry-enabled executable. |
 | `memUsage` | Linux `VmPeak` value when `--memory-report=1`. |
+
+The pathway JSON is written as ASCII. Atom labels and string fragments outside
+the ASCII range appear as `\uXXXX` escapes, so the file decodes the same way
+whatever encoding the reader assumes.
 
 ### String assembly
 

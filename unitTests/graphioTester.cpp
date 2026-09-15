@@ -185,6 +185,13 @@ int main()
     assert(explicitlyPositive.totalBonds == 1);
     assert(explicitlyPositive.atoms[0].bonds[0].bondType == 1);
 
+    const molGraph utf8Labelled = parse(
+        "utf8 labels\n2\n1 2\n\xc3\x85 C\n1\n"
+    );
+    assert(utf8Labelled.atoms.size() == 2);
+    assert(utf8Labelled.atoms[0].atomType == "\xc3\x85");
+    assert(utf8Labelled.totalBonds == 1);
+
     expectRejected(
         "truncated\n2\n1 2\nC C\n",
         "missing bond label line"
@@ -218,6 +225,30 @@ int main()
     expectRejected(
         "self loop\n2\n1 1\nC C\n1\n",
         "self-loop"
+    );
+    // A repeated endpoint pair would build a parallel edge, so the assembly
+    // index would describe a multigraph the input never meant to declare.
+    expectRejected(
+        "duplicate edge\n2\n1 2 1 2\nC C\n1 1\n",
+        "duplicate edge between the same vertex pair"
+    );
+    expectRejected(
+        "reversed duplicate edge\n2\n1 2 2 1\nC C\n1 1\n",
+        "duplicate edge between the same vertex pair"
+    );
+    expectRejected(
+        "relabelled duplicate edge\n2\n1 2 2 1\nC C\n1 2\n",
+        "duplicate edge between the same vertex pair"
+    );
+    // Bytes that are not valid UTF-8 have no JSON spelling, so they are
+    // refused where the file is read rather than where the pathway is written.
+    expectRejected(
+        "lone continuation byte\n2\n1 2\nC \x80\n1\n",
+        "atom label is not valid UTF-8"
+    );
+    expectRejected(
+        "truncated sequence\n2\n1 2\nC \xc3\n1\n",
+        "atom label is not valid UTF-8"
     );
     expectRejected(
         "missing atom\n2\n1 2\nC\n1\n",

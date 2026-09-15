@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -866,6 +867,92 @@ void testSearchStops()
     requireConsistentPathway(partialInput, partiallySearched);
 }
 
+/**
+ * Non-ASCII text used to reach the pathway file as raw bytes, which left the
+ * file unreadable whenever those bytes were not valid UTF-8.
+ */
+void testNonAsciiJsonOutput()
+{
+    const auto encode = [](std::string_view value)
+    {
+        std::ostringstream output;
+        implementation::writeJsonString(value, output);
+        return output.str();
+    };
+
+    require(
+        encode("\xc3\x85") == "\"\\u00C5\"",
+        "two-byte UTF-8 is not escaped: " + encode("\xc3\x85")
+    );
+    require(
+        encode("\xe2\x88\x9e") == "\"\\u221E\"",
+        "three-byte UTF-8 is not escaped: " + encode("\xe2\x88\x9e")
+    );
+    require(
+        encode("\xf0\x9f\x98\x80") == "\"\\uD83D\\uDE00\"",
+        "four-byte UTF-8 is not a surrogate pair: " +
+            encode("\xf0\x9f\x98\x80")
+    );
+    require(
+        encode("A\xc3\x85Z") == "\"A\\u00C5Z\"",
+        "escapes are not interleaved with ASCII: " + encode("A\xc3\x85Z")
+    );
+
+    const std::vector<std::string> malformed{
+        "\x80",                  // lone continuation byte
+        "\xc3",                  // truncated two-byte sequence
+        "\xc3\x28",              // invalid continuation byte
+        "\xc0\xaf",              // overlong encoding of '/'
+        "\xed\xa0\x80",          // UTF-16 surrogate half
+        "\xf5\x80\x80\x80"       // above U+10FFFF
+    };
+    for (const std::string &value : malformed)
+    {
+        bool rejected = false;
+        try
+        {
+            std::ostringstream output;
+            implementation::writeJsonString(value, output);
+        }
+        catch (const std::runtime_error &)
+        {
+            rejected = true;
+        }
+        require(rejected, "malformed UTF-8 was written to JSON");
+    }
+
+    // The writer reports the failure through writePathway rather than
+    // producing a file no JSON reader can parse.
+    const auto nonce = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+    const std::filesystem::path outputPath =
+        std::filesystem::temp_directory_path() /
+        ("parallelassemblycpp-string-pathway-invalid-" +
+            std::to_string(nonce) + ".json");
+    struct RemoveFile
+    {
+        std::filesystem::path path;
+        ~RemoveFile()
+        {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{outputPath};
+
+    // Split so the hex escape cannot swallow the following characters.
+    const std::string invalidInput = "AB\xff" "AB";
+    const Result invalidResult = calculate(invalidInput);
+    std::string error;
+    require(
+        !writePathway(outputPath.string(), invalidInput, invalidResult, error),
+        "writePathway reported success for malformed UTF-8"
+    );
+    require(
+        error.find("not valid UTF-8") != std::string::npos,
+        "writePathway did not explain the malformed input: " + error
+    );
+}
+
 void testJsonAndPathwayOutput()
 {
     const std::vector<std::string> controlEscapes{
@@ -1055,6 +1142,7 @@ int main()
         testReverseEquivalence();
         testSearchStops();
         testJsonAndPathwayOutput();
+        testNonAsciiJsonOutput();
     }
     catch (const std::exception &error)
     {

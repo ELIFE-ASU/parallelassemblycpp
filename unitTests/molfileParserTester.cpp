@@ -64,6 +64,53 @@ namespace
         molfileParser(input, graph);
         return graph;
     }
+
+    /** Require a diagnostic and confirm the destination graph is untouched. */
+    void expectRejected(const string &source, const string &diagnosticFragment)
+    {
+        molGraph destination;
+        string sentinel = "rejection-sentinel";
+        destination.addAtom(sentinel);
+        istringstream input(source);
+        bool rejected = false;
+        try
+        {
+            molfileParser(input, destination);
+        }
+        catch (const runtime_error &error)
+        {
+            rejected =
+                string(error.what()).find(diagnosticFragment) != string::npos;
+        }
+        assert(rejected);
+        assert(destination.atoms.size() == 1);
+        assert(destination.atoms.front().atomType == sentinel);
+        assert(destination.totalBonds == 0);
+    }
+
+    /** Overwrite the fixed-width atom type of the first atom line. */
+    string withFirstAtomType(const string &atomTypeField)
+    {
+        assert(atomTypeField.size() == 3);
+        string source = validMolfile;
+        const size_t atomLine = source.find(
+            "    0.0000    0.0000    0.0000 C  "
+        );
+        assert(atomLine != string::npos);
+        source.replace(atomLine + 31, 3, atomTypeField);
+        return source;
+    }
+
+    /** Overwrite the last bond line, which joins atoms 4 and 5. */
+    string withLastBond(const string &bondLine)
+    {
+        assert(bondLine.size() == 9);
+        string source = validMolfile;
+        const size_t position = source.find("  4  5  1");
+        assert(position != string::npos);
+        source.replace(position, 9, bondLine);
+        return source;
+    }
 }
 
 int main(int argc, char **argv)
@@ -224,6 +271,42 @@ int main(int argc, char **argv)
         rejected = string(error.what()).find("expected a V2000") != string::npos;
     }
     assert(rejected);
+
+    // A repeated bond line used to build a parallel edge, so the reported
+    // index described a multigraph the input never meant to declare.
+    expectRejected(
+        withLastBond("  1  2  1"),
+        "duplicate bond between the same atom pair"
+    );
+    expectRejected(
+        withLastBond("  2  1  1"),
+        "duplicate bond between the same atom pair"
+    );
+    expectRejected(
+        withLastBond("  2  1  2"),
+        "duplicate bond between the same atom pair"
+    );
+
+    // Bytes that are not valid UTF-8 cannot be written to the pathway JSON,
+    // so they are refused where the file is read rather than where it is used.
+    expectRejected(
+        withFirstAtomType("\xff  "),
+        "atom type is not valid UTF-8"
+    );
+    expectRejected(
+        withFirstAtomType("\xc3  "),
+        "atom type is not valid UTF-8"
+    );
+    expectRejected(
+        withFirstAtomType("\xc3\x28 "),
+        "atom type is not valid UTF-8"
+    );
+
+    // Well-formed UTF-8 remains a usable label.
+    const molGraph utf8Labelled = parse(withFirstAtomType("\xc3\x85 "));
+    assert(utf8Labelled.atoms.size() == 5);
+    assert(utf8Labelled.atoms[0].atomType == "\xc3\x85");
+    assert(utf8Labelled.totalBonds == 4);
 
     char executable[] = "ParallelAssemblyCpp";
     char option[] = "--verbose=1";
