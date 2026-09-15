@@ -291,6 +291,34 @@ transferred to refresh the estimate as the search changes. This calibration
 runs in ordinary builds as well as telemetry builds. Historical schema-v1
 reports without the transfer measurement group remain readable.
 
+MPI refill measurements appear on each worker and in the aggregate:
+
+- `mpi_refill_requests`: rank-level refill requests issued, including replies
+  that report an exhausted global queue.
+- `mpi_prefetched_refills`: refill requests issued while the rank still has
+  local root work, so communication can overlap computation.
+- `mpi_refill_replies`: refill exchanges completed, including empty replies
+  and exchanges drained during termination. Completed searches have matching
+  request and reply counts.
+- `mpi_refill_wait_nanoseconds`: sampled steady-clock intervals with no
+  leaseable local root slots while a refill is incomplete. These intervals
+  can include computation on already leased roots and are not total worker
+  idle time; `scheduler_idle_nanoseconds` measures worker idle waits.
+- `mpi_progress_calls`: entries to the MPI controller's progress routine.
+- `mpi_maximum_progress_gap_nanoseconds`: longest interval between the
+  starts of controller progress calls, measured from search start through
+  global completion. The interval includes computation, communication, and
+  wait time; it does not measure only time outside MPI or prove that MPI made
+  network progress during every call.
+- `mpi_pending_refills_high_watermark`: largest number of simultaneously
+  pending refill exchanges on a rank, bounded by one.
+
+Each rank contributes its controller measurements through local worker zero
+after global completion and request draining. Other local workers, and all
+OpenMP workers, report zero for these MPI fields. The aggregate sums the
+request, reply, prefetch, wait-time, and progress-call fields and takes the
+maximum of the progress gap and pending-refill high-water mark across ranks.
+
 ## Paired comparisons
 
 Keep the previous executable and pass it as the baseline:
@@ -395,7 +423,11 @@ inside the receiving worker from serialized words.
 The adaptive MPI default uses one-root worker leases, with each rank-level
 broker refill bundling one lease per local worker. This bounds tail imbalance
 when a single root is much more expensive than its neighbours; faster ranks
-simply issue more requests. Serial/OpenMP scheduling retains guided leases for
+simply issue more requests. A low watermark starts one asynchronous pending
+refill while local root work remains. Replies carry the latest incumbent
+bound, and completed work requests are drained before global termination.
+All MPI progress stays on the initializing thread, preserving
+`MPI_THREAD_FUNNELED`. Serial/OpenMP scheduling retains guided leases for
 larger frontiers. Root jobs take priority over transferred work.
 Within hybrid ranks, observed idle pressure can make a root search expose
 immediate children as depth-two tasks. The idle trigger is at least half the
@@ -424,8 +456,10 @@ are propagated periodically with a passive-target RMA minimum, allowing remote
 progress to tighten local pruning before the final result reduction. Root work
 uses the FUNNELED request broker, and the RMA heartbeat also propagates
 cancellation so it stops issuing new chunks after an observed interrupt or
-search failure. Task transfer is disabled in an MPI-only rank with one local
-worker, but remains available within hybrid ranks.
+search failure. Ranks waiting for global completion continue servicing refill
+requests and RMA, sleeping for 1 ms between progress calls while the completion
+barrier remains pending. Task transfer is disabled in an MPI-only rank with
+one local worker, but remains available within hybrid ranks.
 
 Set the positive `PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
 fixed root lease size. Only MPI rank zero writes output.

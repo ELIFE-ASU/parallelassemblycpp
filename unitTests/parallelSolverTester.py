@@ -55,6 +55,17 @@ SCHEDULER_SUM_FIELDS = (
     "task_buffers_reused",
     "tasks_rejected_as_too_small",
 )
+MPI_SUM_FIELDS = (
+    "mpi_refill_requests",
+    "mpi_prefetched_refills",
+    "mpi_refill_replies",
+    "mpi_refill_wait_nanoseconds",
+    "mpi_progress_calls",
+)
+MPI_MAXIMUM_FIELDS = (
+    "mpi_maximum_progress_gap_nanoseconds",
+    "mpi_pending_refills_high_watermark",
+)
 
 
 @dataclass(frozen=True)
@@ -607,6 +618,77 @@ def validate_root_enumeration_phases(
         )
 
 
+def validate_mpi_refill_telemetry(
+    workers: Sequence[Mapping[str, Any]],
+    aggregate: Mapping[str, Any],
+    topology: ParallelTopology,
+    prefix: str,
+) -> None:
+    """Check progress ownership, drained refills, and sum/maximum reductions."""
+    sums = dict.fromkeys(MPI_SUM_FIELDS, 0)
+    maxima = dict.fromkeys(MPI_MAXIMUM_FIELDS, 0)
+    for index, worker in enumerate(workers):
+        path = f"{prefix}: parallel.workers[{index}]"
+        values = {
+            name: require_nonnegative_integer(worker.get(name), f"{path}.{name}")
+            for name in (*MPI_SUM_FIELDS, *MPI_MAXIMUM_FIELDS)
+        }
+        owns_progress = (
+            topology.mode in {"mpi", "hybrid"}
+            and worker.get("local_worker_index") == 0
+        )
+        if not owns_progress:
+            require(
+                all(value == 0 for value in values.values()),
+                f"{path}: MPI activity must be recorded only by the rank's "
+                "main thread",
+            )
+        else:
+            require(
+                values["mpi_progress_calls"] > 0,
+                f"{path}: the MPI main thread recorded no progress calls",
+            )
+            require(
+                values["mpi_maximum_progress_gap_nanoseconds"] > 0,
+                f"{path}: MPI progress gap timing is absent",
+            )
+        requests = values["mpi_refill_requests"]
+        require(
+            requests == values["mpi_refill_replies"],
+            f"{path}: completed search left a refill reply in flight",
+        )
+        require(
+            values["mpi_prefetched_refills"] <= requests,
+            f"{path}: prefetched refills exceed refill requests",
+        )
+        require(
+            values["mpi_pending_refills_high_watermark"] == min(1, requests),
+            f"{path}: refill must allow exactly one pending request",
+        )
+        for name in MPI_SUM_FIELDS:
+            sums[name] += values[name]
+        for name in MPI_MAXIMUM_FIELDS:
+            maxima[name] = max(maxima[name], values[name])
+
+    for name, expected in {**sums, **maxima}.items():
+        actual = require_nonnegative_integer(
+            aggregate.get(name), f"{prefix}: parallel.aggregate.{name}"
+        )
+        reduction = "sum" if name in sums else "maximum"
+        require(
+            actual == expected,
+            f"{prefix}: aggregate {name} is not the worker {reduction}",
+        )
+    elapsed = require_nonnegative_integer(
+        aggregate.get("elapsed_nanoseconds"),
+        f"{prefix}: parallel.aggregate.elapsed_nanoseconds",
+    )
+    require(
+        maxima["mpi_maximum_progress_gap_nanoseconds"] <= elapsed,
+        f"{prefix}: MPI progress gap exceeds the complete parallel search",
+    )
+
+
 def validate_parallel_telemetry(
     document: Mapping[str, Any],
     case: SolverCase,
@@ -821,6 +903,7 @@ def validate_parallel_telemetry(
     aggregate = require_mapping(
         parallel.get("aggregate"), f"{prefix}: parallel.aggregate"
     )
+    validate_mpi_refill_telemetry(workers, aggregate, topology, prefix)
     # This exact nesting is intentional: reductions must never be inferred from
     # the process-level telemetry counters.
     validate_counter_sum(

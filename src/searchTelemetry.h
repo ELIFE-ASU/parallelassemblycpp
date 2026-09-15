@@ -176,6 +176,13 @@ struct ParallelSearchWorkerTelemetry
     uint64_t taskBuffersReused = 0;
     uint64_t tasksRejectedAsTooSmall = 0;
     uint64_t taskMinimumWorkUnits = 0;
+    uint64_t mpiRefillRequests = 0;
+    uint64_t mpiPrefetchedRefills = 0;
+    uint64_t mpiRefillReplies = 0;
+    uint64_t mpiRefillWaitNanoseconds = 0;
+    uint64_t mpiProgressCalls = 0;
+    uint64_t mpiMaximumProgressGapNanoseconds = 0;
+    uint64_t mpiPendingRefillsHighWatermark = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t busyNanoseconds = 0;
     uint64_t processedAtoms = 0;
@@ -235,6 +242,13 @@ struct ParallelSearchTelemetrySummary
     uint64_t taskBuffersReused = 0;
     uint64_t tasksRejectedAsTooSmall = 0;
     uint64_t taskMinimumWorkUnits = 0;
+    uint64_t mpiRefillRequests = 0;
+    uint64_t mpiPrefetchedRefills = 0;
+    uint64_t mpiRefillReplies = 0;
+    uint64_t mpiRefillWaitNanoseconds = 0;
+    uint64_t mpiProgressCalls = 0;
+    uint64_t mpiMaximumProgressGapNanoseconds = 0;
+    uint64_t mpiPendingRefillsHighWatermark = 0;
     uint64_t elapsedNanoseconds = 0;
     uint64_t workerElapsedNanoseconds = 0;
     uint64_t workerBusyNanoseconds = 0;
@@ -797,6 +811,19 @@ inline void configureParallelSearchTelemetry(
             summary.taskMinimumWorkUnits,
             worker.taskMinimumWorkUnits
         );
+        summary.mpiRefillRequests += worker.mpiRefillRequests;
+        summary.mpiPrefetchedRefills += worker.mpiPrefetchedRefills;
+        summary.mpiRefillReplies += worker.mpiRefillReplies;
+        summary.mpiRefillWaitNanoseconds += worker.mpiRefillWaitNanoseconds;
+        summary.mpiProgressCalls += worker.mpiProgressCalls;
+        summary.mpiMaximumProgressGapNanoseconds = std::max(
+            summary.mpiMaximumProgressGapNanoseconds,
+            worker.mpiMaximumProgressGapNanoseconds
+        );
+        summary.mpiPendingRefillsHighWatermark = std::max(
+            summary.mpiPendingRefillsHighWatermark,
+            worker.mpiPendingRefillsHighWatermark
+        );
         summary.workerElapsedNanoseconds += worker.elapsedNanoseconds;
         summary.workerBusyNanoseconds += worker.busyNanoseconds;
         addSharedAssemblyCacheTelemetry(
@@ -1039,6 +1066,20 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.tasksRejectedAsTooSmall << ",\n"
            << "      \"task_minimum_work_units\": "
            << parallel.taskMinimumWorkUnits << ",\n"
+           << "      \"mpi_refill_requests\": "
+           << parallel.mpiRefillRequests << ",\n"
+           << "      \"mpi_prefetched_refills\": "
+           << parallel.mpiPrefetchedRefills << ",\n"
+           << "      \"mpi_refill_replies\": "
+           << parallel.mpiRefillReplies << ",\n"
+           << "      \"mpi_refill_wait_nanoseconds\": "
+           << parallel.mpiRefillWaitNanoseconds << ",\n"
+           << "      \"mpi_progress_calls\": "
+           << parallel.mpiProgressCalls << ",\n"
+           << "      \"mpi_maximum_progress_gap_nanoseconds\": "
+           << parallel.mpiMaximumProgressGapNanoseconds << ",\n"
+           << "      \"mpi_pending_refills_high_watermark\": "
+           << parallel.mpiPendingRefillsHighWatermark << ",\n"
            << "      \"elapsed_nanoseconds\": "
            << parallel.elapsedNanoseconds << ",\n"
            << "      \"worker_elapsed_nanoseconds\": "
@@ -1136,6 +1177,20 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
                << worker.tasksRejectedAsTooSmall << ",\n"
                << "        \"task_minimum_work_units\": "
                << worker.taskMinimumWorkUnits << ",\n"
+               << "        \"mpi_refill_requests\": "
+               << worker.mpiRefillRequests << ",\n"
+               << "        \"mpi_prefetched_refills\": "
+               << worker.mpiPrefetchedRefills << ",\n"
+               << "        \"mpi_refill_replies\": "
+               << worker.mpiRefillReplies << ",\n"
+               << "        \"mpi_refill_wait_nanoseconds\": "
+               << worker.mpiRefillWaitNanoseconds << ",\n"
+               << "        \"mpi_progress_calls\": "
+               << worker.mpiProgressCalls << ",\n"
+               << "        \"mpi_maximum_progress_gap_nanoseconds\": "
+               << worker.mpiMaximumProgressGapNanoseconds << ",\n"
+               << "        \"mpi_pending_refills_high_watermark\": "
+               << worker.mpiPendingRefillsHighWatermark << ",\n"
                << "        \"elapsed_nanoseconds\": "
                << worker.elapsedNanoseconds << ",\n"
                << "        \"busy_nanoseconds\": "

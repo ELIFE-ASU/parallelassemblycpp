@@ -863,6 +863,37 @@ if(BUILD_TESTING)
       PRIVATE OpenMP::OpenMP_CXX
     )
   endif()
+  if(TARGET MPI::MPI_CXX)
+    find_package(Threads REQUIRED)
+    add_executable(
+      parallelassemblycpp_mpi_refill_tests
+      unitTests/mpiRefillTester.cpp
+    )
+    parallelassemblycpp_configure_test_target(parallelassemblycpp_mpi_refill_tests)
+    target_compile_definitions(
+      parallelassemblycpp_mpi_refill_tests
+      PRIVATE PARALLELASSEMBLYCPP_USE_MPI ASSEMBLY_ENABLE_TELEMETRY
+    )
+    target_link_libraries(
+      parallelassemblycpp_mpi_refill_tests
+      PRIVATE MPI::MPI_CXX Threads::Threads
+    )
+    add_test(
+      NAME unit.mpi-refill
+      COMMAND
+        "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2
+        ${MPIEXEC_PREFLAGS}
+        "$<TARGET_FILE:parallelassemblycpp_mpi_refill_tests>"
+        ${MPIEXEC_POSTFLAGS}
+    )
+    set_tests_properties(
+      unit.mpi-refill
+      PROPERTIES
+        LABELS "unit;parallel;mpi;telemetry"
+        PROCESSORS 8
+        TIMEOUT 60
+    )
+  endif()
   parallelassemblycpp_add_unit_test(
     molfile-parser
     parallelassemblycpp_molfile_parser_tests
