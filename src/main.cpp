@@ -572,6 +572,7 @@ class MpiDistributedSearchController final:
     const uint64_t rootJobCount;
     const uint64_t rootQueueSlotCount;
     const uint64_t refillJobCount;
+    const uint64_t refillLowWatermark;
     uint64_t nextRootQueueSlot = 0;
     std::atomic<uint64_t> localRootCursor;
     std::atomic<uint64_t> localRootEnd;
@@ -581,10 +582,43 @@ class MpiDistributedSearchController final:
     std::chrono::steady_clock::time_point nextGlobalExchange{};
     bool searchFinished = false;
 
+    // The progress owner alone touches the pending range and MPI buffers.
+    // A ready reply stays here until every slot in the active range is leased.
+    bool refillPending = false;
+    bool refillReady = false;
+    std::array<uint64_t, 2> refillRequest{};
+    std::array<uint64_t, 4> refillReply{};
+    std::array<MPI_Request, 2> refillOperations{
+        MPI_REQUEST_NULL, MPI_REQUEST_NULL
+    };
+    std::vector<std::array<uint64_t, 4>> brokerReplies;
+    std::vector<MPI_Request> brokerReplyOperations;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    ParallelSearchWorkerTelemetry mpiTelemetry;
+    std::chrono::steady_clock::time_point lastProgress;
+    std::chrono::steady_clock::time_point refillWaitStarted{};
+#endif
+
     static constexpr auto globalExchangeInterval =
         std::chrono::milliseconds(250);
     static constexpr int rootRequestTag = 19001;
     static constexpr int rootReplyTag = 19002;
+
+    // Use typed MPI integers for the packets, including the full signed int
+    // incumbent domain, without relying on struct padding or byte order.
+    static uint64_t encodeIncumbent(int value) noexcept
+    {
+        return static_cast<uint64_t>(
+            static_cast<int64_t>(value) - std::numeric_limits<int>::min()
+        );
+    }
+
+    static int decodeIncumbent(uint64_t value) noexcept
+    {
+        return static_cast<int>(
+            static_cast<int64_t>(value) + std::numeric_limits<int>::min()
+        );
+    }
 
     static uint64_t saturatedProduct(uint64_t left, uint64_t right) noexcept
     {
@@ -684,13 +718,23 @@ class MpiDistributedSearchController final:
         return {begin, begin + count};
     }
 
+    std::array<uint64_t, 4> makeRootReply(uint64_t requested) noexcept
+    {
+        const auto range = reserveRootRange(requested);
+        return {
+            range[0], range[1],
+            encodeIncumbent(processBest.load(std::memory_order_relaxed)),
+            interruptionRequested() ? UINT64_C(1) : UINT64_C(0)
+        };
+    }
+
     void serviceRootRequests() noexcept
     {
         if (parallelAssemblyCppMpiRank != 0) return;
-        int available = 0;
-        MPI_Status status;
-        do
+        while (true)
         {
+            int available = 0;
+            MPI_Status status;
             MPI_Iprobe(
                 MPI_ANY_SOURCE,
                 rootRequestTag,
@@ -699,72 +743,164 @@ class MpiDistributedSearchController final:
                 &status
             );
             if (available == 0) break;
-            uint64_t requested = 0;
+            const auto peer = static_cast<size_t>(status.MPI_SOURCE);
+            // A peer posts only one refill at a time. Retire its previous send
+            // before reusing that peer's stable reply storage; never wait here.
+            int sent = 0;
+            MPI_Test(
+                &brokerReplyOperations[peer], &sent, MPI_STATUS_IGNORE
+            );
+            if (sent == 0) break;
+            std::array<uint64_t, 2> request{};
             MPI_Recv(
-                &requested,
-                1,
+                request.data(),
+                static_cast<int>(request.size()),
                 MPI_UINT64_T,
                 status.MPI_SOURCE,
                 rootRequestTag,
                 MPI_COMM_WORLD,
                 MPI_STATUS_IGNORE
             );
-            const std::array<uint64_t, 2> reply = reserveRootRange(requested);
-            MPI_Send(
-                reply.data(),
-                static_cast<int>(reply.size()),
+            const int candidate = decodeIncumbent(request[1]);
+            if (candidate < processBest.load(std::memory_order_relaxed))
+            {
+                atomicMin(processBest, candidate);
+                incumbentDirty.store(true, std::memory_order_release);
+            }
+            brokerReplies[peer] = makeRootReply(request[0]);
+            MPI_Isend(
+                brokerReplies[peer].data(),
+                static_cast<int>(brokerReplies[peer].size()),
                 MPI_UINT64_T,
                 status.MPI_SOURCE,
                 rootReplyTag,
-                MPI_COMM_WORLD
+                MPI_COMM_WORLD,
+                &brokerReplyOperations[peer]
             );
         }
-        while (available != 0);
     }
 
-    void refillRootChunk() noexcept
+    uint64_t remainingRootSlots() const noexcept
     {
-        if (
-            searchFinished ||
-            rootsExhausted.load(std::memory_order_acquire) ||
-            interruptionRequested() ||
-            localRootCursor.load(std::memory_order_acquire) <
-                localRootEnd.load(std::memory_order_acquire)
-        ) return;
+        const uint64_t end = localRootEnd.load(std::memory_order_acquire);
+        const uint64_t cursor = localRootCursor.load(std::memory_order_acquire);
+        return cursor < end ? end - cursor : 0;
+    }
 
-        std::array<uint64_t, 2> range{};
-        if (parallelAssemblyCppMpiRank == 0)
+    void startRootRefill() noexcept
+    {
+        const uint64_t remaining = remainingRootSlots();
+        if (
+            !refillPending && !searchFinished && !interruptionRequested() &&
+            !rootsExhausted.load(std::memory_order_acquire) &&
+            remaining <= refillLowWatermark
+        )
         {
-            serviceRootRequests();
-            range = reserveRootRange(refillJobCount);
+            refillPending = true;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            if (searchTelemetryEnabled)
+            {
+                ++mpiTelemetry.mpiRefillRequests;
+                if (remaining != 0) ++mpiTelemetry.mpiPrefetchedRefills;
+                mpiTelemetry.mpiPendingRefillsHighWatermark = 1;
+            }
+#endif
+            if (parallelAssemblyCppMpiRank == 0)
+            {
+                refillReply = makeRootReply(refillJobCount);
+                refillReady = true;
+            }
+            else
+            {
+                refillRequest = {
+                    refillJobCount,
+                    encodeIncumbent(processBest.load(std::memory_order_relaxed))
+                };
+                // Post the receive first so the broker never depends on eager
+                // buffering. Both buffers live until Testall completes the pair.
+                MPI_Irecv(
+                    refillReply.data(), static_cast<int>(refillReply.size()),
+                    MPI_UINT64_T, 0, rootReplyTag, MPI_COMM_WORLD,
+                    &refillOperations[0]
+                );
+                MPI_Isend(
+                    refillRequest.data(), static_cast<int>(refillRequest.size()),
+                    MPI_UINT64_T, 0, rootRequestTag, MPI_COMM_WORLD,
+                    &refillOperations[1]
+                );
+            }
         }
-        else
+
+    }
+
+    void progressRootRefill() noexcept
+    {
+        startRootRefill();
+        if (refillPending && !refillReady)
         {
-            MPI_Send(
-                &refillJobCount,
-                1,
-                MPI_UINT64_T,
-                0,
-                rootRequestTag,
-                MPI_COMM_WORLD
+            int complete = 0;
+            MPI_Testall(
+                static_cast<int>(refillOperations.size()),
+                refillOperations.data(), &complete, MPI_STATUSES_IGNORE
             );
-            MPI_Recv(
-                range.data(),
-                static_cast<int>(range.size()),
-                MPI_UINT64_T,
-                0,
-                rootReplyTag,
-                MPI_COMM_WORLD,
-                MPI_STATUS_IGNORE
-            );
+            if (complete != 0)
+            {
+                refillReady = true;
+                atomicMin(processBest, decodeIncumbent(refillReply[2]));
+                if (refillReply[3] != 0)
+                {
+                    searchCancellationFlag.store(true, std::memory_order_release);
+                    notifyScheduler();
+                }
+            }
         }
-        if (range[0] < range[1])
+
+        const uint64_t remaining = remainingRootSlots();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (
+            searchTelemetryEnabled && refillPending && !refillReady &&
+            remaining == 0 && refillWaitStarted ==
+                std::chrono::steady_clock::time_point{}
+        ) refillWaitStarted = std::chrono::steady_clock::now();
+#endif
+        if (refillPending && refillReady)
         {
-            localRootCursor.store(range[0], std::memory_order_relaxed);
-            localRootEnd.store(range[1], std::memory_order_release);
+            const bool empty = refillReply[0] >= refillReply[1];
+            const bool discard = searchFinished || interruptionRequested();
+            if (remaining == 0 || empty || discard)
+            {
+                if (!empty && !discard)
+                {
+                    localRootCursor.store(refillReply[0], std::memory_order_relaxed);
+                    localRootEnd.store(refillReply[1], std::memory_order_release);
+                }
+                // An empty reply is safe while the current range still has
+                // work: claimRootLease rechecks that range after acquiring this
+                // marker. A nonempty staged reply must never set it early.
+                else if (empty) rootsExhausted.store(true, std::memory_order_release);
+                refillPending = false;
+                refillReady = false;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                if (searchTelemetryEnabled)
+                {
+                    ++mpiTelemetry.mpiRefillReplies;
+                    if (refillWaitStarted != std::chrono::steady_clock::time_point{})
+                    {
+                        mpiTelemetry.mpiRefillWaitNanoseconds +=
+                            static_cast<uint64_t>(std::chrono::duration_cast<
+                                std::chrono::nanoseconds
+                            >(std::chrono::steady_clock::now() - refillWaitStarted).count());
+                        refillWaitStarted = {};
+                    }
+                }
+#endif
+                notifyScheduler();
+            }
         }
-        else rootsExhausted.store(true, std::memory_order_release);
-        notifyScheduler();
+        // Pipeline the following exchange as soon as a ready range becomes
+        // active, including one-slot MPI-only chunks. There is still at most
+        // one pending range, and each progress call starts at most two requests.
+        startRootRefill();
     }
 
 public:
@@ -795,6 +931,7 @@ public:
                 static_cast<uint64_t>(std::max(1, localWorkerCount))
             )
         )),
+        refillLowWatermark(std::max<uint64_t>(1, refillJobCount / 2)),
         nextRootQueueSlot(std::min(
             rootQueueSlotCount,
             saturatedProduct(
@@ -836,7 +973,10 @@ public:
                     parallelDistributedInitialLeasesPerWorker
                 )
             ) >= rootQueueSlotCount
-        )
+        ),
+        brokerReplies(parallelAssemblyCppMpiRank == 0
+            ? static_cast<size_t>(parallelAssemblyCppMpiSize) : 0),
+        brokerReplyOperations(brokerReplies.size(), MPI_REQUEST_NULL)
     {
         if (totalRootJobs > std::numeric_limits<uint64_t>::max())
             throw std::length_error("distributed root queue exceeds capacity");
@@ -858,6 +998,9 @@ public:
         MPI_Win_lock_all(0, window);
         if (parallelAssemblyCppMpiRank == 0) MPI_Win_sync(window);
         MPI_Barrier(MPI_COMM_WORLD);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        lastProgress = std::chrono::steady_clock::now();
+#endif
     }
 
     ~MpiDistributedSearchController() override
@@ -925,6 +1068,8 @@ public:
             {
                 begin = static_cast<size_t>(cursor);
                 end = static_cast<size_t>(claimedEnd);
+                if (limit - claimedEnd <= refillLowWatermark)
+                    progressRequested.store(true, std::memory_order_release);
                 return distributedRootAvailability::lease;
             }
         }
@@ -951,6 +1096,19 @@ public:
             std::memory_order_acq_rel
         );
         const auto now = std::chrono::steady_clock::now();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled)
+        {
+            ++mpiTelemetry.mpiProgressCalls;
+            mpiTelemetry.mpiMaximumProgressGapNanoseconds = std::max(
+                mpiTelemetry.mpiMaximumProgressGapNanoseconds,
+                static_cast<uint64_t>(std::chrono::duration_cast<
+                    std::chrono::nanoseconds
+                >(now - lastProgress).count())
+            );
+            lastProgress = now;
+        }
+#endif
         const bool heartbeatDue = now >= nextGlobalExchange;
         if (dirty || heartbeatDue)
         {
@@ -960,10 +1118,9 @@ public:
         }
         serviceRootRequests();
         if (
-            requested ||
-            localRootCursor.load(std::memory_order_acquire) >=
-                localRootEnd.load(std::memory_order_acquire)
-        ) refillRootChunk();
+            requested || refillPending ||
+            remainingRootSlots() <= refillLowWatermark
+        ) progressRootRefill();
     }
 
     /** Keep the RMA window alive until every rank has finished local work. */
@@ -971,6 +1128,14 @@ public:
     {
         searchFinished = true;
         exchangeGlobalState(true);
+        // Cancellation may leave a prefetch in flight or a ready range staged.
+        // Receive/discard it and finish the request send before announcing local
+        // quiescence. The broker continues serving peers throughout this drain.
+        while (refillPending)
+        {
+            progress();
+            if (refillPending) std::this_thread::yield();
+        }
         // Local quiescence is permanent because descendant tasks never cross
         // rank boundaries. Keep an early rank outside a blocking collective so
         // its MPI progress calls can still service passive-target operations
@@ -983,9 +1148,43 @@ public:
             progress();
             MPI_Test(&rendezvous, &complete, MPI_STATUS_IGNORE);
             if (complete == 0)
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                // An early-finishing rank still brokers refills and RMA.
+                // Match the local scheduler's idle cadence so a pending
+                // refill does not inherit a ten-millisecond progress gap.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        // Every peer entered the barrier only after receiving its last reply.
+        // Retire the broker's send handles before their buffers or window die.
+        if (!brokerReplyOperations.empty())
+            MPI_Waitall(
+                static_cast<int>(brokerReplyOperations.size()),
+                brokerReplyOperations.data(), MPI_STATUSES_IGNORE
+            );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled)
+            mpiTelemetry.mpiMaximumProgressGapNanoseconds = std::max(
+                mpiTelemetry.mpiMaximumProgressGapNanoseconds,
+                static_cast<uint64_t>(std::chrono::duration_cast<
+                    std::chrono::nanoseconds
+                >(std::chrono::steady_clock::now() - lastProgress).count())
+            );
+#endif
     }
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    void captureTelemetry(ParallelSearchWorkerTelemetry &worker) const noexcept
+    {
+        worker.mpiRefillRequests = mpiTelemetry.mpiRefillRequests;
+        worker.mpiPrefetchedRefills = mpiTelemetry.mpiPrefetchedRefills;
+        worker.mpiRefillReplies = mpiTelemetry.mpiRefillReplies;
+        worker.mpiRefillWaitNanoseconds = mpiTelemetry.mpiRefillWaitNanoseconds;
+        worker.mpiProgressCalls = mpiTelemetry.mpiProgressCalls;
+        worker.mpiMaximumProgressGapNanoseconds =
+            mpiTelemetry.mpiMaximumProgressGapNanoseconds;
+        worker.mpiPendingRefillsHighWatermark =
+            mpiTelemetry.mpiPendingRefillsHighWatermark;
+    }
+#endif
 };
 
 void MpiDistributedSearchController::notifyScheduler() noexcept
@@ -1650,7 +1849,13 @@ ParallelSearchResult runParallelSearch(
 
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
     if (distributedSearchStorage.has_value())
+    {
         distributedSearchStorage->waitForGlobalCompletion();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (searchTelemetryEnabled)
+            distributedSearchStorage->captureTelemetry(replicas[0].telemetry);
+#endif
+    }
 #endif
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
