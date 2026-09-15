@@ -300,8 +300,7 @@ void testWideUfdsSplit()
         splitter.insert(2, 1, 1);
 
         vector<assemblyFragment> fragments;
-        vector<EdgeMask> temporaryMasks;
-        splitter.splitWithBuffers(fragments, temporaryMasks);
+        splitter.splitWithBuffers(fragments);
 
         assert(fragments.size() == 2);
         assert(fragments[0].edgeCount == 2);
@@ -321,7 +320,7 @@ void testWideUfdsSplit()
         fragments.clear();
         splitter.doubleInsert(512, 513, 7);
         splitter.insert(511, 512, 8);
-        splitter.splitWithBuffers(fragments, temporaryMasks);
+        splitter.splitWithBuffers(fragments);
         assert(fragments.size() == 1);
         assert(fragments[0].edgeCount == 2);
         assert(fragments[0].connected);

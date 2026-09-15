@@ -202,8 +202,7 @@ jobs:
           if ! tar -tvzf "$source_archive" | awk '
             BEGIN { bad = 0 }
             $1 ~ /^d/ && $1 != "drwxr-xr-x" { bad = 1 }
-            $1 ~ /^-/ && $NF ~ /\/output\/benchmarks\/.*\/run_benchmark.py$/ && $1 != "-rwxr-xr-x" { bad = 1 }
-            $1 ~ /^-/ && $NF !~ /\/output\/benchmarks\/.*\/run_benchmark.py$/ && $1 != "-rw-r--r--" { bad = 1 }
+            $1 ~ /^-/ && $1 != "-rw-r--r--" { bad = 1 }
             END { exit bad }
           '; then
             echo 'error: source package permissions are not normalized' >&2

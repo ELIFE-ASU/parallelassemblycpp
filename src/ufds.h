@@ -128,51 +128,6 @@ struct disjointSetNode
 };
 
 /**
- * @brief Disjoint set data structure for constructing an edge list from a bitmask.
- * Practically identical to textbook UFDS data structure
- */
-struct disjointSet
-{
-    /// nodes
-    vector<disjointSetNode> elements;
-
-    disjointSet(size_t size){elements.resize(size);}
-
-    /// standard disjoint set function
-    size_t find(size_t index)
-    {
-        if (elements[index].parent != static_cast<int>(index))
-        {
-            elements[index].parent = find(elements[index].parent);
-        }
-        return elements[index].parent;
-    }
-
-    /// standard disjoint set function
-    void insert(int target, int parent)
-    {
-        elements[target].parent = parent;
-    }
-
-    /// standard disjoint set function
-    bool merge(size_t x, size_t y)
-    {
-        size_t rootx = find(x), rooty = find(y);
-        if (rootx == rooty) return true;
-        if (elements[rootx].rank > elements[rooty].rank)
-        {
-            elements[rooty].parent = rootx;
-        }
-        else
-        {
-            elements[rootx].parent = rooty;
-            if (elements[rootx].rank == elements[rooty].rank) elements[rooty].rank++;
-        }
-        return false;
-    }
-};
-
-/**
  * @brief for UFDS split node - variant on textbook UFDS
  */
 struct ufdsSplitNode
@@ -339,15 +294,11 @@ struct ufdsSplit
      * @brief The splitting function used during the fragmentation
      *
      * @param fragmentList Connected output fragments
-     * @param tempMaskList Reusable component-mask buffer; must not alias
-     * fragmentList
      */
     PARALLELASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
-        vector<assemblyFragment> &fragmentList,
-        vector<EdgeMask> &tempMaskList
+        vector<assemblyFragment> &fragmentList
     )
     {
-        static_cast<void>(tempMaskList);
         componentMaskWords.clear();
         auto addTouchedAtom = [&](size_t index) {
             find(index);
@@ -426,29 +377,26 @@ struct ufdsSplit
     }
 
     PARALLELASSEMBLYCPP_ALWAYS_INLINE void splitWithBuffers(
-        vector<assemblyFragment> &fragmentList,
-        vector<EdgeMask> &tempMaskList
+        vector<assemblyFragment> &fragmentList
     )
     {
         if (EdgeMask::activeWordCount() <= 1) [[likely]]
         {
-            splitSmallWithBuffers(fragmentList, tempMaskList);
+            splitSmallWithBuffers(fragmentList);
             return;
         }
         if (EdgeMask::activeWordCount() == 2) [[likely]]
         {
-            splitTwoWordWithBuffers(fragmentList, tempMaskList);
+            splitTwoWordWithBuffers(fragmentList);
             return;
         }
-        splitWideWithBuffers(fragmentList, tempMaskList);
+        splitWideWithBuffers(fragmentList);
     }
 
     PARALLELASSEMBLYCPP_NOINLINE void splitTwoWordWithBuffers(
-        vector<assemblyFragment> &fragmentList,
-        vector<EdgeMask> &tempMaskList
+        vector<assemblyFragment> &fragmentList
     )
     {
-        static_cast<void>(tempMaskList);
         componentMaskWords.clear();
         auto setComponentEdge = [&](size_t componentOffset, size_t edge) {
             componentMaskWords[componentOffset + edge / 64] |=
@@ -534,11 +482,9 @@ struct ufdsSplit
     }
 
     PARALLELASSEMBLYCPP_NOINLINE void splitWideWithBuffers(
-        vector<assemblyFragment> &fragmentList,
-        vector<EdgeMask> &tempMaskList
+        vector<assemblyFragment> &fragmentList
     )
     {
-        tempMaskList.clear();
         componentMaskWords.clear();
         const size_t edgeWordCount = EdgeMask::activeWordCount();
         auto setComponentEdge = [&](size_t componentOffset, size_t edge) {

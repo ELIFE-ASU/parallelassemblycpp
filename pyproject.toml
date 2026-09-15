@@ -62,7 +62,6 @@ known-first-party = ["benchmarks"]
 "benchmarks/benchmark.py" = ["S603"]
 "unitTests/parallelSolverTester.py" = ["S603"]
 "unitTests/unitTester.py" = ["S603"]
-"output/benchmarks/*/run_benchmark.py" = ["E501", "S603", "S607"]
 "tools/check_repository.py" = ["S603"]
 # Assertions are appropriate inside the unittest regression suites.
 "benchmarks/test_*.py" = ["S101"]
