@@ -1014,12 +1014,11 @@ struct duplicateClassLevel
         classes.clear();
         stagedOccurrences.clear();
         sealedOccurrences.clear();
-        occurrenceOffsets.clear();
         maskRows.clear();
-        maskOffsets.clear();
         fragmentPositions.clear();
         aliveScratch.clear();
         maskAccumulators.reset(0);
+        fragmentMaskScratch.reset(0);
         duplicateSizeValue = 0;
         fragmentCountValue = 0;
         configured = false;
@@ -1050,8 +1049,7 @@ struct duplicateClassLevel
             );
         }
 
-        compactOccurrences();
-        buildFragmentMasks();
+        compactOccurrencesAndBuildFragmentMasks();
         stagedOccurrences.clear();
         sealed = true;
     }
@@ -1099,11 +1097,10 @@ private:
 
     vector<stagedOccurrence> stagedOccurrences;
     vector<occurrence_type> sealedOccurrences;
-    vector<size_t> occurrenceOffsets;
     vector<duplicateFragmentMaskRow> maskRows;
-    vector<size_t> maskOffsets;
     vector<size_t> fragmentPositions;
     EdgeMaskAccumulatorBuffer maskAccumulators;
+    EdgeMaskAccumulatorBuffer fragmentMaskScratch;
     size_t duplicateSizeValue = 0;
     size_t fragmentCountValue = 0;
     bool configured = false;
@@ -1144,16 +1141,21 @@ private:
         ++entry.occurrenceCount;
     }
 
-    void compactOccurrences()
+    void compactOccurrencesAndBuildFragmentMasks()
     {
+        constexpr size_t noPosition = numeric_limits<size_t>::max();
         sealedOccurrences.clear();
         sealedOccurrences.reserve(stagedOccurrences.size());
-        occurrenceOffsets.clear();
-        occurrenceOffsets.reserve(classes.size() + 1);
+        maskRows.clear();
+        maskAccumulators.reset(0);
+        if (classes.empty()) return;
+        fragmentPositions.assign(fragmentCountValue, noPosition);
+        fragmentMaskScratch.resize(fragmentCountValue);
 
         for (entry_type &entry : classes)
         {
-            occurrenceOffsets.push_back(sealedOccurrences.size());
+            const size_t occurrenceBegin = sealedOccurrences.size();
+            const size_t maskBegin = maskRows.size();
             uint32_t occurrence = entry.firstOccurrence;
             uint32_t observedCount = 0;
             while (occurrence != entry_type::noOccurrence)
@@ -1161,44 +1163,24 @@ private:
                 if (occurrence >= stagedOccurrences.size())
                     throw logic_error("invalid staged duplicate occurrence");
                 stagedOccurrence &node = stagedOccurrences[occurrence];
+                const size_t fragment = static_cast<size_t>(
+                    node.occurrence.fragmentIndex
+                );
+                if (fragmentPositions[fragment] == noPosition)
+                {
+                    fragmentPositions[fragment] = maskRows.size();
+                    maskRows.push_back({static_cast<uint32_t>(fragment)});
+                    fragmentMaskScratch[fragment].clear();
+                }
+                fragmentMaskScratch[fragment].add(node.occurrence.mask);
                 sealedOccurrences.push_back(std::move(node.occurrence));
                 occurrence = node.next;
                 ++observedCount;
             }
             if (observedCount != entry.occurrenceCount)
                 throw logic_error("incomplete staged duplicate class");
-        }
-        occurrenceOffsets.push_back(sealedOccurrences.size());
-    }
 
-    void buildFragmentMasks()
-    {
-        constexpr size_t noPosition = numeric_limits<size_t>::max();
-        maskRows.clear();
-        maskOffsets.clear();
-        maskOffsets.reserve(classes.size() + 1);
-        fragmentPositions.assign(fragmentCountValue, noPosition);
-
-        for (size_t classPosition = 0;
-             classPosition < classes.size();
-             ++classPosition)
-        {
-            maskOffsets.push_back(maskRows.size());
-            const size_t occurrenceBegin = occurrenceOffsets[classPosition];
-            const size_t occurrenceEnd = occurrenceOffsets[classPosition + 1];
-            for (size_t occurrence = occurrenceBegin;
-                 occurrence < occurrenceEnd;
-                 ++occurrence)
-            {
-                const size_t fragment = static_cast<size_t>(
-                    sealedOccurrences[occurrence].fragmentIndex
-                );
-                if (fragmentPositions[fragment] != noPosition) continue;
-                fragmentPositions[fragment] = maskRows.size();
-                maskRows.push_back({static_cast<uint32_t>(fragment)});
-            }
-
-            const size_t maskBegin = maskOffsets.back();
+            // Sort only the sparse rows; occurrences retain insertion order.
             sort(
                 maskRows.begin() + maskBegin,
                 maskRows.end(),
@@ -1207,48 +1189,27 @@ private:
                     return left.fragment < right.fragment;
                 }
             );
-            for (size_t row = maskBegin; row < maskRows.size(); ++row)
-                fragmentPositions[maskRows[row].fragment] = noPosition;
-        }
-        maskOffsets.push_back(maskRows.size());
-
-        maskAccumulators.reset(maskRows.size());
-        for (size_t classPosition = 0;
-             classPosition < classes.size();
-             ++classPosition)
-        {
-            const size_t maskBegin = maskOffsets[classPosition];
-            const size_t maskEnd = maskOffsets[classPosition + 1];
-            for (size_t row = maskBegin; row < maskEnd; ++row)
-                fragmentPositions[maskRows[row].fragment] = row;
-
-            const size_t occurrenceBegin = occurrenceOffsets[classPosition];
-            const size_t occurrenceEnd = occurrenceOffsets[classPosition + 1];
-            for (size_t occurrence = occurrenceBegin;
-                 occurrence < occurrenceEnd;
-                 ++occurrence)
+            // Geometric growth bounds accumulator rebinding, including for
+            // masks wider than the inline storage. There is at most one row
+            // per occurrence, so the staging size also bounds spare storage.
+            if (maskRows.size() > maskAccumulators.size())
             {
-                const occurrence_type &candidate = sealedOccurrences[occurrence];
-                maskAccumulators[
-                    fragmentPositions[
-                        static_cast<size_t>(candidate.fragmentIndex)
-                    ]
-                ].add(candidate.mask);
+                maskAccumulators.resize(min(
+                    stagedOccurrences.size(),
+                    max(maskRows.size(), maskAccumulators.size() * 2)
+                ));
             }
-            for (size_t row = maskBegin; row < maskEnd; ++row)
-                fragmentPositions[maskRows[row].fragment] = noPosition;
-        }
+            for (size_t row = maskBegin; row < maskRows.size(); ++row)
+            {
+                const size_t fragment = maskRows[row].fragment;
+                maskAccumulators[row].add(fragmentMaskScratch[fragment]);
+                fragmentPositions[fragment] = noPosition;
+            }
 
-        for (size_t classPosition = 0;
-             classPosition < classes.size();
-             ++classPosition)
-        {
-            entry_type &entry = classes[classPosition];
-            entry.maskOffset = maskOffsets[classPosition];
-            entry.maskCount = maskOffsets[classPosition + 1] - entry.maskOffset;
-            const size_t occurrenceBegin = occurrenceOffsets[classPosition];
+            entry.maskOffset = maskBegin;
+            entry.maskCount = maskRows.size() - maskBegin;
             const size_t occurrenceCount =
-                occurrenceOffsets[classPosition + 1] - occurrenceBegin;
+                sealedOccurrences.size() - occurrenceBegin;
             occurrence_type *occurrenceData = occurrenceCount == 0
                 ? nullptr
                 : sealedOccurrences.data() + occurrenceBegin;

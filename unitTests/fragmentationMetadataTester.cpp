@@ -750,6 +750,8 @@ void testDuplicateClassCsrStorage()
     assert(sparseMasks.size() == 2);
     assert(sparseMasks[0].fragment == 1);
     assert(sparseMasks[1].fragment == 9);
+    assert(sparseMasks[0].mask.toEdgeMask() == makeMask({0, 1}));
+    assert(sparseMasks[1].mask.toEdgeMask() == makeMask({64, 65, 66}));
     assert(sparseMasks.maskCount(0) == 0);
     assert(sparseMasks.maskCount(1) == 2);
     assert(sparseMasks.maskCount(8) == 0);
@@ -787,6 +789,91 @@ void testDuplicateClassCsrStorage()
     assert(rebuiltMasks.size() == 1);
     assert(rebuiltMasks[0].fragment == 4);
     assert(rebuiltMasks.maskCount(4) == 4);
+    assert(rebuiltMasks[0].mask.toEdgeMask() == makeMask({20, 21, 22, 23}));
+}
+
+void testDuplicateClassWideMaskOrderingAndReuse()
+{
+    // Three-word and wider unions use the accumulator buffer's flat storage.
+    // Discover rows out of order and revisit them while interleaving classes,
+    // so sorting metadata must preserve each row's exact union.
+    dagDuplicateLevelFixture storage(2, 10);
+    const size_t highEdge = EdgeMask::size() - 1;
+    for (const size_t classCount : {17U, 5U, 23U})
+    {
+        storage.rebuild();
+        for (size_t round = 0; round < 4; ++round)
+        {
+            for (size_t insertion = 0; insertion < classCount; ++insertion)
+            {
+                const size_t classPosition = classCount - insertion - 1;
+                const size_t firstEdge = classPosition * 4;
+                const int canonicalId = static_cast<int>(100 + classPosition);
+                const int duplicateIndex = static_cast<int>(
+                    round * classCount + insertion
+                );
+                const array<int, 4> fragments{7, 1, 4, 7};
+                const array<EdgeMask, 4> masks{
+                    makeMask({firstEdge, highEdge}),
+                    makeMask({firstEdge + 2, 64}),
+                    makeMask({firstEdge + 3, 128}),
+                    makeMask({firstEdge + 1, highEdge})
+                };
+                storage.insert(
+                    canonicalId,
+                    potentialDuplicate(masks[round], fragments[round], duplicateIndex)
+                );
+            }
+        }
+        storage.seal();
+        storage.seal();
+        assert(storage.level.classes.size() == classCount);
+        for (size_t classPosition = 0;
+             classPosition < classCount;
+             ++classPosition)
+        {
+            auto &entry = storage.level.classes[classPosition];
+            const size_t firstEdge = classPosition * 4;
+            assert(entry.canonicalId == static_cast<int>(100 + classPosition));
+            assert(entry.duplicates.list.size() == 4);
+            assert(entry.duplicates.isValid());
+            const array<int, 4> expectedFragments{7, 1, 4, 7};
+            const array<EdgeMask, 4> expectedOccurrences{
+                makeMask({firstEdge, highEdge}),
+                makeMask({firstEdge + 2, 64}),
+                makeMask({firstEdge + 3, 128}),
+                makeMask({firstEdge + 1, highEdge})
+            };
+            for (size_t occurrence = 0; occurrence < 4; ++occurrence)
+            {
+                const potentialDuplicate &actual = entry.duplicates.list[occurrence];
+                assert(actual.fragmentIndex == expectedFragments[occurrence]);
+                assert(actual.mask == expectedOccurrences[occurrence]);
+                assert(actual.duplicateIndex == static_cast<int>(
+                    occurrence * classCount + classCount - classPosition - 1
+                ));
+            }
+
+            const duplicateFragmentMaskList masks =
+                storage.level.fragmentMasks(entry);
+            assert(masks.fragmentCount == 10);
+            assert(masks.size() == 3);
+            assert(masks[0].fragment == 1);
+            assert(masks[1].fragment == 4);
+            assert(masks[2].fragment == 7);
+            assert(masks[0].mask.toEdgeMask() == makeMask({firstEdge + 2, 64}));
+            assert(masks[1].mask.toEdgeMask() == makeMask({firstEdge + 3, 128}));
+            assert(masks[2].mask.toEdgeMask() ==
+                makeMask({firstEdge, firstEdge + 1, highEdge}));
+            for (const size_t absentFragment : {0U, 2U, 3U, 5U, 6U, 8U, 9U})
+                assert(masks.maskCount(absentFragment) == 0);
+        }
+    }
+
+    storage.rebuild();
+    storage.seal();
+    assert(storage.level.empty());
+    assert(storage.level.fragmentCount() == 10);
 }
 
 int main()
@@ -795,6 +882,8 @@ int main()
     configurePathGraph(96);
     testDuplicateClassCsrStorage();
     testFragmentPairMatchingTraversal();
+    configurePathGraph(257);
+    testDuplicateClassWideMaskOrderingAndReuse();
     configurePathGraph(32);
     testMaskTrimmingMetadata();
     testFragmentMetadataAndSelectiveCanonisation();

@@ -168,25 +168,25 @@ int dagRecursiveEnumeration(
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return 0;
-        for (size_t j = 0; j < edgeCount; j++)
+        const EdgeMask &fragmentMask = fragments[i].mask;
+        for (size_t j = fragmentMask.findFirst();
+             j < edgeCount;
+             j = fragmentMask.findNext(j))
         {
             if (searchShouldStopPeriodically()) return 0;
-            if (fragments[i].mask[j] != 0)
-            {
-                EdgeMask b = 0; b.set(j);
-                potentialDuplicate m(std::move(b), i, j);
-                dagGenerate(
-                    dag,
-                    m,
-                    firstLevel,
-                    classIndex,
-                    fragments[i].mask,
-                    duplicateSize,
-                    ordinal,
-                    fragments.size()
-                );
-                if (searchShouldStop()) return 0;
-            }
+            EdgeMask b = 0; b.set(j);
+            potentialDuplicate m(std::move(b), i, j);
+            dagGenerate(
+                dag,
+                m,
+                firstLevel,
+                classIndex,
+                fragmentMask,
+                duplicateSize,
+                ordinal,
+                fragments.size()
+            );
+            if (searchShouldStop()) return 0;
         }
     }
     firstLevel.seal();
