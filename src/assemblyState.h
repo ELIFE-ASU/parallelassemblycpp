@@ -20,6 +20,16 @@ struct assemblyState
         fragments.emplace_back(mask, edgeCount, canonicalId, connected);
     }
 
+    void appendFragment(
+        EdgeMask &&mask,
+        int edgeCount,
+        int canonicalId = unknownCanonicalId,
+        bool connected = false
+    )
+    {
+        fragments.emplace_back(std::move(mask), edgeCount, canonicalId, connected);
+    }
+
     void appendFragment(const assemblyFragment &fragment)
     {
         fragments.push_back(fragment);

@@ -35,9 +35,13 @@
  * counts never cross a worker boundary.
  */
 template<typename Domain>
+class ActiveWordMaskView;
+
+template<typename Domain>
 class ActiveWordMask
 {
 public:
+    using domain_type = Domain;
     using word_type = std::uint64_t;
     static constexpr std::size_t wordBits =
         std::numeric_limits<word_type>::digits;
@@ -449,6 +453,40 @@ public:
         return true;
     }
 
+    /** Word-wise containment of a read-only view; see ActiveWordMaskView. */
+    [[nodiscard]] bool contains(
+        const ActiveWordMaskView<Domain> &other
+    ) const noexcept
+    {
+        if (isSmall()) [[likely]]
+        {
+            const word_type word = other.activeWord(0);
+            return (storage_.word & word) == word;
+        }
+        for (std::size_t i = 0; i < activeWordCount_; i++)
+        {
+            const word_type word = other.activeWord(i);
+            if ((activeWord(i) & word) != word) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Read-only view of this mask's words. The mask must outlive the view and
+     * must not be mutated while the view is in use.
+     */
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMaskView<Domain> view()
+        const noexcept
+    {
+        if (isSmall()) [[likely]]
+        {
+            return ActiveWordMaskView<Domain>::fromWord(storage_.word);
+        }
+        return ActiveWordMaskView<Domain>::fromWords(
+            storage_.tail == nullptr ? nullptr : storage_.tail->data()
+        );
+    }
+
     [[nodiscard]] std::size_t intersectionCount(
         const ActiveWordMask &other
     ) const noexcept
@@ -551,6 +589,37 @@ public:
         WideWords *destination = ensureUniqueWords();
         for (std::size_t word = 0; word < activeWordCount_; ++word)
             destination->data()[word] &= other.activeWord(word);
+        releaseWordsIfZero();
+        return *this;
+    }
+
+    /** Toggle the bits of any word-oriented view without materialising it. */
+    template<typename WordSource>
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE ActiveWordMask &xorWords(
+        const WordSource &other
+    )
+    {
+        if (activeWordCount_ == 0) return *this;
+        if (isSmall()) [[likely]]
+        {
+            storage_.word ^= other.activeWord(0);
+            return *this;
+        }
+        return xorWordsWide(other);
+    }
+
+    template<typename WordSource>
+    PARALLELASSEMBLYCPP_NOINLINE ActiveWordMask &xorWordsWide(
+        const WordSource &other
+    )
+    {
+        bool any = false;
+        for (std::size_t word = 0; word < activeWordCount_; ++word)
+            any |= other.activeWord(word) != 0;
+        if (!any) return *this;
+        WideWords *destination = ensureUniqueWords();
+        for (std::size_t word = 0; word < activeWordCount_; ++word)
+            destination->data()[word] ^= other.activeWord(word);
         releaseWordsIfZero();
         return *this;
     }
@@ -1119,11 +1188,253 @@ private:
     Storage storage_;
 };
 
+/**
+ * @brief Non-owning, read-only view of one mask in the configured domain.
+ *
+ * A view copies in one machine word and never touches the mask arena or its
+ * reference counts. Domains of at most one word hold the word inline; wider
+ * domains point at activeWordCount() immutable words that must outlive the
+ * view, such as retained runtime-DAG masks or an unmodified EdgeMask. A null
+ * wide pointer reads as the empty mask.
+ */
+template<typename Domain>
+class ActiveWordMaskView
+{
+public:
+    using mask_type = ActiveWordMask<Domain>;
+    using word_type = typename mask_type::word_type;
+    static constexpr std::size_t wordBits = mask_type::wordBits;
+
+    ActiveWordMaskView() noexcept
+    {
+        if (isSmall()) [[likely]] storage_.word = 0;
+        else storage_.words = nullptr;
+    }
+
+    /** View a mask that outlives the view and is not mutated meanwhile. */
+    ActiveWordMaskView(const mask_type &mask) noexcept:
+        ActiveWordMaskView(mask.view()) {}
+
+    /** View one inline word; the domain must not exceed one word. */
+    [[nodiscard]] static ActiveWordMaskView fromWord(word_type word)
+    {
+        ActiveWordMaskView result;
+        if (!isSmall()) [[unlikely]]
+        {
+            throw std::logic_error(
+                "single-word mask view requires a one-word domain"
+            );
+        }
+        result.storage_.word = word;
+        return result;
+    }
+
+    /** View activeWordCount() words owned elsewhere (null reads as empty). */
+    [[nodiscard]] static ActiveWordMaskView fromWords(
+        const word_type *words
+    ) noexcept
+    {
+        ActiveWordMaskView result;
+        if (isSmall()) [[likely]]
+        {
+            result.storage_.word = words == nullptr ? 0 : words[0];
+        }
+        else result.storage_.words = words;
+        return result;
+    }
+
+    /** Uniform accessor so generic code can call view() on masks and views. */
+    [[nodiscard]] const ActiveWordMaskView &view() const noexcept
+    {
+        return *this;
+    }
+
+    [[nodiscard]] static std::size_t size() noexcept
+    {
+        return mask_type::size();
+    }
+
+    [[nodiscard]] static std::size_t activeWordCount() noexcept
+    {
+        return mask_type::activeWordCount();
+    }
+
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE word_type activeWord(
+        std::size_t index
+    ) const noexcept
+    {
+        if (isSmall()) [[likely]] return storage_.word;
+        return storage_.words == nullptr ? 0 : storage_.words[index];
+    }
+
+    [[nodiscard]] bool operator[](std::size_t position) const noexcept
+    {
+        return (
+            activeWord(position / wordBits) &
+            (word_type{1} << (position % wordBits))
+        ) != 0;
+    }
+
+    [[nodiscard]] bool any() const noexcept
+    {
+        if (isSmall()) [[likely]] return storage_.word != 0;
+        if (storage_.words == nullptr) return false;
+        for (std::size_t i = 0; i < activeWordCount(); i++)
+        {
+            if (storage_.words[i] != 0) return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool none() const noexcept
+    {
+        return !any();
+    }
+
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE std::size_t count() const noexcept
+    {
+        if (isSmall()) [[likely]]
+        {
+            return static_cast<std::size_t>(std::popcount(storage_.word));
+        }
+        return countWide();
+    }
+
+    [[nodiscard]] std::size_t findFirst() const noexcept
+    {
+        if (isSmall()) [[likely]]
+        {
+            return storage_.word == 0
+                ? size()
+                : static_cast<std::size_t>(std::countr_zero(storage_.word));
+        }
+        for (std::size_t i = 0; i < activeWordCount(); i++)
+        {
+            const word_type word = activeWord(i);
+            if (word != 0)
+            {
+                return i * wordBits +
+                    static_cast<std::size_t>(std::countr_zero(word));
+            }
+        }
+        return size();
+    }
+
+    [[nodiscard]] std::size_t findNext(std::size_t position) const noexcept
+    {
+        const std::size_t bitCount = size();
+        if (bitCount == 0 || position >= bitCount - 1) return bitCount;
+        position++;
+        std::size_t wordIndex = position / wordBits;
+        word_type word = activeWord(wordIndex);
+        word &= std::numeric_limits<word_type>::max() << (position % wordBits);
+        if (word != 0)
+        {
+            return wordIndex * wordBits +
+                static_cast<std::size_t>(std::countr_zero(word));
+        }
+        for (wordIndex++; wordIndex < activeWordCount(); wordIndex++)
+        {
+            word = activeWord(wordIndex);
+            if (word != 0)
+            {
+                return wordIndex * wordBits +
+                    static_cast<std::size_t>(std::countr_zero(word));
+            }
+        }
+        return bitCount;
+    }
+
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE bool intersects(
+        const ActiveWordMaskView &other
+    ) const noexcept
+    {
+        if (isSmall()) [[likely]]
+        {
+            return (storage_.word & other.storage_.word) != 0;
+        }
+        return intersectsWide(other);
+    }
+
+    [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE bool disjoint(
+        const ActiveWordMaskView &other
+    ) const noexcept
+    {
+        return !intersects(other);
+    }
+
+    /** Materialise an owning mask only when an API specifically requires it. */
+    [[nodiscard]] mask_type toMask() const
+    {
+        if (isSmall()) [[likely]] return mask_type(storage_.word);
+        if (storage_.words == nullptr) return mask_type();
+        return mask_type::fromActiveWords(storage_.words);
+    }
+
+    friend bool operator==(
+        const ActiveWordMaskView &left,
+        const ActiveWordMaskView &right
+    ) noexcept
+    {
+        if (isSmall()) [[likely]] return left.storage_.word == right.storage_.word;
+        for (std::size_t i = 0; i < activeWordCount(); i++)
+        {
+            if (left.activeWord(i) != right.activeWord(i)) return false;
+        }
+        return true;
+    }
+
+private:
+    union Storage
+    {
+        word_type word;
+        const word_type *words;
+
+        constexpr Storage() noexcept: word(0) {}
+    };
+
+    [[nodiscard]] static bool isSmall() noexcept
+    {
+        return mask_type::activeWordCount() <= 1;
+    }
+
+    [[nodiscard]] PARALLELASSEMBLYCPP_NOINLINE std::size_t countWide() const noexcept
+    {
+        if (storage_.words == nullptr) return 0;
+        std::size_t result = 0;
+        for (std::size_t i = 0; i < activeWordCount(); i++)
+        {
+            result += static_cast<std::size_t>(
+                std::popcount(storage_.words[i])
+            );
+        }
+        return result;
+    }
+
+    [[nodiscard]] PARALLELASSEMBLYCPP_NOINLINE bool intersectsWide(
+        const ActiveWordMaskView &other
+    ) const noexcept
+    {
+        if (storage_.words == nullptr || other.storage_.words == nullptr)
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < activeWordCount(); i++)
+        {
+            if ((storage_.words[i] & other.storage_.words[i]) != 0) return true;
+        }
+        return false;
+    }
+
+    Storage storage_;
+};
+
 struct EdgeMaskDomain;
 struct AtomMaskDomain;
 
 using EdgeMask = ActiveWordMask<EdgeMaskDomain>;
 using AtomMask = ActiveWordMask<AtomMaskDomain>;
+using EdgeMaskView = ActiveWordMaskView<EdgeMaskDomain>;
 
 /**
  * @brief Allocation-free union accumulator for the configured edge domain.
@@ -1186,21 +1497,12 @@ public:
 
     EdgeMaskAccumulator &add(const EdgeMask &mask)
     {
-        if (wordCount_ == 1)
-        {
-            storage_.inlineWords[0] |= mask.activeWord(0);
-            return *this;
-        }
-        if (wordCount_ == inlineWordCapacity)
-        {
-            storage_.inlineWords[0] |= mask.activeWord(0);
-            storage_.inlineWords[1] |= mask.activeWord(1);
-            return *this;
-        }
-        word_type *destination = mutableWords();
-        for (std::size_t word = 0; word < wordCount_; ++word)
-            destination[word] |= mask.activeWord(word);
-        return *this;
+        return addWords(mask);
+    }
+
+    EdgeMaskAccumulator &add(const EdgeMaskView &mask)
+    {
+        return addWords(mask);
     }
 
     EdgeMaskAccumulator &add(const EdgeMaskAccumulator &other)
@@ -1229,7 +1531,31 @@ public:
         return *this;
     }
 
+    /** Overwrite this accumulator with another accumulator of equal width. */
+    EdgeMaskAccumulator &assign(const EdgeMaskAccumulator &other)
+    {
+        if (wordCount_ != other.wordCount_)
+        {
+            throw std::invalid_argument(
+                "cannot assign edge-mask accumulators of different widths"
+            );
+        }
+        if (wordCount_ <= inlineWordCapacity)
+        {
+            storage_.inlineWords[0] = other.storage_.inlineWords[0];
+            storage_.inlineWords[1] = other.storage_.inlineWords[1];
+            return *this;
+        }
+        std::copy_n(other.words(), wordCount_, mutableWords());
+        return *this;
+    }
+
     EdgeMaskAccumulator &operator|=(const EdgeMask &mask)
+    {
+        return add(mask);
+    }
+
+    EdgeMaskAccumulator &operator|=(const EdgeMaskView &mask)
     {
         return add(mask);
     }
@@ -1339,6 +1665,28 @@ private:
     } storage_;
     std::size_t wordCount_;
 
+    template<typename WordSource>
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE EdgeMaskAccumulator &addWords(
+        const WordSource &mask
+    )
+    {
+        if (wordCount_ == 1)
+        {
+            storage_.inlineWords[0] |= mask.activeWord(0);
+            return *this;
+        }
+        if (wordCount_ == inlineWordCapacity)
+        {
+            storage_.inlineWords[0] |= mask.activeWord(0);
+            storage_.inlineWords[1] |= mask.activeWord(1);
+            return *this;
+        }
+        word_type *destination = mutableWords();
+        for (std::size_t word = 0; word < wordCount_; ++word)
+            destination[word] |= mask.activeWord(word);
+        return *this;
+    }
+
     [[nodiscard]] bool usesExternalWords() const noexcept
     {
         return wordCount_ > inlineWordCapacity;
@@ -1412,7 +1760,12 @@ public:
 
     EdgeMaskAccumulatorBuffer() noexcept:
         bitCount_(EdgeMask::size()),
-        wordCount_(EdgeMask::activeWordCount())
+        wordCount_(EdgeMask::activeWordCount()),
+        maximumCount_(
+            wordCount_ == 0
+                ? std::numeric_limits<size_type>::max()
+                : std::numeric_limits<size_type>::max() / wordCount_
+        )
     {}
 
     explicit EdgeMaskAccumulatorBuffer(size_type count):
@@ -1430,17 +1783,29 @@ public:
         EdgeMaskAccumulatorBuffer &&
     ) noexcept = default;
 
-    /** Preserve the existing prefix and clear only newly exposed entries. */
+    /**
+     * Preserve the existing prefix and clear only newly exposed entries.
+     *
+     * Inline-width accumulators need no rebinding: new entries are
+     * constructed for the synchronized width and retained ones are unchanged.
+     * Wide accumulators are rebound only when the flat word storage moved,
+     * otherwise just the newly exposed suffix is bound.
+     */
     void resize(size_type count)
     {
         synchronizeConfiguration();
+        const size_type previousCount = accumulators_.size();
+        if (count == previousCount) return;
         const size_type flatWordCount = checkedFlatWordCount(count);
         accumulators_.resize(count);
         if (wordCount_ > value_type::inlineWordCapacity)
+        {
+            const value_type::word_type *previousBase = externalWords_.data();
             externalWords_.resize(flatWordCount);
-        else
-            externalWords_.clear();
-        rebind();
+            if (externalWords_.data() != previousBase) rebind(0, count);
+            else if (count > previousCount) rebind(previousCount, count);
+        }
+        else externalWords_.clear();
     }
 
     /** Resize the logical span and clear every accumulator in it. */
@@ -1533,6 +1898,7 @@ private:
     std::vector<value_type::word_type> externalWords_;
     size_type bitCount_;
     size_type wordCount_;
+    size_type maximumCount_;
 
     void synchronizeConfiguration() noexcept
     {
@@ -1545,31 +1911,27 @@ private:
         clear();
         bitCount_ = configuredBitCount;
         wordCount_ = configuredWordCount;
+        maximumCount_ = wordCount_ == 0
+            ? std::numeric_limits<size_type>::max()
+            : std::numeric_limits<size_type>::max() / wordCount_;
     }
 
     [[nodiscard]] size_type checkedFlatWordCount(size_type count) const
     {
-        if (
-            wordCount_ != 0 &&
-            count > std::numeric_limits<size_type>::max() / wordCount_
-        )
+        if (count > maximumCount_)
         {
             throw std::length_error("edge-mask accumulator buffer is too large");
         }
         return count * wordCount_;
     }
 
-    void rebind() noexcept
+    /** Bind wide accumulators in [begin, end) to their flat word rows. */
+    void rebind(size_type begin, size_type end) noexcept
     {
         value_type::word_type *base = externalWords_.data();
-        for (size_type index = 0; index < accumulators_.size(); ++index)
+        for (size_type index = begin; index < end; ++index)
         {
-            accumulators_[index].bind(
-                wordCount_ > value_type::inlineWordCapacity
-                    ? base + index * wordCount_
-                    : nullptr,
-                wordCount_
-            );
+            accumulators_[index].bind(base + index * wordCount_, wordCount_);
         }
     }
 };

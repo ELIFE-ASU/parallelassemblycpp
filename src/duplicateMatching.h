@@ -95,6 +95,34 @@ struct potentialDuplicate
 };
 
 /**
+ * @brief One DAG-enumerated occurrence viewing an immutable runtime-DAG mask
+ *
+ * The mask words either live inline (one-word domains) or belong to the
+ * shared runtime DAG, so creating, copying, sealing, and destroying these
+ * occurrences never allocates, copies, or reference-counts a wide mask.
+ */
+struct dagPotentialDuplicate
+{
+    /// @brief read-only edge list of the potential duplicate
+    EdgeMaskView mask;
+    /// @brief DAG node index and parent-fragment index
+    int duplicateIndex;
+    int fragmentIndex;
+    dagPotentialDuplicate() = default;
+
+    dagPotentialDuplicate(
+        EdgeMaskView duplicateMask,
+        int sourceFragmentIndex,
+        int sourceDuplicateIndex
+    ) noexcept:
+        mask(duplicateMask),
+        duplicateIndex(sourceDuplicateIndex),
+        fragmentIndex(sourceFragmentIndex) {}
+};
+
+static_assert(sizeof(dagPotentialDuplicate) == 2 * sizeof(uint64_t));
+
+/**
  * @brief Compact atom-to-incident-edge index for frontier expansion.
  *
  * A full EdgeMask per atom would use quadratic auxiliary space on sparse
@@ -390,19 +418,19 @@ struct initialPotentialDuplicate : potentialDuplicate
  */
 struct validMatchings
 {
-    /// @brief first and second duplicate masks
-    const EdgeMask &first, &second;
+    /// @brief read-only views of the first and second duplicate masks
+    EdgeMaskView first, second;
     /// @brief Parent fragment indices and the selected duplicate size
     int firstFragmentIndex;
     int secondFragmentIndex;
     int maximumFragmentSize;
     validMatchings(
-        const EdgeMask &firstMask,
-        const EdgeMask &secondMask,
+        EdgeMaskView firstMask,
+        EdgeMaskView secondMask,
         int firstFragment,
         int secondFragment,
         int selectedFragmentSize
-    ):
+    ) noexcept:
         first(firstMask),
         second(secondMask),
         firstFragmentIndex(firstFragment),
@@ -797,7 +825,7 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
 /**
  * @brief Version of initialDuplicateSet which uses the DAG to search the duplicatable subgraph space more quickly
  */
-struct dagDuplicateSet : duplicateSet<potentialDuplicate>
+struct dagDuplicateSet : duplicateSet<dagPotentialDuplicate>
 {
     bool dead = 1;
     using duplicateSet::duplicateSet;
@@ -962,7 +990,8 @@ private:
  * Insertions append to one level-wide staging vector and link occurrences by
  * primitive indices. seal() sorts class metadata by canonical ID, moves every
  * class into one stable occurrence vector without changing its insertion
- * order, and constructs sparse fragment-union rows in flat accumulator storage.
+ * order, and constructs sparse fragment-union rows in flat accumulator storage
+ * in that same single occurrence pass.
  */
 template<typename DuplicateSetType>
 struct duplicateClassLevel
@@ -1017,8 +1046,9 @@ struct duplicateClassLevel
         maskRows.clear();
         fragmentPositions.clear();
         aliveScratch.clear();
-        maskAccumulators.reset(0);
-        fragmentMaskScratch.reset(0);
+        // maskAccumulators and fragmentMaskScratch keep their logical size:
+        // compaction assigns every row it publishes and clears scratch rows
+        // before accumulating into them, so no per-level reset is needed.
         duplicateSizeValue = 0;
         fragmentCountValue = 0;
         configured = false;
@@ -1060,6 +1090,17 @@ struct duplicateClassLevel
         if (position >= classes.size())
             throw logic_error("duplicate-class position is outside its level");
         return appender(*this, position);
+    }
+
+    /** Append a new class bucket and return its position in classes. */
+    uint32_t addClass(int canonicalId)
+    {
+        if (sealed) throw logic_error("sealed duplicate-class level modified");
+        if (classes.size() >= numeric_limits<uint32_t>::max())
+            throw length_error("duplicate-class level exceeds index capacity");
+        const uint32_t position = static_cast<uint32_t>(classes.size());
+        classes.emplace_back(canonicalId);
+        return position;
     }
 
     void prepare(size_t duplicateSize, size_t fragments)
@@ -1112,19 +1153,39 @@ private:
         if (sealed) throw logic_error("sealed duplicate-class level modified");
         if (classPosition >= classes.size())
             throw logic_error("duplicate-class position is outside its level");
+        requireFragment(occurrence.fragmentIndex);
+        insertPrepared(classPosition, std::move(occurrence));
+    }
+
+public:
+    /** Reject a fragment index outside this level's assembly-state domain. */
+    void requireFragment(int fragmentIndex) const
+    {
         if (
-            occurrence.fragmentIndex < 0 ||
-            static_cast<size_t>(occurrence.fragmentIndex) >= fragmentCountValue
+            fragmentIndex < 0 ||
+            static_cast<size_t>(fragmentIndex) >= fragmentCountValue
         )
         {
             throw logic_error("duplicate occurrence fragment is outside its level");
         }
-        if (stagedOccurrences.size() >= entry_type::noOccurrence)
-            throw length_error("duplicate occurrences exceed index capacity");
+    }
 
+    /**
+     * Append an occurrence to a class position issued by the class index.
+     *
+     * Hot path for DAG generation: the caller has already called prepare()
+     * for this level and requireFragment() for the occurrence's fragment, so
+     * only the index-capacity check remains. Every class holds at most the
+     * level's staged occurrences, so one capacity check covers both counts.
+     */
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE void insertPrepared(
+        uint32_t classPosition,
+        occurrence_type occurrence
+    )
+    {
+        if (stagedOccurrences.size() >= entry_type::noOccurrence) [[unlikely]]
+            throw length_error("duplicate occurrences exceed index capacity");
         entry_type &entry = classes[classPosition];
-        if (entry.occurrenceCount == entry_type::noOccurrence)
-            throw length_error("duplicate class exceeds occurrence capacity");
         const uint32_t occurrenceIndex = static_cast<uint32_t>(
             stagedOccurrences.size()
         );
@@ -1141,13 +1202,14 @@ private:
         ++entry.occurrenceCount;
     }
 
+private:
+
     void compactOccurrencesAndBuildFragmentMasks()
     {
         constexpr size_t noPosition = numeric_limits<size_t>::max();
         sealedOccurrences.clear();
         sealedOccurrences.reserve(stagedOccurrences.size());
         maskRows.clear();
-        maskAccumulators.reset(0);
         if (classes.empty()) return;
         fragmentPositions.assign(fragmentCountValue, noPosition);
         fragmentMaskScratch.resize(fragmentCountValue);
@@ -1181,17 +1243,27 @@ private:
                 throw logic_error("incomplete staged duplicate class");
 
             // Sort only the sparse rows; occurrences retain insertion order.
-            sort(
-                maskRows.begin() + maskBegin,
-                maskRows.end(),
-                [](const auto &left, const auto &right)
+            // A class usually has one or two rows, so insertion sort avoids
+            // std::sort's dispatch for these tiny ranges.
+            for (size_t row = maskBegin + 1; row < maskRows.size(); ++row)
+            {
+                const duplicateFragmentMaskRow value = maskRows[row];
+                size_t position = row;
+                while (
+                    position > maskBegin &&
+                    maskRows[position - 1].fragment > value.fragment
+                )
                 {
-                    return left.fragment < right.fragment;
+                    maskRows[position] = maskRows[position - 1];
+                    --position;
                 }
-            );
-            // Geometric growth bounds accumulator rebinding, including for
-            // masks wider than the inline storage. There is at most one row
-            // per occurrence, so the staging size also bounds spare storage.
+                maskRows[position] = value;
+            }
+            // Accumulator storage only grows; geometric growth bounds
+            // rebinding, including for masks wider than the inline storage.
+            // There is at most one row per occurrence, so the staging size
+            // also bounds spare storage. Rows are assigned, so stale contents
+            // from an earlier level never leak into a published union.
             if (maskRows.size() > maskAccumulators.size())
             {
                 maskAccumulators.resize(min(
@@ -1202,7 +1274,7 @@ private:
             for (size_t row = maskBegin; row < maskRows.size(); ++row)
             {
                 const size_t fragment = maskRows[row].fragment;
-                maskAccumulators[row].add(fragmentMaskScratch[fragment]);
+                maskAccumulators[row].assign(fragmentMaskScratch[fragment]);
                 fragmentPositions[fragment] = noPosition;
             }
 
@@ -1258,6 +1330,13 @@ struct duplicateClassIndexWorkspace
         generation = 1;
     }
 
+    /** Reject use of an index whose level was never started. */
+    void requireStarted() const
+    {
+        if (generation == 0) [[unlikely]]
+            throw logic_error("duplicate-class level was not started");
+    }
+
     template<typename DuplicateSetType>
     typename duplicateClassLevel<DuplicateSetType>::appender getOrCreate(
         duplicateClassLevel<DuplicateSetType> &level,
@@ -1266,17 +1345,28 @@ struct duplicateClassIndexWorkspace
         size_t fragmentCount
     )
     {
-        if (generation == 0) [[unlikely]]
-            throw logic_error("duplicate-class level was not started");
+        requireStarted();
         level.prepare(duplicateSize, fragmentCount);
+        return level.appendTo(positionOf(level, canonicalId));
+    }
+
+    /**
+     * Position of canonicalId's class in a started, prepared level, creating
+     * the class on first sight. Hot path shared with DAG generation, which
+     * calls requireStarted() and prepare() once per expanded parent.
+     */
+    template<typename DuplicateSetType>
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE uint32_t positionOf(
+        duplicateClassLevel<DuplicateSetType> &level,
+        int canonicalId
+    )
+    {
         if (
             !level.classes.empty() &&
             level.classes.back().canonicalId == canonicalId
         ) [[likely]]
         {
-            return level.appendTo(
-                static_cast<uint32_t>(level.classes.size() - 1)
-            );
+            return static_cast<uint32_t>(level.classes.size() - 1);
         }
         const size_t id = static_cast<size_t>(canonicalId);
         if (canonicalId >= 0 && id < slots.size()) [[likely]]
@@ -1284,42 +1374,38 @@ struct duplicateClassIndexWorkspace
             const slot &entry = slots[id];
             if (entry.generation == generation) [[likely]]
             {
-                return level.appendTo(entry.position);
+                return entry.position;
             }
         }
-        return create(
-            level,
-            canonicalId
-        );
+        return create(level, canonicalId);
     }
 
 private:
     template<typename DuplicateSetType>
-    PARALLELASSEMBLYCPP_NOINLINE
-    typename duplicateClassLevel<DuplicateSetType>::appender create(
+    PARALLELASSEMBLYCPP_NOINLINE uint32_t create(
         duplicateClassLevel<DuplicateSetType> &level,
         int canonicalId
     )
     {
-        if (generation == 0)
-            throw logic_error("duplicate-class level was not started");
+        requireStarted();
         if (canonicalId < 0)
             throw logic_error("negative canonical duplicate class");
         const size_t id = static_cast<size_t>(canonicalId);
         if (id >= slots.size()) slots.resize(id + 1);
-        if (level.classes.size() > numeric_limits<uint32_t>::max())
-            throw length_error("duplicate-class level exceeds index capacity");
 
         slot &entry = slots[id];
         entry.generation = generation;
-        entry.position = static_cast<uint32_t>(level.classes.size());
-        level.classes.emplace_back(canonicalId);
-        return level.appendTo(entry.position);
+        entry.position = level.addClass(canonicalId);
+        return entry.position;
     }
 };
 
 /**
  * @brief Generate the next set of duplicates from one duplicate
+ *
+ * The parent's transitions stream child edges and canonical classes from one
+ * contiguous array. One-word child masks are computed inline from the parent
+ * word; wider masks are read-only views of the child level's retained words.
  *
  * @param dag Runtime DAG used to enumerate child masks
  * @param duplicate the duplicate from which children are generated
@@ -1333,7 +1419,7 @@ private:
  */
 bool dagGenerate(
     const vector<dagLevel> &dag,
-    potentialDuplicate &duplicate,
+    const dagPotentialDuplicate &duplicate,
     dagDuplicateClassLevel &duplicateLevel,
     duplicateClassIndexWorkspace &classIndex,
     const EdgeMask &fragmentMask,
@@ -1350,30 +1436,48 @@ bool dagGenerate(
         parentLevel.transitions.data() + parent.transitionOffset;
     const dagTransition *const transitionEnd =
         transition + parent.transitionCount;
-    const dagNode *const childNodes = dag[duplicateSize].nodes.data();
+    const dagLevel &childLevel = dag[duplicateSize];
+    const size_t wordCount = EdgeMask::activeWordCount();
+    const bool oneWordDomain = wordCount <= 1;
+    const uint64_t parentWord = duplicate.mask.activeWord(0);
+    const uint64_t fragmentWord = fragmentMask.activeWord(0);
+    const uint64_t *const childWords = childLevel.maskWords.data();
+    const int fragmentIndex = duplicate.fragmentIndex;
+    // Validate the level shape, fragment domain, and index once per parent
+    // so the per-child path is the class lookup and one staged append.
+    classIndex.requireStarted();
+    duplicateLevel.prepare(duplicateSize + 1, fragmentCount);
+    duplicateLevel.requireFragment(fragmentIndex);
     for (; transition != transitionEnd; ++transition)
     {
         if (searchShouldStopPeriodically()) return overweight;
-        if (fragmentMask[transition->addedEdge])
+        const uint32_t addedEdge = transition->addedEdge;
+        const bool inFragment = oneWordDomain
+            ? ((fragmentWord >> addedEdge) & 1) != 0
+            : fragmentMask[addedEdge];
+        if (!inFragment) continue;
+        if (transition->childCanonicalIndex > ordinal)
         {
-            const dagNode &childNode = childNodes[transition->childIndex];
-            if (childNode.canonicalIndex <= ordinal)
-            {
-                potentialDuplicate child(
-                    duplicate.mask.withBitSet(transition->addedEdge),
-                    duplicate.fragmentIndex,
-                    duplicate.duplicateIndex
-                );
-                child.duplicateIndex = transition->childIndex;
-                classIndex.getOrCreate(
-                    duplicateLevel,
-                    childNode.canonicalIndex,
-                    duplicateSize + 1,
-                    fragmentCount
-                ).insert(std::move(child));
-            }
-            else overweight = 1;
+            overweight = 1;
+            continue;
         }
+        const EdgeMaskView childMask = oneWordDomain
+            ? EdgeMaskView::fromWord(parentWord | (uint64_t{1} << addedEdge))
+            : EdgeMaskView::fromWords(
+                childWords + static_cast<size_t>(transition->childIndex) *
+                    wordCount
+            );
+        duplicateLevel.insertPrepared(
+            classIndex.positionOf(
+                duplicateLevel,
+                transition->childCanonicalIndex
+            ),
+            dagPotentialDuplicate(
+                childMask,
+                fragmentIndex,
+                transition->childIndex
+            )
+        );
     }
     return overweight;
 }
@@ -1409,7 +1513,9 @@ bool dagDuplicateGenerator(
         const bool allAlive = duplicates.occurrencesSpanMultipleFragments();
         if (searchShouldStop()) return output;
 
-        auto generateFromDuplicate = [&](potentialDuplicate &duplicate)
+        // Each occurrence is preceded by one boundary poll; dagGenerate polls
+        // periodically inside, and the caller polls again after this class.
+        auto generateFromDuplicate = [&](dagPotentialDuplicate &duplicate)
         {
             const int fragmentIndex = duplicate.fragmentIndex;
             takenMasks[fragmentIndex].add(duplicate.mask);
@@ -1426,17 +1532,15 @@ bool dagDuplicateGenerator(
                     ordinal,
                     duplicates.fragmentCount
                 );
-                if (searchShouldStop()) return false;
                 output = 1;
             }
-            return true;
         };
         if (allAlive)
         {
-            for (potentialDuplicate &duplicate : duplicates.list)
+            for (dagPotentialDuplicate &duplicate : duplicates.list)
             {
                 if (searchShouldStop()) return output;
-                if (!generateFromDuplicate(duplicate)) return output;
+                generateFromDuplicate(duplicate);
             }
             return output;
         }
@@ -1467,10 +1571,7 @@ bool dagDuplicateGenerator(
                     aliveScratch[j] = 1;
                 }
             }
-            if (aliveScratch[i])
-            {
-                if (!generateFromDuplicate(duplicates.list[i])) return output;
-            }
+            if (aliveScratch[i]) generateFromDuplicate(duplicates.list[i]);
         }
         return output;
     }
