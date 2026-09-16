@@ -143,9 +143,10 @@ The comparison below is against the original repository's `main` branch at
   version uses compact, dynamically sized edge masks and in-project tree and
   cyclic canonicalisation, removing the vendored Boost dependency and the
   fixed 512-edge mask limit.
-- **Search implementation.** This version adds compact DAG storage,
-  frontier-driven enumeration, reusable canonical fragment identities,
-  residual and transposition caches, tighter bounds, and allocation reuse.
+- **Search implementation.** This version adds compact DAG storage with
+  immutable retained node masks, frontier-driven enumeration, reusable
+  canonical fragment identities, residual and transposition caches, tighter
+  bounds, and allocation reuse.
   These changes reduce repeated graph and search work without changing the
   quantity being calculated.
 - **Parallel execution.** The original solver is serial. Serial search remains

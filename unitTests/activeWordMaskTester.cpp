@@ -312,6 +312,15 @@ void testAccumulatorWidth(std::size_t width)
     assert(buffer[0].toEdgeMask() == first);
     assert(buffer[1].toEdgeMask() == second);
     assert(buffer[2].toEdgeMask() == expected);
+    {
+        // Read-only views accumulate exactly like the masks they alias.
+        EdgeMaskAccumulatorBuffer viewBuffer(2);
+        viewBuffer[0].add(first.view());
+        viewBuffer[0] |= second.view();
+        viewBuffer[1].add(EdgeMaskView::fromWords(nullptr));
+        assert(viewBuffer[0].toEdgeMask() == expected);
+        assert(viewBuffer[1].none());
+    }
     assert(buffer[2].any());
     assert(buffer[2].count() == expected.count());
     assert(
@@ -339,6 +348,27 @@ void testAccumulatorWidth(std::size_t width)
     assert(buffer[1].toEdgeMask() == second);
     assert(buffer[2].toEdgeMask() == expected);
     for (std::size_t index = 3; index < buffer.size(); ++index)
+        assert(buffer[index].none());
+
+    // Repeated same-size and incremental growth keep every row bound to its
+    // own words, whether or not the flat storage reallocates.
+    buffer.resize(7);
+    buffer[6] |= probe;
+    for (std::size_t target = 8; target <= 40; ++target)
+    {
+        buffer.resize(target);
+        buffer[target - 1] |= second;
+        assert(buffer[target - 1].toEdgeMask() == second);
+        assert(buffer[6].toEdgeMask() == probe);
+        assert(buffer[0].toEdgeMask() == first);
+        assert(buffer[2].toEdgeMask() == expected);
+    }
+    for (std::size_t index = 7; index < 40; ++index)
+        assert(buffer[index].toEdgeMask() == second);
+    buffer.resize(7);
+    buffer[6].clear();
+    assert(buffer[6].none());
+    for (std::size_t index = 3; index < 6; ++index)
         assert(buffer[index].none());
 
     // Distinct wide accumulators must remain isolated after the flat word
@@ -403,6 +433,109 @@ void testAccumulatorWidth(std::size_t width)
         inlineAccumulator.clear();
         assert(inlineAccumulator.none());
     }
+}
+
+/** Read-only views must agree with the masks they alias, at every width. */
+template<typename Mask>
+void testViewWidth(std::size_t width)
+{
+    using View = ActiveWordMaskView<typename Mask::domain_type>;
+    Mask::configure(width);
+    assert(View::size() == width);
+    assert(View::activeWordCount() == Mask::activeWordCount());
+
+    Mask empty;
+    const View emptyView = empty.view();
+    assert(emptyView.none());
+    assert(emptyView.count() == 0);
+    assert(emptyView.findFirst() == width);
+    assert(emptyView.toMask() == empty);
+    assert(View() == emptyView);
+    assert(View::fromWords(nullptr) == emptyView);
+    for (std::size_t word = 0; word < Mask::activeWordCount(); ++word)
+        assert(emptyView.activeWord(word) == 0);
+
+    Mask selected;
+    const std::vector<std::size_t> expected = boundaryBits(width);
+    for (const std::size_t bit : expected) selected.set(bit);
+    const View selectedView = selected.view();
+    assert(selectedView.count() == expected.size());
+    assert(selectedView.any() == !expected.empty());
+    assert(selectedView.toMask() == selected);
+    assert(selected.contains(selectedView));
+    assert(empty.contains(emptyView));
+    assert(expected.empty() || !empty.contains(selectedView));
+    for (std::size_t word = 0; word < Mask::activeWordCount(); ++word)
+        assert(selectedView.activeWord(word) == selected.activeWord(word));
+    std::vector<std::size_t> visited;
+    for (std::size_t bit = selectedView.findFirst();
+         bit < width;
+         bit = selectedView.findNext(bit))
+    {
+        assert(selectedView[bit]);
+        visited.push_back(bit);
+    }
+    assert(visited == expected);
+
+    // Implicit conversion mirrors the masks that validMatchings used to
+    // reference, and views over external words alias the same content.
+    const View converted = selected;
+    assert(converted == selectedView);
+    std::vector<std::uint64_t> words(Mask::activeWordCount());
+    for (std::size_t word = 0; word < words.size(); ++word)
+        words[word] = selected.activeWord(word);
+    const View external = View::fromWords(words.data());
+    assert(external == selectedView);
+    assert(external.toMask() == selected);
+    if (Mask::activeWordCount() <= 1)
+    {
+        assert(View::fromWord(selected.activeWord(0)) == selectedView);
+    }
+    else
+    {
+        bool rejected = false;
+        try
+        {
+            static_cast<void>(View::fromWord(1));
+        }
+        catch (const std::logic_error &)
+        {
+            rejected = true;
+        }
+        assert(rejected);
+    }
+
+    if (width < 2) return;
+    Mask low;
+    low.set(0);
+    Mask high;
+    high.set(width - 1);
+    const View lowView = low.view();
+    const View highView = high.view();
+    assert(lowView.disjoint(highView));
+    assert(!lowView.disjoint(selectedView));
+    assert(highView.intersects(selectedView));
+    assert(lowView.disjoint(emptyView));
+    assert(selected.contains(lowView));
+    assert(!low.contains(highView));
+
+    // xorWords toggles from a view without materialising it and releases
+    // wide storage when the result is empty.
+    Mask toggled = selected;
+    toggled.xorWords(lowView);
+    assert(toggled == (selected ^ low));
+    toggled.xorWords(lowView);
+    assert(toggled == selected);
+    toggled.xorWords(selectedView);
+    assert(toggled.none());
+    assert(toggled == 0);
+    toggled.xorWords(emptyView);
+    assert(toggled.none());
+    Mask shared = selected;
+    Mask alias = shared;
+    shared.xorWords(highView);
+    assert(alias == selected);
+    assert(shared == (selected ^ high));
 }
 
 void testDomainIndependence()
@@ -475,6 +608,12 @@ int main()
     {
         testWidth<EdgeMask>(width);
         testWidth<AtomMask>(width);
+    }
+
+    for (const std::size_t width : widths)
+    {
+        testViewWidth<EdgeMask>(width);
+        testViewWidth<AtomMask>(width);
     }
 
     testCopyMoveAndContainers<EdgeMask>(1025);

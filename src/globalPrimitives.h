@@ -256,7 +256,12 @@ static_assert(std::has_single_bit(distributedSearchProgressPollInterval));
 PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchStopPollCountdown = 0;
 PARALLELASSEMBLYCPP_SEARCH_LOCAL size_t searchStopInnerPollCountdown = 0;
 
-bool searchShouldStop()
+/**
+ * @brief Full cancellation poll: interruption, distributed progress, and the
+ * std::clock budget. searchShouldStop() inlines the common no-op case and
+ * defers here whenever any of those may need attention.
+ */
+PARALLELASSEMBLYCPP_NOINLINE bool searchShouldStopSlowPath()
 {
     if (interruptionRequested()) return true;
 
@@ -292,16 +297,27 @@ bool searchShouldStop()
 }
 
 /**
- * @brief Check cancellation at a bounded cadence inside cheap inner loops.
+ * @brief Cooperative cancellation poll used at search boundaries.
+ *
+ * Without an interruption, a distributed controller, or a runtime budget the
+ * poll is a few loads, kept inline so the many boundary polls stay cheap.
  */
-bool searchShouldStopPeriodically()
+PARALLELASSEMBLYCPP_ALWAYS_INLINE inline bool searchShouldStop()
 {
-    if (searchStopInnerPollCountdown != 0)
+    if (
+        !interruptionRequested() &&
+        activeDistributedSearch == nullptr &&
+        maximumRuntimeTicks == std::numeric_limits<unsigned long long>::max()
+    ) [[likely]]
     {
-        --searchStopInnerPollCountdown;
         return false;
     }
+    return searchShouldStopSlowPath();
+}
 
+/** Due inner-loop poll: resample the deadline even after a recent boundary. */
+PARALLELASSEMBLYCPP_NOINLINE bool searchShouldStopPeriodicallyDue()
+{
     searchStopInnerPollCountdown = searchStopPollInterval - 1;
     // A due inner-loop poll must sample the deadline even if ordinary search
     // boundaries recently did so.
@@ -310,6 +326,19 @@ bool searchShouldStopPeriodically()
 
     searchStopInnerPollCountdown = 0;
     return true;
+}
+
+/**
+ * @brief Check cancellation at a bounded cadence inside cheap inner loops.
+ */
+PARALLELASSEMBLYCPP_ALWAYS_INLINE inline bool searchShouldStopPeriodically()
+{
+    if (searchStopInnerPollCountdown != 0) [[likely]]
+    {
+        --searchStopInnerPollCountdown;
+        return false;
+    }
+    return searchShouldStopPeriodicallyDue();
 }
 
 /**

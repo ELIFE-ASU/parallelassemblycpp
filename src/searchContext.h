@@ -155,11 +155,11 @@ struct flatEdgeMaskAccumulatorTable
 
     span<EdgeMaskAccumulator> appendRow()
     {
-        if (
-            columns != 0 &&
-            rows == numeric_limits<size_t>::max() / columns
-        ) throw length_error("aggregate mask table exceeds capacity");
+        // rows * columns was the previous end and therefore fits; only the
+        // new end needs an overflow check, which avoids a division per row.
         const size_t offset = rows * columns;
+        if (columns > numeric_limits<size_t>::max() - offset)
+            throw length_error("aggregate mask table exceeds capacity");
         masks.resize(offset + columns);
         ++rows;
         return masks.span().subspan(offset, columns);
@@ -197,13 +197,16 @@ struct dagAssemblySearchFrame
     IntegerVector pairGenericBoundCache;
     assemblyState candidate;
 
+    /**
+     * Prepare the frame for one recursive state. Retained duplicate levels
+     * are reset lazily by appendDuplicateLevel, so a state that enumerates
+     * few levels does not pay for every level a deeper state once used.
+     * aggregateMasks is reset by the search loop before each level it reads.
+     */
     void reset(size_t fragmentCount)
     {
-        for (dagDuplicateClassLevel &level : duplicateLevels)
-            level.reset(fragmentCount);
         duplicateLevelCount = 0;
         targetMasks.reset(fragmentCount);
-        aggregateMasks.reset(fragmentCount + 2);
         maximumByFragmentSize.clear();
         unrestrictedParentTotals.clear();
         pairGenericBoundCache.clear();
@@ -214,12 +217,10 @@ struct dagAssemblySearchFrame
     dagDuplicateClassLevel &appendDuplicateLevel(size_t fragmentCount)
     {
         if (duplicateLevelCount == duplicateLevels.size())
-        {
             duplicateLevels.emplace_back();
-            duplicateLevels.back().reset(fragmentCount);
-        }
         dagDuplicateClassLevel &level =
             duplicateLevels[duplicateLevelCount++];
+        level.reset(fragmentCount);
         return level;
     }
 };

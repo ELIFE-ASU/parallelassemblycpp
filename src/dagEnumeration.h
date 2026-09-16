@@ -1,10 +1,18 @@
 #pragma once
 
-/** @brief One DAG transition to a child formed by adding one physical edge. */
+/**
+ * @brief One DAG transition to a child formed by adding one physical edge.
+ *
+ * The child's canonical class travels with the transition so that expanding
+ * a parent streams one contiguous array instead of gathering child nodes.
+ * convertDag fills childCanonicalIndex; it is -1 while the initial DAG is
+ * being built.
+ */
 struct dagTransition
 {
     int childIndex;
     uint32_t addedEdge;
+    int childCanonicalIndex = -1;
 
     dagTransition(int childNodeIndex, size_t addedEdgeIndex):
         childIndex(childNodeIndex),
@@ -15,7 +23,7 @@ struct dagTransition
     }
 };
 
-static_assert(sizeof(dagTransition) == sizeof(uint64_t));
+static_assert(sizeof(dagTransition) == 3 * sizeof(uint32_t));
 
 constexpr uint32_t unassignedDagTransitionOffset =
     numeric_limits<uint32_t>::max();
@@ -44,7 +52,10 @@ struct initialDagLevel
 /**
  * @brief A runtime DAG node
  *
- * Node masks are reconstructed by following transitions from a known parent.
+ * A node's mask is immutable. One-word domains compute it inline from the
+ * parent mask and the transition edge; wider domains read it from the owning
+ * level's retained maskWords, so search states hold read-only views and never
+ * rebuild or reference-count wide masks.
  */
 struct dagNode
 {
@@ -64,11 +75,27 @@ struct dagNode
 
 static_assert(sizeof(dagNode) == 3 * sizeof(uint32_t));
 
-/** @brief Runtime DAG level stored in compressed sparse row form. */
+/**
+ * @brief Runtime DAG level stored in compressed sparse row form.
+ *
+ * maskWords holds EdgeMask::activeWordCount() immutable words per node, in
+ * node order, for domains wider than one word. It stays empty for one-word
+ * domains, whose node masks are computed inline. The level is shared
+ * read-only by every worker; it contains no EdgeMask.
+ */
 struct dagLevel
 {
     vector<dagNode> nodes;
     vector<dagTransition> transitions;
+    vector<uint64_t> maskWords;
+
+    /** Read-only view of one retained node mask in a multiword domain. */
+    [[nodiscard]] EdgeMaskView retainedMask(size_t nodeIndex) const noexcept
+    {
+        return EdgeMaskView::fromWords(
+            maskWords.data() + nodeIndex * EdgeMask::activeWordCount()
+        );
+    }
 };
 
 /**
@@ -83,9 +110,27 @@ void convertDag(
 )
 {
     const size_t universeEdgeCount = searchUniverseEdgeList().size();
+    const size_t wordCount = EdgeMask::activeWordCount();
+    // One-word masks are computed inline by dagGenerate; retain wider ones.
+    const bool retainMaskWords = wordCount > 1;
     output.clear();
     output.resize(tempDag.size());
     if (tempDag.size() < 2) return;
+
+    auto reserveMaskWords = [&](dagLevel &level)
+    {
+        if (!retainMaskWords) return;
+        if (level.nodes.size() > numeric_limits<size_t>::max() / wordCount)
+            throw length_error("DAG mask storage exceeds capacity");
+        level.maskWords.assign(level.nodes.size() * wordCount, 0);
+    };
+    auto retainMask = [&](dagLevel &level, size_t nodeIndex, const EdgeMask &mask)
+    {
+        if (!retainMaskWords) return;
+        uint64_t *words = level.maskWords.data() + nodeIndex * wordCount;
+        for (size_t word = 0; word < wordCount; ++word)
+            words[word] = mask.activeWord(word);
+    };
 
     auto transitionSpan = [&](
         const initialDagLevel &level,
@@ -143,6 +188,7 @@ void convertDag(
         throw logic_error("DAG root count does not match the edge list");
     }
     output[0].nodes.resize(rootLevel.nodes.size());
+    reserveMaskWords(output[0]);
     vector<bool> populatedRoots(rootLevel.nodes.size(), false);
     for (const auto &entry : rootLevel.maskIndices)
     {
@@ -169,6 +215,7 @@ void convertDag(
         validateTransitions(rootLevel, node, tempDag[1].nodes.size());
         const auto [offset, count] = transitionSpan(rootLevel, node);
         output[0].nodes[edge] = dagNode(-1, offset, count);
+        retainMask(output[0], edge, mask);
     }
     output[0].transitions = std::move(rootLevel.transitions);
 
@@ -178,6 +225,7 @@ void convertDag(
         if (level.nodes.size() != level.maskIndices.size())
             throw logic_error("DAG level index is incomplete");
         output[levelIndex].nodes.resize(level.nodes.size());
+        reserveMaskWords(output[levelIndex]);
         vector<bool> populatedNodes(level.nodes.size(), false);
         for (const auto &entry : level.maskIndices)
         {
@@ -209,7 +257,28 @@ void convertDag(
                 offset,
                 count
             );
+            retainMask(output[levelIndex], nodeIndex, entry.first);
         }
         output[levelIndex].transitions = std::move(level.transitions);
+    }
+
+    // Every child level is now converted, so each transition can carry its
+    // child's canonical class. The final level is never expanded and holds no
+    // nodes, so a transition into it is an inconsistency.
+    for (size_t levelIndex = 0; levelIndex + 1 < output.size(); levelIndex++)
+    {
+        const vector<dagNode> &childNodes = output[levelIndex + 1].nodes;
+        for (dagTransition &transition : output[levelIndex].transitions)
+        {
+            if (
+                transition.childIndex < 0 ||
+                static_cast<size_t>(transition.childIndex) >= childNodes.size()
+            )
+            {
+                throw logic_error("DAG transition target is missing");
+            }
+            transition.childCanonicalIndex =
+                childNodes[transition.childIndex].canonicalIndex;
+        }
     }
 }

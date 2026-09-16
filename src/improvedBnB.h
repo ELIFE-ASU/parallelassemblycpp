@@ -28,25 +28,27 @@ bool initialRecursiveEnumeration(
     size_t retainedStateCount = 0;
 
     // Retain one-edge DAG states first so they count toward the limit too.
+    // Set bits are visited in ascending edge order, matching the physical
+    // edge scan this replaces, because the order shapes the search order.
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return false;
-        for (size_t j = 0; j < edgeList.size(); j++)
+        const EdgeMask &fragmentMask = fragments[i].mask;
+        for (size_t j = fragmentMask.findFirst();
+             j < edgeList.size();
+             j = fragmentMask.findNext(j))
         {
             if (searchShouldStopPeriodically()) return false;
-            if (fragments[i].mask[j] != 0)
-            {
-                EdgeMask b = 0; b.set(j);
-                const initialDagInsertion insertion =
-                    tryRetainInitialDagMask(
-                        tempDag[0],
-                        b,
-                        retainedStateCount
-                    );
-                if (insertion.result == initialDagInsertionResult::limitReached)
-                    return false;
-                rootNodeIndices[j] = insertion.index;
-            }
+            EdgeMask b = 0; b.set(j);
+            const initialDagInsertion insertion =
+                tryRetainInitialDagMask(
+                    tempDag[0],
+                    b,
+                    retainedStateCount
+                );
+            if (insertion.result == initialDagInsertionResult::limitReached)
+                return false;
+            rootNodeIndices[j] = insertion.index;
         }
     }
 
@@ -54,16 +56,17 @@ bool initialRecursiveEnumeration(
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return false;
-        for (size_t j = 0; j < edgeList.size(); j++)
+        const EdgeMask &fragmentMask = fragments[i].mask;
+        for (size_t j = fragmentMask.findFirst();
+             j < edgeList.size();
+             j = fragmentMask.findNext(j))
         {
             if (searchShouldStopPeriodically()) return false;
-            if (fragments[i].mask[j] == 0) continue;
-
             if (rootNodeIndices[j] < 0)
                 throw logic_error("initial DAG root was not retained");
             initialPotentialDuplicate m(
-                j,
-                fragments[i].mask,
+                static_cast<int>(j),
+                fragmentMask,
                 incidentEdges,
                 i,
                 rootNodeIndices[j]
@@ -72,7 +75,7 @@ bool initialRecursiveEnumeration(
                 previousCandidates,
                 retainedStateCount,
                 tempDag,
-                fragments[i].mask,
+                fragmentMask,
                 incidentEdges
             ))
             {
@@ -165,30 +168,48 @@ int dagRecursiveEnumeration(
     dagDuplicateClassLevel &firstLevel =
         frame.appendDuplicateLevel(fragments.size());
     classIndex.beginLevel();
+    // Root occurrences view the one-edge DAG nodes, whose node index is the
+    // physical edge index. Set bits are visited in ascending edge order.
+    const dagLevel &rootLevel = dag.front();
+    const size_t wordCount = EdgeMask::activeWordCount();
+    const bool oneWordDomain = wordCount <= 1;
+    constexpr size_t maskWordBits = EdgeMask::wordBits;
     for (size_t i = 0; i < fragments.size(); i++)
     {
         if (searchShouldStop()) return 0;
         const EdgeMask &fragmentMask = fragments[i].mask;
-        for (size_t j = fragmentMask.findFirst();
-             j < edgeCount;
-             j = fragmentMask.findNext(j))
+        for (size_t wordIndex = 0; wordIndex < wordCount; wordIndex++)
         {
-            if (searchShouldStopPeriodically()) return 0;
-            EdgeMask b = 0; b.set(j);
-            potentialDuplicate m(std::move(b), i, j);
-            dagGenerate(
-                dag,
-                m,
-                firstLevel,
-                classIndex,
-                fragmentMask,
-                duplicateSize,
-                ordinal,
-                fragments.size()
-            );
-            if (searchShouldStop()) return 0;
+            uint64_t word = fragmentMask.activeWord(wordIndex);
+            while (word != 0)
+            {
+                const size_t j = wordIndex * maskWordBits +
+                    static_cast<size_t>(std::countr_zero(word));
+                word &= word - 1;
+                if (j >= edgeCount) break;
+                if (searchShouldStopPeriodically()) return 0;
+                const EdgeMaskView rootMask = oneWordDomain
+                    ? EdgeMaskView::fromWord(uint64_t{1} << j)
+                    : rootLevel.retainedMask(j);
+                const dagPotentialDuplicate m(
+                    rootMask,
+                    static_cast<int>(i),
+                    static_cast<int>(j)
+                );
+                dagGenerate(
+                    dag,
+                    m,
+                    firstLevel,
+                    classIndex,
+                    fragmentMask,
+                    duplicateSize,
+                    ordinal,
+                    fragments.size()
+                );
+            }
         }
     }
+    if (searchShouldStop()) return 0;
     firstLevel.seal();
     bool active = 1, overweight = 0, last = 0;
     while (active)
@@ -207,7 +228,6 @@ int dagRecursiveEnumeration(
             dagDuplicateSet &duplicates = entry.duplicates;
             if (duplicates.isValid())
             {
-                if (searchShouldStop()) return 0;
                 active |= dagDuplicateGenerator(
                     dag,
                     duplicates,
@@ -220,9 +240,9 @@ int dagRecursiveEnumeration(
                     last,
                     duplicateLevel.aliveScratch
                 );
-                if (searchShouldStop()) return 0;
             }
         }
+        if (searchShouldStop()) return 0;
         nextLevel.seal();
         if (overweight) last = 1;
         duplicateSize++;
@@ -859,8 +879,9 @@ struct homogeneousPathEquivalentMatchings
     }
 
 private:
+    template<typename Mask>
     bool intervalStart(
-        const EdgeMask &mask,
+        const Mask &mask,
         int expectedEdgeCount,
         int &start
     ) const
@@ -1043,8 +1064,10 @@ bool continueCanonicalAssemblySearchWithWorkspace(
     {
         if (matching == nullptr)
             throw logic_error("path-tracking search is missing its matching");
+        // Pathway steps outlive the enumeration frame, so they own copies of
+        // the matched masks rather than views into it.
         searchStorage.pathway->current.push_back(
-            assemblyPathStep{matching->first, matching->second}
+            assemblyPathStep{matching->first.toMask(), matching->second.toMask()}
         );
     }
     if constexpr (

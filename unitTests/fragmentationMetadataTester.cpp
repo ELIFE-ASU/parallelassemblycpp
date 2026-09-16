@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -85,11 +86,17 @@ void configurePathGraph(size_t edgeCount)
     totalBonds = static_cast<unsigned int>(edgeCount);
 }
 
-/** Own one production duplicate level and keep its sealed spans alive. */
+/**
+ * Own one production duplicate level and keep its sealed spans alive.
+ *
+ * DAG occurrences hold read-only views, so the fixture retains the owning
+ * masks in a deque whose element addresses stay stable while it grows.
+ */
 struct dagDuplicateLevelFixture
 {
     dagDuplicateClassLevel level;
     duplicateClassIndexWorkspace classIndex;
+    deque<EdgeMask> retainedMasks;
     size_t duplicateSize;
     size_t fragmentCount;
 
@@ -106,16 +113,22 @@ struct dagDuplicateLevelFixture
     {
         level.reset(fragmentCount);
         classIndex.beginLevel();
+        retainedMasks.clear();
     }
 
     void insert(int canonicalId, potentialDuplicate occurrence)
     {
+        retainedMasks.push_back(std::move(occurrence.mask));
         classIndex.getOrCreate(
             level,
             canonicalId,
             duplicateSize,
             fragmentCount
-        ).insert(std::move(occurrence));
+        ).insert(dagPotentialDuplicate(
+            retainedMasks.back().view(),
+            occurrence.fragmentIndex,
+            occurrence.duplicateIndex
+        ));
     }
 
     void seal()
@@ -428,7 +441,7 @@ void testFragmentPairMatchingTraversal()
     dagDuplicateSet &duplicates = duplicatesStorage.singleClass();
     assert(duplicates.isValid());
     vector<int> fragmentsByOccurrence;
-    for (const potentialDuplicate &occurrence : duplicates.list)
+    for (const dagPotentialDuplicate &occurrence : duplicates.list)
         fragmentsByOccurrence.push_back(occurrence.fragmentIndex);
 
     vector<pair<size_t, size_t>> expectedPairs;
@@ -846,9 +859,11 @@ void testDuplicateClassWideMaskOrderingAndReuse()
             };
             for (size_t occurrence = 0; occurrence < 4; ++occurrence)
             {
-                const potentialDuplicate &actual = entry.duplicates.list[occurrence];
+                const dagPotentialDuplicate &actual =
+                    entry.duplicates.list[occurrence];
                 assert(actual.fragmentIndex == expectedFragments[occurrence]);
-                assert(actual.mask == expectedOccurrences[occurrence]);
+                assert(actual.mask.toMask() == expectedOccurrences[occurrence]);
+                assert(actual.mask == expectedOccurrences[occurrence].view());
                 assert(actual.duplicateIndex == static_cast<int>(
                     occurrence * classCount + classCount - classPosition - 1
                 ));

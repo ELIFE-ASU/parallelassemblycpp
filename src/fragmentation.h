@@ -22,11 +22,12 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
 {
     workspace.beginFragmentation();
     vector<assemblyFragment> &fragments = target.fragments;
-    EdgeMask f1 = matching.first, f2 = matching.second;
     const bool same =
         matching.firstFragmentIndex == matching.secondFragmentIndex;
+    // The retained copy is the only owning mask this step materialises; the
+    // residual parents are toggled directly from the read-only views.
     result.appendFragment(
-        f1,
+        matching.first.toMask(),
         matching.maximumFragmentSize,
         duplicateCanonicalId,
         true
@@ -34,8 +35,8 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
     if (same)
     {
         EdgeMask resultMask = fragments[matching.firstFragmentIndex].mask;
-        resultMask ^= f1;
-        resultMask ^= f2;
+        resultMask.xorWords(matching.first);
+        resultMask.xorWords(matching.second);
         ufdsMaskConstructWithWorkspace(
             resultMask,
             result.fragments,
@@ -45,14 +46,14 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
     else
     {
         EdgeMask resultMask1 = fragments[matching.firstFragmentIndex].mask;
-        resultMask1 ^= f1;
+        resultMask1.xorWords(matching.first);
         ufdsMaskConstructWithWorkspace(
             resultMask1,
             result.fragments,
             workspace
         );
         EdgeMask resultMask2 = fragments[matching.secondFragmentIndex].mask;
-        resultMask2 ^= f2;
+        resultMask2.xorWords(matching.second);
         ufdsMaskConstructWithWorkspace(
             resultMask2,
             result.fragments,
