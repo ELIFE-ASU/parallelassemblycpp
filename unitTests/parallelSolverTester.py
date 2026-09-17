@@ -526,8 +526,19 @@ def validate_shared_assembly_cache(
         "table_count",
         "hits",
         "misses",
+        "admissions",
+        "admission_rejections",
+        "pruned_hits",
+        "updated_hits",
         "collision_chain_steps",
         "allocated_bytes",
+        "arena_allocated_bytes",
+        "slot_bytes",
+        "admission_filter_bytes",
+        "growth_count",
+        "rehashed_entries",
+        "growth_nanoseconds",
+        "max_growth_nanoseconds",
         "lock_acquisitions",
         "lock_waits",
         "lock_wait_nanoseconds",
@@ -541,6 +552,14 @@ def validate_shared_assembly_cache(
         f"{path}.table_count exceeds rank count",
     )
     require(
+        parsed["hits"] == parsed["pruned_hits"] + parsed["updated_hits"],
+        f"{path} hit counters are inconsistent",
+    )
+    require(
+        parsed["misses"] == parsed["admissions"] + parsed["admission_rejections"],
+        f"{path} admission counters are inconsistent",
+    )
+    require(
         parsed["lock_acquisitions"] == parsed["hits"] + parsed["misses"],
         f"{path} lookup counters are inconsistent",
     )
@@ -549,9 +568,24 @@ def validate_shared_assembly_cache(
         f"{path}.lock_waits exceeds acquisitions",
     )
     require(
-        (parsed["misses"] == 0) == (parsed["allocated_bytes"] == 0),
+        (parsed["admissions"] == 0) == (parsed["allocated_bytes"] == 0),
         f"{path} allocation counters are inconsistent",
     )
+    require(
+        parsed["arena_allocated_bytes"] >= parsed["allocated_bytes"],
+        f"{path} retained arena storage is smaller than published entries",
+    )
+    require(
+        parsed["max_growth_nanoseconds"] <= parsed["growth_nanoseconds"],
+        f"{path} maximum growth duration exceeds total growth time",
+    )
+    if parsed["growth_count"] == 0:
+        require(
+            parsed["rehashed_entries"] == 0
+            and parsed["growth_nanoseconds"] == 0
+            and parsed["max_growth_nanoseconds"] == 0,
+            f"{path} reports growth work without a growth event",
+        )
     if parsed["table_count"] == 0:
         require(
             all(parsed[name] == 0 for name in names if name != "table_count"),
@@ -914,13 +948,21 @@ def validate_parallel_telemetry(
         topology.rank_count,
         f"{prefix}: parallel.aggregate.shared_assembly_cache",
     )
-    if case.name == "amino-acid-scale-04c" and local_threads > 1:
+    local_cache_only = (
+        os.environ.get("PARALLELASSEMBLYCPP_SHARED_CACHE_POLICY") == "local"
+    )
+    if local_cache_only:
+        require(
+            shared_assembly_cache["lock_acquisitions"] == 0,
+            f"{prefix}: local-only cache performed shared lookups",
+        )
+    elif case.name == "amino-acid-scale-04c" and local_threads > 1:
         require(
             shared_assembly_cache["table_count"] == topology.rank_count,
             f"{prefix}: expected one active shared assembly cache per rank",
         )
         require(
-            shared_assembly_cache["hits"] + shared_assembly_cache["misses"] > 0,
+            shared_assembly_cache["lock_acquisitions"] > 0,
             f"{prefix}: shared assembly cache emitted no lookup activity",
         )
 

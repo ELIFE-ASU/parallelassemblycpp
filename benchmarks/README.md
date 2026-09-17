@@ -353,6 +353,79 @@ timing thresholds because host contention makes them unreliable.
 Promotion reports require 100 rounds for `quick` and `full`, 6 for `profile`,
 and 30 for `scaling`.
 
+## Shared transposition-cache experiments
+
+`shared_cache_experiment.py` compares a retained baseline OpenMP executable with
+four candidate configurations: shared lookup with unrestricted admission,
+local-only lookup, shared lookup bounded to 256 MiB of entry/key storage, and
+selective admission with the same bound. This separates storage-layout changes
+from admission policy. Keep both executables and their instrumented siblings
+from the respective builds:
+
+```bash
+python benchmarks/shared_cache_experiment.py \
+  --baseline-executable build/shared-cache-baseline/ParallelAssemblyCppOMP \
+  --baseline-telemetry-executable build/shared-cache-baseline/ParallelAssemblyCppOMPTelemetry \
+  --executable build/shared-cache-candidate/ParallelAssemblyCppOMP \
+  --telemetry-executable build/shared-cache-candidate/ParallelAssemblyCppOMPTelemetry \
+  --threads 4 --runs 6 --warmup 1 \
+  --output-dir build/shared-cache-experiment
+```
+
+The default runs each manifest case once per round, including cases belonging
+to multiple suites. `--suite` or repeated `--case` options narrow the corpus.
+Add `--dry-run` to inspect the selected cases, execution settings, and total
+calculation count without creating files or requiring built executables.
+`--parallel auto` is the default, preserving the solver's small-work fallback;
+use `--parallel on` to require parallel search. All modes use the same thread
+count and placement. Set `--launcher 'taskset -c 0-3'` to pin the experiment to
+four CPUs available in the current allocation, or use the desired allocation
+and override `OMP_PLACES` with `--env 'OMP_PLACES={0},{2},{4},{6}'`.
+
+Timings reuse `benchmark.py`'s adjacent AB/BA pairs, rotating case order,
+isolated temporary inputs, assembly-index checks, and executable/corpus
+fingerprints. An even round count is required. Each variant has its own paired
+schema-v2 JSON report. The separate `profiles.json` records one extra validated
+run of every baseline and candidate case, with full telemetry and GNU time
+peak RSS in KiB. The telemetry executable is optional; without it, the extra
+run measures RSS using the ordinary executable. These profiles never enter
+timing aggregates. RSS from an instrumented executable includes telemetry
+overhead; for OpenMP it describes the whole process, including every worker.
+GNU time does not report summed peak RSS across MPI ranks, so this driver is
+intended for process-local OpenMP cache comparisons.
+
+`summary.csv` combines paired wall/clock speedups, RSS, and every scalar shared
+cache counter, including useful prunes, admissions/rejections, entry/key bytes,
+arena and slot bytes, lock waits, and growth counts/times under the shard locks.
+`profiles.json` has `complete: true` only after all requested comparisons finish.
+Existing output directories are rejected. `--require-all-faster` exits with
+failure when any case/variant wall or clock median ratio is at or below 1.0;
+all raw samples and profiles remain available to inspect regressions. These
+exploratory comparisons do not replace the four-suite promotion gate.
+
+Use repeated `--variant NAME=POLICY[:BYTES]` options for a different selection:
+
+```bash
+--variant shared=shared --variant local=local \
+--variant bounded=shared:268435456 --variant selective=selective:268435456
+```
+
+The driver sets `PARALLELASSEMBLYCPP_SHARED_CACHE_POLICY` and
+`PARALLELASSEMBLYCPP_SHARED_CACHE_BYTES` explicitly; zero bytes means unlimited
+entry/key admission. The cap excludes table slots, arena slack, the admission
+filter, and worker L1 caches; compare those counters and process RSS as well.
+The cap is divided equally across the 64 shards. Once a shard reaches its
+budget, existing keys still support exact lookup and score improvement.
+Selective admission uses a fixed-size, replaceable fingerprint filter: the
+first recent sighting skips storage and a repeat permits admission. Fingerprint
+collisions can admit extra keys, but pruning always compares the complete key.
+Local mode keeps the canonical-ID registry and L1 behavior unchanged while
+bypassing L2 lookups. The default solver policy remains unrestricted sharing.
+`--env KEY=VALUE` applies to both roles, `--baseline-env KEY=VALUE` overrides only
+the reference, and `--variant-env NAME:KEY=VALUE` overrides one candidate.
+Evaluate runtime and pruning alongside hit rate: even an infrequent hit may
+avoid a costly subtree.
+
 ## LTO and PGO
 
 Build the LTO candidate with:

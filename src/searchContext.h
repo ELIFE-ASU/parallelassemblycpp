@@ -284,7 +284,8 @@ struct assemblySearchStorage
     {
         const assemblyTranspositionTable::result localResult =
             states.consider(key, sumDupBonds);
-        if (localResult == assemblyTranspositionTable::result::dominated)
+        if (localResult == assemblyTranspositionTable::result::dominated ||
+            !sharedAssemblyStates->lookupEnabled())
             return localResult;
 
         const sharedAssemblyTranspositionTable::consideration sharedResult =

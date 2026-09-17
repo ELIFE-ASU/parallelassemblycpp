@@ -134,6 +134,19 @@ PARALLEL_TASK_TRANSFER_SUM_FIELDS = (
     "task_buffers_reused",
     "tasks_rejected_as_too_small",
 )
+SHARED_CACHE_ADMISSION_FIELDS = (
+    "admissions",
+    "admission_rejections",
+    "pruned_hits",
+    "updated_hits",
+    "slot_bytes",
+    "growth_count",
+    "rehashed_entries",
+    "growth_nanoseconds",
+    "max_growth_nanoseconds",
+    "arena_allocated_bytes",
+    "admission_filter_bytes",
+)
 
 
 class BenchmarkError(RuntimeError):
@@ -943,7 +956,25 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
             invalid_parallel("inconsistent shared assembly-cache lookups")
         if value["lock_waits"] > value["lock_acquisitions"]:
             invalid_parallel("shared assembly-cache waits exceed acquisitions")
-        if (value["misses"] == 0) != (value["allocated_bytes"] == 0):
+        admission_fields = any(name in value for name in SHARED_CACHE_ADMISSION_FIELDS)
+        if admission_fields:
+            if any(
+                not is_nonnegative_integer(value.get(name))
+                for name in SHARED_CACHE_ADMISSION_FIELDS
+            ):
+                invalid_parallel("invalid shared assembly-cache admission counters")
+            names += SHARED_CACHE_ADMISSION_FIELDS
+            if value["admissions"] + value["admission_rejections"] != value["misses"]:
+                invalid_parallel("inconsistent shared assembly-cache admissions")
+            if value["pruned_hits"] + value["updated_hits"] != value["hits"]:
+                invalid_parallel("inconsistent shared assembly-cache hit outcomes")
+            if (value["admissions"] == 0) != (value["allocated_bytes"] == 0):
+                invalid_parallel("inconsistent shared assembly-cache allocation")
+            if value["allocated_bytes"] > value["arena_allocated_bytes"]:
+                invalid_parallel("shared assembly-cache retained bytes exceed arena")
+            if value["max_growth_nanoseconds"] > value["growth_nanoseconds"]:
+                invalid_parallel("inconsistent shared assembly-cache growth timing")
+        elif (value["misses"] == 0) != (value["allocated_bytes"] == 0):
             invalid_parallel("inconsistent shared assembly-cache allocation")
         if value["table_count"] == 0 and any(
             value[name] != 0 for name in names if name != "table_count"
