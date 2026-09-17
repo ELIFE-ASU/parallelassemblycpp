@@ -634,14 +634,12 @@ def validate_mpi_refill_telemetry(
             for name in (*MPI_SUM_FIELDS, *MPI_MAXIMUM_FIELDS)
         }
         owns_progress = (
-            topology.mode in {"mpi", "hybrid"}
-            and worker.get("local_worker_index") == 0
+            topology.mode in {"mpi", "hybrid"} and worker.get("local_worker_index") == 0
         )
         if not owns_progress:
             require(
                 all(value == 0 for value in values.values()),
-                f"{path}: MPI activity must be recorded only by the rank's "
-                "main thread",
+                f"{path}: MPI activity must be recorded only by the rank's main thread",
             )
         else:
             require(
