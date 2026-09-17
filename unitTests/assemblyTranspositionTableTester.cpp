@@ -322,6 +322,8 @@ void testSharedWorkerHitsDoNotConsumeArenaStorage()
         assert(stats.missCount == 1);
         assert(stats.hitCount == 4096);
         assert(stats.allocatedBytes == retainedBytesAfterMiss);
+        assert(stats.arenaAllocatedBytes == upstream.allocatedBytes);
+        assert(stats.arenaAllocatedBytes >= stats.allocatedBytes);
     }
     assert(upstream.deallocationCalls == upstream.allocationCalls);
 }
@@ -507,9 +509,15 @@ void testSharedIndependentKeyShardStress()
 void testSharedFlatShardGrowthPreservesEntries()
 {
     sharedAssemblyTranspositionTable table;
+    const auto initialStats = table.stats();
     constexpr std::size_t keyCount = 1000;
     std::vector<std::array<int, 2>> keys;
     keys.reserve(keyCount);
+    // Zero is a valid complete key hash, even when an index reserves a zero
+    // metadata word for empty slots. Keep it reachable through shard growth.
+    const std::array<int, 2> zeroHashKey{0, 118251589};
+    assert(assemblyTranspositionTable::keyHash(zeroHashKey) == 0);
+    keys.push_back(zeroHashKey);
     for (int candidate = 0; keys.size() < keyCount; ++candidate)
     {
         const std::array<int, 2> key{0x2468ace, candidate};
@@ -540,6 +548,258 @@ void testSharedFlatShardGrowthPreservesEntries()
     assert(stats.hitCount == keyCount);
     assert(stats.lockAcquisitionCount == 2 * keyCount);
     assert(stats.collisionChainSteps > 0);
+    assert(stats.admissionCount == keyCount);
+    assert(stats.admissionRejectionCount == 0);
+    assert(stats.prunedHitCount == keyCount);
+    assert(stats.updatedHitCount == 0);
+    assert(stats.growthCount == 1);
+    assert(stats.rehashedEntries > 0);
+    assert(stats.rehashedEntries < keyCount);
+    assert(stats.slotBytes > initialStats.slotBytes);
+    assert(stats.arenaAllocatedBytes == stats.allocatedBytes);
+    assert(stats.admissionFilterBytes == 0);
+    assert(stats.maxGrowthNanoseconds == stats.growthNanoseconds);
+#ifndef ASSEMBLY_ENABLE_TELEMETRY
+    assert(stats.growthNanoseconds == 0);
+    assert(stats.maxGrowthNanoseconds == 0);
+#endif
+}
+
+std::vector<std::array<int, 4>> keysForOneShard(std::size_t count)
+{
+    std::vector<std::array<int, 4>> keys;
+    keys.reserve(count);
+    for (int candidate = 0; keys.size() < count; ++candidate)
+    {
+        const std::array<int, 4> key{0x13579bdf, 3, 7, candidate};
+        if ((assemblyTranspositionTable::keyHash(key) &
+             (sharedAssemblyTranspositionTable::shardCount - 1)) == 0)
+            keys.push_back(key);
+    }
+    return keys;
+}
+
+void testSharedByteBudgetPreservesExistingScores()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    constexpr std::size_t shardBudget = 64;
+    constexpr std::size_t byteBudget =
+        shardBudget * sharedAssemblyTranspositionTable::shardCount;
+    countingMemoryResource upstream;
+    {
+        sharedAssemblyTranspositionTable table(
+            1, &upstream, policy::shared, byteBudget
+        );
+        const auto keys = keysForOneShard(12);
+        for (const auto &key : keys)
+            assert(table.considerWithBestForWorker(key, 4, 0).outcome ==
+                tableResult::inserted);
+
+        const auto capped = table.stats();
+        assert(table.size() > 0);
+        assert(table.size() < keys.size());
+        assert(capped.allocatedBytes <= shardBudget);
+        assert(capped.admissionCount == table.size());
+        assert(capped.admissionRejectionCount == keys.size() - table.size());
+        assert(capped.missCount == keys.size());
+        assert(capped.missCount ==
+            capped.admissionCount + capped.admissionRejectionCount);
+        const std::size_t allocations = upstream.allocationCalls;
+        const std::size_t retainedSize = table.size();
+
+        // A refused key remains a search miss even when revisited with a
+        // weaker score. The capacity limit must never fabricate dominance.
+        auto result = table.considerWithBestForWorker(keys.back(), 2, 0);
+        assert(result.outcome == tableResult::inserted);
+        assert(result.bestSumDupBonds == 2);
+        assert(table.size() == retainedSize);
+        assert(upstream.allocationCalls == allocations);
+        assert(table.stats().allocatedBytes == capped.allocatedBytes);
+
+        // Reaching the cap only stops new admissions. Existing entries still
+        // prune, improve monotonically, and supply the exact score to L1.
+        result = table.considerWithBestForWorker(keys.front(), 3, 0);
+        assert(result.outcome == tableResult::dominated);
+        assert(result.bestSumDupBonds == 4);
+        result = table.considerWithBestForWorker(keys.front(), 9, 0);
+        assert(result.outcome == tableResult::improved);
+        assert(result.bestSumDupBonds == 9);
+        result = table.considerWithBestForWorker(keys.front(), 8, 0);
+        assert(result.outcome == tableResult::dominated);
+        assert(result.bestSumDupBonds == 9);
+        const auto finalStats = table.stats();
+        assert(finalStats.hitCount == 3);
+        assert(finalStats.prunedHitCount == 2);
+        assert(finalStats.updatedHitCount == 1);
+        assert(finalStats.lockAcquisitionCount ==
+            finalStats.hitCount + finalStats.missCount);
+        assert(finalStats.allocatedBytes == capped.allocatedBytes);
+        assert(upstream.allocationCalls == allocations);
+    }
+    assert(upstream.deallocationCalls == upstream.allocationCalls);
+}
+
+void testSharedBudgetSmallerThanKeyRejectsWithoutAllocation()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    for (const policy mode : {policy::shared, policy::selective})
+    {
+        for (const std::size_t budget : {
+            std::size_t{1}, sharedAssemblyTranspositionTable::shardCount
+        })
+        {
+            countingMemoryResource upstream;
+            sharedAssemblyTranspositionTable table(
+                1, &upstream, mode, budget
+            );
+            const std::array<int, 3> key{4, 1, 2};
+            for (int score = 3; score >= 0; --score)
+            {
+                const auto result =
+                    table.considerWithBestForWorker(key, score, 0);
+                assert(result.outcome == tableResult::inserted);
+                assert(result.bestSumDupBonds == score);
+            }
+            assert(table.size() == 0);
+            assert(upstream.allocationCalls == 0);
+            const auto stats = table.stats();
+            assert(stats.allocatedBytes == 0);
+            assert(stats.admissionCount == 0);
+            assert(stats.admissionRejectionCount == 4);
+            assert(stats.missCount == 4);
+            assert(stats.hitCount == 0);
+            assert(stats.growthCount == 0);
+        }
+    }
+}
+
+void testSharedSelectiveAdmissionAndScores()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    countingMemoryResource upstream;
+    sharedAssemblyTranspositionTable table(1, &upstream, policy::selective);
+    const std::array<int, 4> key{19, 3, 5, 7};
+    auto result = table.considerWithBestForWorker(key, 10, 0);
+    assert(result.outcome == tableResult::inserted);
+    assert(result.bestSumDupBonds == 10);
+    assert(table.size() == 0);
+    assert(upstream.allocationCalls == 0);
+
+    // A fingerprint says only that the key may have been seen. Its first
+    // score was never stored and cannot dominate this newly admitted score.
+    result = table.considerWithBestForWorker(key, 7, 0);
+    assert(result.outcome == tableResult::inserted);
+    assert(result.bestSumDupBonds == 7);
+    assert(table.size() == 1);
+    result = table.considerWithBestForWorker(key, 6, 0);
+    assert(result.outcome == tableResult::dominated);
+    assert(result.bestSumDupBonds == 7);
+    result = table.considerWithBestForWorker(key, 12, 0);
+    assert(result.outcome == tableResult::improved);
+    assert(result.bestSumDupBonds == 12);
+    result = table.considerWithBestForWorker(key, 11, 0);
+    assert(result.outcome == tableResult::dominated);
+    assert(result.bestSumDupBonds == 12);
+    const auto stats = table.stats();
+    assert(stats.admissionCount == 1);
+    assert(stats.admissionRejectionCount == 1);
+    assert(stats.missCount == 2);
+    assert(stats.hitCount == 3);
+    assert(stats.prunedHitCount == 2);
+    assert(stats.updatedHitCount == 1);
+    assert(stats.lockAcquisitionCount == 5);
+    assert(stats.admissionFilterBytes > 0);
+    assert(stats.arenaAllocatedBytes == upstream.allocatedBytes);
+}
+
+void testSharedSelectiveFingerprintCollisionCannotPrune()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    sharedAssemblyTranspositionTable table(
+        0, std::pmr::new_delete_resource(), policy::selective
+    );
+    const std::array<int, 4> firstCollision{
+        -1744324134, -1879786136, 873751343, 1729211343
+    };
+    const std::array<int, 3> secondCollision{
+        1933699411, -1276699930, -106575768
+    };
+    assert(assemblyTranspositionTable::keyHash(firstCollision) ==
+        assemblyTranspositionTable::keyHash(secondCollision));
+    assert(table.consider(firstCollision, 100) == tableResult::inserted);
+    assert(table.size() == 0);
+    assert(table.consider(secondCollision, 2) == tableResult::inserted);
+    assert(table.size() == 1);
+    assert(table.consider(firstCollision, 3) == tableResult::inserted);
+    assert(table.size() == 2);
+    assert(table.consider(firstCollision, 4) == tableResult::improved);
+    assert(table.consider(secondCollision, 2) == tableResult::dominated);
+    assert(table.consider(secondCollision, 3) == tableResult::improved);
+}
+
+void testSharedLocalPolicyBypassesLocksAndStorage()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    countingMemoryResource upstream;
+    sharedAssemblyTranspositionTable table(1, &upstream, policy::local);
+    const std::array<int, 4> key{19, 3, 5, 7};
+    for (int score = 16; score >= 0; --score)
+    {
+        const auto result = table.considerWithBestForWorker(key, score, 0);
+        assert(result.outcome == tableResult::inserted);
+        assert(result.bestSumDupBonds == score);
+    }
+    assert(table.size() == 0);
+    assert(upstream.allocationCalls == 0);
+    const auto stats = table.stats();
+    assert(stats.hitCount == 0);
+    assert(stats.missCount == 0);
+    assert(stats.admissionCount == 0);
+    assert(stats.admissionRejectionCount == 0);
+    assert(stats.allocatedBytes == 0);
+    assert(stats.lockAcquisitionCount == 0);
+    assert(stats.lockWaitCount == 0);
+    assert(stats.growthCount == 0);
+    assert(stats.arenaAllocatedBytes == 0);
+    assert(stats.admissionFilterBytes == 0);
+}
+
+void testSharedConcurrentSelectiveAdmission()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    constexpr std::size_t threadCount = 4;
+    constexpr int rounds = 256;
+    sharedAssemblyTranspositionTable table(
+        threadCount, std::pmr::new_delete_resource(), policy::selective
+    );
+    const std::array<int, 4> key{19, 3, 5, 7};
+    std::barrier start(static_cast<std::ptrdiff_t>(threadCount));
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
+    for (std::size_t worker = 0; worker < threadCount; ++worker)
+    {
+        workers.emplace_back([&, worker]
+        {
+            start.arrive_and_wait();
+            for (int round = 0; round < rounds; ++round)
+                static_cast<void>(table.considerWithBestForWorker(
+                    key, round, worker
+                ));
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+
+    assert(table.size() == 1);
+    const auto result = table.considerWithBestForWorker(key, rounds - 1, 0);
+    assert(result.outcome == tableResult::dominated);
+    assert(result.bestSumDupBonds == rounds - 1);
+    const auto stats = table.stats();
+    assert(stats.admissionCount == 1);
+    assert(stats.admissionRejectionCount == 1);
+    assert(stats.missCount == 2);
+    assert(stats.hitCount == threadCount * rounds - 1);
+    assert(stats.lockAcquisitionCount == threadCount * rounds + 1);
+    assert(stats.hitCount == stats.prunedHitCount + stats.updatedHitCount);
 }
 
 int main()
@@ -555,4 +815,10 @@ int main()
     testSharedConcurrentSameKeyMonotonicUpdate();
     testSharedIndependentKeyShardStress();
     testSharedFlatShardGrowthPreservesEntries();
+    testSharedByteBudgetPreservesExistingScores();
+    testSharedBudgetSmallerThanKeyRejectsWithoutAllocation();
+    testSharedSelectiveAdmissionAndScores();
+    testSharedSelectiveFingerprintCollisionCannotPrune();
+    testSharedLocalPolicyBypassesLocksAndStorage();
+    testSharedConcurrentSelectiveAdmission();
 }

@@ -2464,7 +2464,12 @@ void configureParallelSharedReuse(
         context.canonicalSeed.graphHashes.size()
     );
     context.sharedStates =
-        make_unique<sharedAssemblyTranspositionTable>(localWorkerCount);
+        make_unique<sharedAssemblyTranspositionTable>(
+            localWorkerCount,
+            std::pmr::new_delete_resource(),
+            sharedAssemblyTranspositionTable::policyFromEnvironment(),
+            sharedAssemblyTranspositionTable::maxBytesFromEnvironment()
+        );
 }
 
 /** Configure only thread-local state from an immutable, mask-free context. */

@@ -781,6 +781,19 @@ if(BUILD_TESTING)
     parallelassemblycpp_transposition_table_tests
     unitTests/assemblyTranspositionTableTester.cpp
   )
+  parallelassemblycpp_add_unit_test(
+    assembly-transposition-table-telemetry
+    parallelassemblycpp_transposition_table_telemetry_tests
+    unitTests/assemblyTranspositionTableTester.cpp
+  )
+  target_compile_definitions(
+    parallelassemblycpp_transposition_table_telemetry_tests
+    PRIVATE ASSEMBLY_ENABLE_TELEMETRY
+  )
+  set_tests_properties(
+    unit.assembly-transposition-table-telemetry
+    PROPERTIES LABELS "unit;telemetry"
+  )
 
   add_executable(
     parallelassemblycpp_tree_canon_tests

@@ -91,8 +91,19 @@ struct SharedAssemblyCacheTelemetry
     uint64_t tableCount = 0;
     uint64_t hits = 0;
     uint64_t misses = 0;
+    uint64_t admissions = 0;
+    uint64_t admissionRejections = 0;
+    uint64_t prunedHits = 0;
+    uint64_t updatedHits = 0;
     uint64_t collisionChainSteps = 0;
     uint64_t allocatedBytes = 0;
+    uint64_t arenaAllocatedBytes = 0;
+    uint64_t slotBytes = 0;
+    uint64_t admissionFilterBytes = 0;
+    uint64_t growthCount = 0;
+    uint64_t rehashedEntries = 0;
+    uint64_t growthNanoseconds = 0;
+    uint64_t maxGrowthNanoseconds = 0;
     uint64_t lockAcquisitions = 0;
     uint64_t lockWaits = 0;
     uint64_t lockWaitNanoseconds = 0;
@@ -612,8 +623,22 @@ inline void addSharedAssemblyCacheTelemetry(
     destination.tableCount += source.tableCount;
     destination.hits += source.hits;
     destination.misses += source.misses;
+    destination.admissions += source.admissions;
+    destination.admissionRejections += source.admissionRejections;
+    destination.prunedHits += source.prunedHits;
+    destination.updatedHits += source.updatedHits;
     destination.collisionChainSteps += source.collisionChainSteps;
     destination.allocatedBytes += source.allocatedBytes;
+    destination.arenaAllocatedBytes += source.arenaAllocatedBytes;
+    destination.slotBytes += source.slotBytes;
+    destination.admissionFilterBytes += source.admissionFilterBytes;
+    destination.growthCount += source.growthCount;
+    destination.rehashedEntries += source.rehashedEntries;
+    destination.growthNanoseconds += source.growthNanoseconds;
+    destination.maxGrowthNanoseconds = std::max(
+        destination.maxGrowthNanoseconds,
+        source.maxGrowthNanoseconds
+    );
     destination.lockAcquisitions += source.lockAcquisitions;
     destination.lockWaits += source.lockWaits;
     destination.lockWaitNanoseconds += source.lockWaitNanoseconds;
@@ -1093,10 +1118,32 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.sharedAssemblyCache.hits << ",\n"
            << "        \"misses\": "
            << parallel.sharedAssemblyCache.misses << ",\n"
+           << "        \"admissions\": "
+           << parallel.sharedAssemblyCache.admissions << ",\n"
+           << "        \"admission_rejections\": "
+           << parallel.sharedAssemblyCache.admissionRejections << ",\n"
+           << "        \"pruned_hits\": "
+           << parallel.sharedAssemblyCache.prunedHits << ",\n"
+           << "        \"updated_hits\": "
+           << parallel.sharedAssemblyCache.updatedHits << ",\n"
            << "        \"collision_chain_steps\": "
            << parallel.sharedAssemblyCache.collisionChainSteps << ",\n"
            << "        \"allocated_bytes\": "
            << parallel.sharedAssemblyCache.allocatedBytes << ",\n"
+           << "        \"arena_allocated_bytes\": "
+           << parallel.sharedAssemblyCache.arenaAllocatedBytes << ",\n"
+           << "        \"slot_bytes\": "
+           << parallel.sharedAssemblyCache.slotBytes << ",\n"
+           << "        \"admission_filter_bytes\": "
+           << parallel.sharedAssemblyCache.admissionFilterBytes << ",\n"
+           << "        \"growth_count\": "
+           << parallel.sharedAssemblyCache.growthCount << ",\n"
+           << "        \"rehashed_entries\": "
+           << parallel.sharedAssemblyCache.rehashedEntries << ",\n"
+           << "        \"growth_nanoseconds\": "
+           << parallel.sharedAssemblyCache.growthNanoseconds << ",\n"
+           << "        \"max_growth_nanoseconds\": "
+           << parallel.sharedAssemblyCache.maxGrowthNanoseconds << ",\n"
            << "        \"lock_acquisitions\": "
            << parallel.sharedAssemblyCache.lockAcquisitions << ",\n"
            << "        \"lock_waits\": "
