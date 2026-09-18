@@ -20,11 +20,12 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 if __package__:
-    from . import benchmark, check_parallel_scaling, cpu_topology
+    from . import benchmark, check_parallel_scaling, cpu_topology, search_profiles
 else:
     import benchmark
     import check_parallel_scaling
     import cpu_topology
+    import search_profiles
 
 
 DEFAULT_BUILD_DIRECTORY = benchmark.REPOSITORY_ROOT / "build" / "parallel"
@@ -209,6 +210,7 @@ def preflight(
         topology_path,
         plot_path,
         plot_path.with_suffix(".pdf"),
+        summary_path.with_name("search-profiles.json"),
     ]:
         if path.exists() or path.is_symlink():
             raise benchmark.BenchmarkError(
@@ -463,6 +465,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary.write(description + "\n")
         with contextlib.redirect_stdout(summary):
             check_parallel_scaling.print_report(results)
+        if arguments.telemetry:
+            summary.write(
+                search_profiles.write_placement_profiles(
+                    summary_path.with_name("search-profiles.json"),
+                    [(f"omp-{run.threads}", run.report) for run in runs],
+                )
+            )
         save_scaling_plot(results, plot_path, figure)
         summary_path.write_text(summary.getvalue(), encoding="utf-8")
         print(f"\n{summary.getvalue()}", end="")

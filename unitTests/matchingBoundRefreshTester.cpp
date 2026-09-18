@@ -232,10 +232,51 @@ void testRuntimeTelemetryDisabled()
 }
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
+void testIncumbentTelemetry()
+{
+    resetSearchTelemetry(false);
+    recordSearchTelemetryIncumbent(30);
+    recordSearchTelemetryIncumbent(30);
+    recordSearchTelemetryIncumbent(31);
+    recordSearchTelemetryIncumbent(25);
+    assert(searchTelemetry.incumbentTrajectory.size() == 2);
+    assert(searchTelemetry.incumbentTrajectory[0].assemblyIndex == 30);
+    assert(searchTelemetry.incumbentTrajectory[1].assemblyIndex == 25);
+    assert(searchTelemetry.incumbentTrajectory[0].elapsedNanoseconds <=
+        searchTelemetry.incumbentTrajectory[1].elapsedNanoseconds);
+
+    ParallelSearchWorkerTelemetry first;
+    first.localCaches.canonicalMaskRetainedBytes = 123;
+    ParallelSearchWorkerTelemetry second;
+    second.localCaches.assemblyStateRetainedBytes = 456;
+    second.globalWorkerIndex = 1;
+    second.localWorkerIndex = 1;
+    configureParallelSearchTelemetry("openmp", "process", 1, 1, 100, true,
+        {first, second}, {{40, 25, 0, 1}, {10, 30, 0, 0}, {50, 27, 0, 0},
+                         {60, 23, 0, 0}});
+    assert(searchTelemetry.incumbentTrajectory.size() == 3);
+    assert(searchTelemetry.incumbentTrajectory[0].assemblyIndex == 30);
+    assert(searchTelemetry.incumbentTrajectory[1].assemblyIndex == 25);
+    assert(searchTelemetry.incumbentTrajectory[2].assemblyIndex == 23);
+    assert(searchTelemetry.localCaches.canonicalMaskRetainedBytes == 123);
+    assert(searchTelemetry.localCaches.assemblyStateRetainedBytes == 456);
+    std::ostringstream output;
+    writeIncumbentTrajectory(output, parallelSearchTelemetry.incumbentEvents, 1);
+    assert(output.str() == "[{\"elapsed_nanoseconds\":40,\"assembly_index\":25,\"rank\":0,\"global_worker_index\":1}]");
+    resetParallelSearchTelemetry();
+    resetSearchTelemetry(false);
+}
+
 void testTelemetryAggregationAndJson()
 {
     SearchTelemetryCounters aggregate;
     SearchTelemetryCounters worker;
+    worker.statesExpanded = 17;
+    worker.statesPruned = 19;
+    worker.statesBoundPruned = 7;
+    worker.duplicateClassesPruned = 23;
+    worker.occurrencePairsPruned = 29;
+    worker.fragmentPairBlocksPruned = 31;
     worker.matchingBoundRefreshPolls = 2;
     worker.matchingBoundRefreshes = 3;
     worker.matchingBoundClassesPruned = 5;
@@ -244,6 +285,12 @@ void testTelemetryAggregationAndJson()
     worker.matchingBoundCandidatesPruned = 13;
     addSearchTelemetryCounters(aggregate, worker);
     addSearchTelemetryCounters(aggregate, worker);
+    assert(aggregate.statesExpanded == 34);
+    assert(aggregate.statesPruned == 38);
+    assert(aggregate.statesBoundPruned == 14);
+    assert(aggregate.duplicateClassesPruned == 46);
+    assert(aggregate.occurrencePairsPruned == 58);
+    assert(aggregate.fragmentPairBlocksPruned == 62);
     assert(aggregate.matchingBoundRefreshPolls == 4);
     assert(aggregate.matchingBoundRefreshes == 6);
     assert(aggregate.matchingBoundClassesPruned == 10);
@@ -280,5 +327,6 @@ int main()
     testRuntimeTelemetryDisabled();
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     testTelemetryAggregationAndJson();
+    testIncumbentTelemetry();
 #endif
 }

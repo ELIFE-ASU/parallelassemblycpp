@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "compilerAttributes.h"
+#include "canonicalMaskCache.h"
 
 constexpr int unknownCanonicalId = -1;
 
@@ -153,7 +154,7 @@ inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const vector<MoleculeEdge>
 }
 
 /// Hash table for edgelists for pathway algorithm
-PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, IntegerPair>
+PARALLELASSEMBLYCPP_SEARCH_LOCAL canonicalMaskCache<EdgeMask>
     bitsetHashTable;
 
 bool pathwayOutputEnabled = true;

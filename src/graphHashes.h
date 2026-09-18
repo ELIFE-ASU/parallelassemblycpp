@@ -573,6 +573,67 @@ PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<graphHash, IntegerPair>
 inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const decltype(graphHashMap)
     *sharedGraphHashSeed = nullptr;
 
+/** Retained worker-owned canonical caches; immutable shared seeds are excluded. */
+struct CanonicalCacheRetainedBytes
+{
+    std::uint64_t maskCacheBytes = 0;
+    std::uint64_t graphCacheBytes = 0;
+    std::uint64_t treeInternerBytes = 0;
+
+    [[nodiscard]] std::uint64_t totalBytes() const noexcept
+    {
+        return maskCacheBytes + graphCacheBytes + treeInternerBytes;
+    }
+};
+
+/**
+ * Snapshot outside the hot loop. Vector capacities are exact; standard map
+ * node/bucket sizes are estimates excluding allocator headers. Scratch and
+ * immutable producer seeds are deliberately outside these cache totals.
+ */
+[[nodiscard]] CanonicalCacheRetainedBytes localCanonicalCacheRetainedBytes()
+{
+    CanonicalCacheRetainedBytes result;
+    result.maskCacheBytes = bitsetHashTable.retainedBytes();
+    result.graphCacheBytes = unorderedRetainedBytes(graphHashMap);
+    for (const auto &entry : graphHashMap)
+    {
+        const cyclicCanonForm &form = entry.first.cyclicHash;
+        result.graphCacheBytes +=
+            form.graph.labels.capacity() * sizeof(cyclicCanonVertexLabel) +
+            form.graph.adjacencyOffsets.capacity() * sizeof(std::size_t) +
+            form.graph.adjacency.capacity() * sizeof(cyclicCanonAdjacentEdge) +
+            form.graph.edges.capacity() * sizeof(cyclicCanonEdge) +
+            form.canonicalCode.capacity() * sizeof(std::uint64_t);
+    }
+    result.treeInternerBytes =
+        unorderedRetainedBytes(treeCanonAtomInterner) +
+        unorderedRetainedBytes(treeCanonInterner) +
+        unorderedRetainedBytes(treeCanonLeafInternerDelta) +
+        treeCanonLeafInterner.capacity() * sizeof(treeCanonNodeId);
+    for (const auto &entry : treeCanonInterner)
+        result.treeInternerBytes +=
+            entry.first.children.capacity() * sizeof(treeCanonChild);
+    // Exclude small-string storage, already included in each map value_type.
+    for (const auto &entry : treeCanonAtomInterner)
+    {
+        const std::uintptr_t data =
+            reinterpret_cast<std::uintptr_t>(entry.first.data());
+        const std::uintptr_t object =
+            reinterpret_cast<std::uintptr_t>(std::addressof(entry.first));
+        if (data < object || data >= object + sizeof(entry.first))
+            result.treeInternerBytes += entry.first.capacity() + 1;
+    }
+    return result;
+}
+
+/** Class/interner bytes only; the mask cache is reported independently. */
+[[nodiscard]] std::uint64_t workerLocalCanonicalCacheRetainedBytes()
+{
+    const CanonicalCacheRetainedBytes bytes = localCanonicalCacheRetainedBytes();
+    return bytes.graphCacheBytes + bytes.treeInternerBytes;
+}
+
 /** Complete lazy key state once, before any worker can observe the seed. */
 void freezeGraphHashSeed(const decltype(graphHashMap) &seed)
 {

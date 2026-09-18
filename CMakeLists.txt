@@ -777,6 +777,11 @@ if(BUILD_TESTING)
     unitTests/activeWordMaskTester.cpp
   )
   parallelassemblycpp_add_unit_test(
+    canonical-mask-cache
+    parallelassemblycpp_canonical_mask_cache_tests
+    unitTests/canonicalMaskCacheTester.cpp
+  )
+  parallelassemblycpp_add_unit_test(
     assembly-transposition-table
     parallelassemblycpp_transposition_table_tests
     unitTests/assemblyTranspositionTableTester.cpp
@@ -825,6 +830,17 @@ if(BUILD_TESTING)
     parallelassemblycpp_cyclic_canon_tests
     unitTests/cyclicCanonTester.cpp
   )
+  add_test(
+    NAME unit.cyclic-canonicalisation-unordered-mask-cache
+    COMMAND parallelassemblycpp_cyclic_canon_tests
+  )
+  set_tests_properties(
+    unit.cyclic-canonicalisation-unordered-mask-cache
+    PROPERTIES
+      LABELS "unit"
+      TIMEOUT 300
+      ENVIRONMENT "ASSEMBLY_CANONICAL_MASK_CACHE=unordered"
+  )
   parallelassemblycpp_add_unit_test(
     search-stop-polling
     parallelassemblycpp_search_stop_poll_tests
@@ -857,6 +873,15 @@ if(BUILD_TESTING)
     parallel-task-transfer
     parallelassemblycpp_parallel_task_transfer_tests
     unitTests/parallelTaskTransferTester.cpp
+  )
+  parallelassemblycpp_add_unit_test(
+    parallel-greedy-bootstrap
+    parallelassemblycpp_parallel_greedy_bootstrap_tests
+    unitTests/parallelGreedyBootstrapTester.cpp
+  )
+  set_tests_properties(
+    unit.parallel-greedy-bootstrap
+    PROPERTIES LABELS "unit;parallel"
   )
   set_tests_properties(
     unit.parallel-task-transfer

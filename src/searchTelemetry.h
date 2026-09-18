@@ -47,6 +47,14 @@ struct SearchTelemetryCounters
     uint64_t duplicateMaskAttempts = 0;
     uint64_t rejectedMasks = 0;
     uint64_t matchingVisits = 0;
+    // Materialized states: expanded into duplicate enumeration, or rejected by
+    // a lower bound / transposition lookup. Skipped classes/pairs are separate.
+    uint64_t statesExpanded = 0;
+    uint64_t statesPruned = 0;
+    uint64_t statesBoundPruned = 0;
+    uint64_t duplicateClassesPruned = 0;
+    uint64_t occurrencePairsPruned = 0;
+    uint64_t fragmentPairBlocksPruned = 0;
     uint64_t matchingBoundRefreshPolls = 0;
     uint64_t matchingBoundRefreshes = 0;
     uint64_t matchingBoundClassesPruned = 0;
@@ -96,6 +104,8 @@ struct SharedAssemblyCacheTelemetry
     uint64_t prunedHits = 0;
     uint64_t updatedHits = 0;
     uint64_t collisionChainSteps = 0;
+    uint64_t metadataRejectCount = 0;
+    uint64_t keyComparisonCount = 0;
     uint64_t allocatedBytes = 0;
     uint64_t arenaAllocatedBytes = 0;
     uint64_t slotBytes = 0;
@@ -104,9 +114,16 @@ struct SharedAssemblyCacheTelemetry
     uint64_t rehashedEntries = 0;
     uint64_t growthNanoseconds = 0;
     uint64_t maxGrowthNanoseconds = 0;
+    uint64_t rehashNanoseconds = 0;
+    uint64_t maxRehashNanoseconds = 0;
+    uint64_t arenaRefillCount = 0;
+    uint64_t arenaRefillNanoseconds = 0;
+    uint64_t maxArenaRefillNanoseconds = 0;
     uint64_t lockAcquisitions = 0;
     uint64_t lockWaits = 0;
     uint64_t lockWaitNanoseconds = 0;
+    uint64_t lockHoldNanoseconds = 0;
+    uint64_t maxLockHoldNanoseconds = 0;
 };
 
 struct ProcessMemorySnapshot
@@ -136,9 +153,30 @@ struct SearchTelemetryPhaseStats
     bool exactResidentPeak = false;
 };
 
+struct IncumbentTelemetryEvent
+{
+    uint64_t elapsedNanoseconds = 0;
+    int64_t assemblyIndex = 0;
+    uint64_t mpiRank = 0;
+    uint64_t globalWorkerIndex = 0;
+};
+static_assert(std::is_trivially_copyable_v<IncumbentTelemetryEvent>);
+
+struct LocalCacheTelemetry
+{
+    uint64_t canonicalMaskRetainedBytes = 0;
+    uint64_t canonicalGraphRetainedBytes = 0;
+    uint64_t canonicalTreeRetainedBytes = 0;
+    uint64_t assemblyStateRetainedBytes = 0;
+    uint64_t residualDecompositionRetainedBytes = 0;
+};
+
 struct SearchTelemetryState
 {
     SearchTelemetryCounters counters;
+    LocalCacheTelemetry localCaches;
+    uint64_t searchStartedNanoseconds = 0;
+    std::vector<IncumbentTelemetryEvent> incumbentTrajectory;
     std::array<
         SearchTelemetryPhaseStats,
         static_cast<size_t>(SearchTelemetryPhase::count)
@@ -201,6 +239,7 @@ struct ParallelSearchWorkerTelemetry
     uint64_t activeMaskWords = 0;
     uint64_t residualCacheEligible = 0;
     SharedAssemblyCacheTelemetry sharedAssemblyCache;
+    LocalCacheTelemetry localCaches;
     SearchTelemetryCounters counters;
     std::array<
         uint64_t,
@@ -267,6 +306,7 @@ struct ParallelSearchTelemetrySummary
     SharedAssemblyCacheTelemetry sharedAssemblyCache;
     SearchTelemetryCounters aggregateCounters;
     std::vector<ParallelSearchWorkerTelemetry> workers;
+    std::vector<IncumbentTelemetryEvent> incumbentEvents;
 };
 
 inline constexpr bool searchTelemetryCompiled = true;
@@ -309,6 +349,30 @@ inline uint64_t searchTelemetryWallNanoseconds()
 inline uint64_t telemetryNanosecondDifference(uint64_t start, uint64_t end)
 {
     return end >= start ? end - start : 0;
+}
+
+// Called only for a newly published feasible incumbent, never for each match.
+inline void recordSearchTelemetryIncumbent(int assemblyIndex)
+{
+    if (!searchTelemetryEnabled) return;
+    auto &events = searchTelemetry.incumbentTrajectory;
+    if (!events.empty() && assemblyIndex >= events.back().assemblyIndex) return;
+    events.push_back({telemetryNanosecondDifference(
+        searchTelemetry.searchStartedNanoseconds,
+        searchTelemetryWallNanoseconds()
+    ), assemblyIndex, 0, 0});
+}
+
+inline void addLocalCacheTelemetry(
+    LocalCacheTelemetry &destination, const LocalCacheTelemetry &source
+)
+{
+    destination.canonicalMaskRetainedBytes += source.canonicalMaskRetainedBytes;
+    destination.canonicalGraphRetainedBytes += source.canonicalGraphRetainedBytes;
+    destination.canonicalTreeRetainedBytes += source.canonicalTreeRetainedBytes;
+    destination.assemblyStateRetainedBytes += source.assemblyStateRetainedBytes;
+    destination.residualDecompositionRetainedBytes +=
+        source.residualDecompositionRetainedBytes;
 }
 
 #ifdef __linux__
@@ -523,6 +587,7 @@ inline void resetSearchTelemetry(bool collectPhaseMemory = true)
 {
     if (!searchTelemetryCompiled || !searchTelemetryEnabled) return;
     searchTelemetry = SearchTelemetryState{};
+    searchTelemetry.searchStartedNanoseconds = searchTelemetryWallNanoseconds();
     searchTelemetry.collectPhaseMemory = collectPhaseMemory;
     searchTelemetry.active = true;
     setSearchTelemetryPhase(SearchTelemetryPhase::inputSetup);
@@ -565,6 +630,12 @@ inline void addSearchTelemetryCounters(
     destination.retainedMasks += source.retainedMasks;
     destination.duplicateMaskAttempts += source.duplicateMaskAttempts;
     destination.rejectedMasks += source.rejectedMasks;
+    destination.statesExpanded += source.statesExpanded;
+    destination.statesPruned += source.statesPruned;
+    destination.statesBoundPruned += source.statesBoundPruned;
+    destination.duplicateClassesPruned += source.duplicateClassesPruned;
+    destination.occurrencePairsPruned += source.occurrencePairsPruned;
+    destination.fragmentPairBlocksPruned += source.fragmentPairBlocksPruned;
     destination.matchingVisits += source.matchingVisits;
     destination.matchingBoundRefreshPolls += source.matchingBoundRefreshPolls;
     destination.matchingBoundRefreshes += source.matchingBoundRefreshes;
@@ -628,6 +699,8 @@ inline void addSharedAssemblyCacheTelemetry(
     destination.prunedHits += source.prunedHits;
     destination.updatedHits += source.updatedHits;
     destination.collisionChainSteps += source.collisionChainSteps;
+    destination.metadataRejectCount += source.metadataRejectCount;
+    destination.keyComparisonCount += source.keyComparisonCount;
     destination.allocatedBytes += source.allocatedBytes;
     destination.arenaAllocatedBytes += source.arenaAllocatedBytes;
     destination.slotBytes += source.slotBytes;
@@ -639,9 +712,22 @@ inline void addSharedAssemblyCacheTelemetry(
         destination.maxGrowthNanoseconds,
         source.maxGrowthNanoseconds
     );
+    destination.rehashNanoseconds += source.rehashNanoseconds;
+    destination.maxRehashNanoseconds = std::max(
+        destination.maxRehashNanoseconds, source.maxRehashNanoseconds
+    );
+    destination.arenaRefillCount += source.arenaRefillCount;
+    destination.arenaRefillNanoseconds += source.arenaRefillNanoseconds;
+    destination.maxArenaRefillNanoseconds = std::max(
+        destination.maxArenaRefillNanoseconds, source.maxArenaRefillNanoseconds
+    );
     destination.lockAcquisitions += source.lockAcquisitions;
     destination.lockWaits += source.lockWaits;
     destination.lockWaitNanoseconds += source.lockWaitNanoseconds;
+    destination.lockHoldNanoseconds += source.lockHoldNanoseconds;
+    destination.maxLockHoldNanoseconds = std::max(
+        destination.maxLockHoldNanoseconds, source.maxLockHoldNanoseconds
+    );
 }
 
 inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
@@ -701,6 +787,7 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
     result.residualCacheEligible =
         searchTelemetry.residualCacheEligible ? 1 : 0;
     result.counters = searchTelemetry.counters;
+    result.localCaches = searchTelemetry.localCaches;
     for (size_t i = 0; i < result.phaseClockTicks.size(); ++i)
     {
         const SearchTelemetryPhaseStats &phase = searchTelemetry.phases[i];
@@ -727,7 +814,8 @@ inline void configureParallelSearchTelemetry(
     uint64_t branchLeaseSize,
     uint64_t elapsedNanoseconds,
     bool completedSearch,
-    std::vector<ParallelSearchWorkerTelemetry> workers
+    std::vector<ParallelSearchWorkerTelemetry> workers,
+    std::vector<IncumbentTelemetryEvent> incumbentEvents = {}
 )
 {
     resetParallelSearchTelemetry();
@@ -856,6 +944,7 @@ inline void configureParallelSearchTelemetry(
             worker.sharedAssemblyCache
         );
         addSearchTelemetryCounters(summary.aggregateCounters, worker.counters);
+        addLocalCacheTelemetry(merged.localCaches, worker.localCaches);
 
         for (size_t i = 0; i < merged.phases.size(); ++i)
         {
@@ -895,6 +984,21 @@ inline void configureParallelSearchTelemetry(
         summary.warmStartBranchCount ==
             (summary.branchCandidateCount == 0 ? 0 : summary.rankCount);
     summary.branchScanComplete = summary.branchSchedulerComplete;
+    std::stable_sort(incumbentEvents.begin(), incumbentEvents.end(),
+        [](const auto &left, const auto &right)
+        {
+            if (left.elapsedNanoseconds != right.elapsedNanoseconds)
+                return left.elapsedNanoseconds < right.elapsedNanoseconds;
+            return left.assemblyIndex > right.assemblyIndex;
+        });
+    int64_t best = std::numeric_limits<int64_t>::max();
+    for (const auto &event : incumbentEvents)
+    {
+        if (event.assemblyIndex >= best) continue;
+        merged.incumbentTrajectory.push_back(event);
+        best = event.assemblyIndex;
+    }
+    summary.incumbentEvents = std::move(incumbentEvents);
     summary.workers = std::move(workers);
     merged.counters = summary.aggregateCounters;
     searchTelemetry = std::move(merged);
@@ -929,6 +1033,18 @@ inline void writeAllSearchTelemetryCounters(
            << counters.matchingBoundBlocksPruned << ",\n"
            << indent << "  \"matching_bound_candidates_pruned\": "
            << counters.matchingBoundCandidatesPruned << ",\n"
+           << indent << "  \"states_expanded\": "
+           << counters.statesExpanded << ",\n"
+           << indent << "  \"states_pruned\": "
+           << counters.statesPruned << ",\n"
+           << indent << "  \"states_bound_pruned\": "
+           << counters.statesBoundPruned << ",\n"
+           << indent << "  \"duplicate_classes_pruned\": "
+           << counters.duplicateClassesPruned << ",\n"
+           << indent << "  \"occurrence_pairs_pruned\": "
+           << counters.occurrencePairsPruned << ",\n"
+           << indent << "  \"fragment_pair_blocks_pruned\": "
+           << counters.fragmentPairBlocksPruned << ",\n"
            << indent << "  \"canonicalisation_calls\": "
            << counters.canonicalisationCalls << ",\n"
            << indent << "  \"canonicalisation_mask_cache_hits\": "
@@ -981,6 +1097,44 @@ inline void writeAllSearchTelemetryCounters(
            << indent << "  \"pair_bound_cache_misses\": "
            << counters.pairBoundCacheMisses << '\n'
            << indent << '}';
+}
+
+inline void writeIncumbentTrajectory(
+    std::ostream &output,
+    const std::vector<IncumbentTelemetryEvent> &events,
+    uint64_t worker = std::numeric_limits<uint64_t>::max()
+)
+{
+    output << '[';
+    bool first = true;
+    for (const auto &event : events)
+    {
+        if (worker != std::numeric_limits<uint64_t>::max() &&
+            event.globalWorkerIndex != worker) continue;
+        if (!first) output << ',';
+        first = false;
+        output << "{\"elapsed_nanoseconds\":" << event.elapsedNanoseconds
+               << ",\"assembly_index\":" << event.assemblyIndex
+               << ",\"rank\":" << event.mpiRank
+               << ",\"global_worker_index\":" << event.globalWorkerIndex << '}';
+    }
+    output << ']';
+}
+
+inline void writeLocalCacheTelemetry(
+    std::ostream &output, const LocalCacheTelemetry &cache
+)
+{
+    output << "{\"canonical_mask_retained_bytes\":" << cache.canonicalMaskRetainedBytes
+           << ",\"canonical_graph_retained_bytes\":" << cache.canonicalGraphRetainedBytes
+           << ",\"canonical_tree_retained_bytes\":" << cache.canonicalTreeRetainedBytes
+           << ",\"assembly_state_retained_bytes\":" << cache.assemblyStateRetainedBytes
+           << ",\"residual_decomposition_retained_bytes\":" << cache.residualDecompositionRetainedBytes
+           << ",\"total_retained_bytes\":" << (
+                cache.canonicalMaskRetainedBytes + cache.canonicalGraphRetainedBytes +
+                cache.canonicalTreeRetainedBytes + cache.assemblyStateRetainedBytes +
+                cache.residualDecompositionRetainedBytes)
+           << ",\"measurement\":\"retained_capacity_estimate_allocator_overhead_excluded\"}";
 }
 
 inline void writeParallelSearchTelemetry(std::ostream &output)
@@ -1128,6 +1282,10 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.sharedAssemblyCache.updatedHits << ",\n"
            << "        \"collision_chain_steps\": "
            << parallel.sharedAssemblyCache.collisionChainSteps << ",\n"
+           << "        \"metadata_reject_count\": "
+           << parallel.sharedAssemblyCache.metadataRejectCount << ",\n"
+           << "        \"key_comparison_count\": "
+           << parallel.sharedAssemblyCache.keyComparisonCount << ",\n"
            << "        \"allocated_bytes\": "
            << parallel.sharedAssemblyCache.allocatedBytes << ",\n"
            << "        \"arena_allocated_bytes\": "
@@ -1144,12 +1302,26 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
            << parallel.sharedAssemblyCache.growthNanoseconds << ",\n"
            << "        \"max_growth_nanoseconds\": "
            << parallel.sharedAssemblyCache.maxGrowthNanoseconds << ",\n"
+           << "        \"rehash_nanoseconds\": "
+           << parallel.sharedAssemblyCache.rehashNanoseconds << ",\n"
+           << "        \"max_rehash_nanoseconds\": "
+           << parallel.sharedAssemblyCache.maxRehashNanoseconds << ",\n"
+           << "        \"arena_refill_count\": "
+           << parallel.sharedAssemblyCache.arenaRefillCount << ",\n"
+           << "        \"arena_refill_nanoseconds\": "
+           << parallel.sharedAssemblyCache.arenaRefillNanoseconds << ",\n"
+           << "        \"max_arena_refill_nanoseconds\": "
+           << parallel.sharedAssemblyCache.maxArenaRefillNanoseconds << ",\n"
            << "        \"lock_acquisitions\": "
            << parallel.sharedAssemblyCache.lockAcquisitions << ",\n"
            << "        \"lock_waits\": "
            << parallel.sharedAssemblyCache.lockWaits << ",\n"
            << "        \"lock_wait_nanoseconds\": "
-           << parallel.sharedAssemblyCache.lockWaitNanoseconds << "\n"
+           << parallel.sharedAssemblyCache.lockWaitNanoseconds << ",\n"
+           << "        \"lock_hold_nanoseconds\": "
+           << parallel.sharedAssemblyCache.lockHoldNanoseconds << ",\n"
+           << "        \"max_lock_hold_nanoseconds\": "
+           << parallel.sharedAssemblyCache.maxLockHoldNanoseconds << "\n"
            << "      },\n"
            << "      \"counters\": ";
     writeAllSearchTelemetryCounters(
@@ -1157,6 +1329,8 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
         parallel.aggregateCounters,
         "      "
     );
+    output << ",\n      \"local_caches\": ";
+    writeLocalCacheTelemetry(output, searchTelemetry.localCaches);
     output << "\n    },\n"
            << "    \"workers\": [\n";
     for (size_t workerIndex = 0; workerIndex < parallel.workers.size();
@@ -1271,6 +1445,10 @@ inline void writeParallelSearchTelemetry(std::ostream &output)
         output << "        },\n"
                << "        \"counters\": ";
         writeAllSearchTelemetryCounters(output, worker.counters, "        ");
+        output << ",\n        \"local_caches\": ";
+        writeLocalCacheTelemetry(output, worker.localCaches);
+        output << ",\n        \"incumbent_trajectory\": ";
+        writeIncumbentTrajectory(output, parallel.incumbentEvents, worker.globalWorkerIndex);
         output << "\n      }";
         if (workerIndex + 1 < parallel.workers.size()) output << ',';
         output << '\n';
@@ -1349,7 +1527,14 @@ inline bool writeSearchTelemetry(const std::string &filename)
     const bool overallResidentPeakAvailable =
         anyActivatedPhase && allActivatedPhasePeaksExact;
 
-    output << "{\n"
+    output << "{\n  \"trajectory_clock\": \"steady_wall_since_search_start\",\n"
+           << "  \"trajectory_scope\": \"feasible_incumbent_discovery; MPI rank starts barrier-aligned\",\n"
+           << "  \"trajectory_index\": \"internal_before_disjoint_compensation\",\n"
+           << "  \"incumbent_trajectory\": ";
+    writeIncumbentTrajectory(output, searchTelemetry.incumbentTrajectory);
+    output << ",\n  \"local_caches\": ";
+    writeLocalCacheTelemetry(output, searchTelemetry.localCaches);
+    output << ",\n"
            << "  \"schema_version\": 1,\n"
            << "  \"processed_graph\": {\n"
            << "    \"atoms\": " << searchTelemetry.processedAtoms << ",\n"
@@ -1377,6 +1562,18 @@ inline bool writeSearchTelemetry(const std::string &filename)
            << counters.matchingBoundBlocksPruned << ",\n"
            << "    \"matching_bound_candidates_pruned\": "
            << counters.matchingBoundCandidatesPruned << ",\n"
+           << "    \"states_expanded\": "
+           << counters.statesExpanded << ",\n"
+           << "    \"states_pruned\": "
+           << counters.statesPruned << ",\n"
+           << "    \"states_bound_pruned\": "
+           << counters.statesBoundPruned << ",\n"
+           << "    \"duplicate_classes_pruned\": "
+           << counters.duplicateClassesPruned << ",\n"
+           << "    \"occurrence_pairs_pruned\": "
+           << counters.occurrencePairsPruned << ",\n"
+           << "    \"fragment_pair_blocks_pruned\": "
+           << counters.fragmentPairBlocksPruned << ",\n"
            << "    \"canonicalisation_calls\": "
            << counters.canonicalisationCalls << ",\n"
            << "    \"vf2_calls\": " << counters.vf2Calls << ",\n"

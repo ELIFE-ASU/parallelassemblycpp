@@ -197,6 +197,56 @@ void testReusedBuffersAndBounds()
     clearParallelWorkerMasks();
 }
 
+void testDominatedCandidateDoesNotCountAsExpandedChild()
+{
+    SearchContext context = makeTransferContext(16);
+    context.dag.resize(1);
+    context.dag.front().nodes.resize(context.universeEdges.size());
+    configureParallelWorker(context, 0);
+    const bool previouslyEnabled = searchTelemetryEnabled;
+    searchTelemetryEnabled = true;
+    resetSearchTelemetry(false);
+    {
+        WorkerContext worker(context);
+        assemblyState candidate = makeTransferState(8, unknownCanonicalId);
+        IntegerVector key;
+        assert(canoniseAssemblyStateAndBuildKey(candidate, key, worker.fragmentation));
+        assert(worker.search.states.consider(key, candidate.sumDupBonds) ==
+            assemblyTranspositionTable::result::inserted);
+        EdgeMask first;
+        EdgeMask second;
+        for (size_t edge = 0; edge < 4; ++edge)
+        {
+            first.set(edge);
+            second.set(edge + 4);
+        }
+        validMatchings matching(first, second, 0, 0, 4);
+        bool immediatelyPruned = false;
+        const auto expandedBefore = searchTelemetry.counters.statesExpanded;
+        assert((continueAssemblySearchWithWorkspace<
+            matchingEquivalenceMode::none, false
+        >(context.dag, candidate, matching, key, candidate.sumDupBonds,
+          worker.assemblyIndex, worker.fragmentation, worker.search,
+          &immediatelyPruned)));
+        assert(immediatelyPruned);
+        assert(searchTelemetry.counters.statesExpanded == expandedBefore);
+
+        // The same canonical partition with a better duplicate-bond score is
+        // allowed to descend, and can now satisfy the first-local-child rule.
+        ++candidate.sumDupBonds;
+        immediatelyPruned = false;
+        assert((continueAssemblySearchWithWorkspace<
+            matchingEquivalenceMode::none, false
+        >(context.dag, candidate, matching, key, candidate.sumDupBonds,
+          worker.assemblyIndex, worker.fragmentation, worker.search,
+          &immediatelyPruned)));
+        assert(!immediatelyPruned);
+        assert(searchTelemetry.counters.statesExpanded == expandedBefore + 1);
+    }
+    searchTelemetryEnabled = previouslyEnabled;
+    clearParallelWorkerMasks();
+}
+
 void testExecutionPruningCancellationAndException()
 {
     SearchContext context = makeTransferContext(16);
@@ -543,6 +593,7 @@ int main()
     testCanonicalValidityAndWideMasks();
     testReusedBuffersAndBounds();
     testExecutionPruningCancellationAndException();
+    testDominatedCandidateDoesNotCountAsExpandedChild();
     testMeasuredMinimumTaskSize();
     testSmallRootLeaseTailAndRankCoverage();
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP

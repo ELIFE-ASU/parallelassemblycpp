@@ -63,6 +63,8 @@ class SharedCacheExperimentTests(unittest.TestCase):
             "OMP_PLACES={2},{4}",
             "--variant-env",
             "bounded:CUSTOM=value with spaces",
+            "--variant-env",
+            f"bounded:{experiment.RESERVE_BYTES_ENV}=1572864",
             "--baseline-env",
             "REFERENCE=1",
         )
@@ -71,6 +73,10 @@ class SharedCacheExperimentTests(unittest.TestCase):
         self.assertEqual(candidate[experiment.POLICY_ENV], "shared")
         self.assertEqual(candidate[experiment.BYTES_ENV], "1024")
         self.assertEqual(candidate["CUSTOM"], "value with spaces")
+        self.assertEqual(candidate[experiment.RESERVE_BYTES_ENV], "1572864")
+        self.assertEqual(
+            dict(configs["baseline"].environment)[experiment.RESERVE_BYTES_ENV], "0"
+        )
         self.assertEqual(candidate["OMP_NUM_THREADS"], "8")
         self.assertEqual(candidate["OMP_PLACES"], "{2},{4}")
         self.assertNotIn("REFERENCE", candidate)
@@ -154,6 +160,12 @@ class SharedCacheExperimentTests(unittest.TestCase):
         profile = {
             "peak_rss_kib": 123,
             "telemetry": {
+                "counters": {"states_expanded": 42, "states_pruned": 17},
+                "local_caches": {"total_retained_bytes": 1024},
+                "incumbent_trajectory": [
+                    {"elapsed_nanoseconds": 0, "assembly_index": 9},
+                    {"elapsed_nanoseconds": 12, "assembly_index": 7},
+                ],
                 "parallel": {
                     "aggregate": {
                         "shared_assembly_cache": {
@@ -164,7 +176,7 @@ class SharedCacheExperimentTests(unittest.TestCase):
                             "max_growth_nanoseconds": 50,
                         }
                     }
-                }
+                },
             },
         }
         rows = experiment.summary_rows(
@@ -174,6 +186,10 @@ class SharedCacheExperimentTests(unittest.TestCase):
         self.assertEqual(rows[0]["paired_clock_speedup_median"], 1.75)
         self.assertEqual(rows[0]["candidate_cache_hit_rate"], 0.1)
         self.assertEqual(rows[0]["candidate_cache_growth_nanoseconds"], 80)
+        self.assertEqual(rows[0]["candidate_states_expanded"], 42)
+        self.assertEqual(rows[0]["candidate_states_pruned"], 17)
+        self.assertEqual(rows[0]["candidate_total_retained_bytes"], 1024)
+        self.assertEqual(rows[0]["candidate_final_incumbent_nanoseconds"], 12)
         self.assertEqual(rows[0]["baseline_peak_rss_kib"], 123)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "summary.csv"

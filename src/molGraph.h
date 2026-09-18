@@ -549,6 +549,45 @@ struct ufdsMaskWorkspace
             moleculeEdgeCount <= decompositionCacheMaximumMoleculeEdges;
     }
 
+    /**
+     * Retained cache storage, excluding general fragmentation scratch. Vector
+     * capacities are exact; wide component mask payload is estimated per
+     * retained reference (shared payload and arena slack are not attributed).
+     */
+    [[nodiscard]] uint64_t decompositionCacheRetainedBytes() const noexcept
+    {
+        uint64_t bytes =
+            lowDecompositionCache.capacity() * sizeof(lowResidualDecompositionCacheEntry) +
+            wideDecompositionCache.capacity() * sizeof(wideResidualDecompositionCacheEntry) +
+            wideDecompositionCacheSlots.capacity() * sizeof(uint16_t) +
+            wideDecompositionCacheKeys.capacity() * sizeof(uint64_t) +
+            decompositionSeenBits.capacity() * sizeof(uint64_t) +
+            wideDecompositionSeenOccupied.capacity() * sizeof(uint64_t) +
+            residualCanonicalIdBindings.capacity() * sizeof(residualCanonicalIdBinding);
+        if (wideDecompositionSeenFingerprints != nullptr)
+            bytes += decompositionCacheEntryLimit * sizeof(uint64_t);
+        auto addComponents = [&bytes](const auto &entries)
+        {
+            for (const auto &entry : entries)
+            {
+                const auto &components = entry.decomposition.components;
+                bytes += components.capacity() * sizeof(assemblyFragment);
+                if (EdgeMask::activeWordCount() > 1)
+                {
+                    for (const assemblyFragment &fragment : components)
+                    {
+                        if (fragment.mask != 0)
+                            bytes += sizeof(size_t) +
+                                EdgeMask::activeWordCount() * sizeof(uint64_t);
+                    }
+                }
+            }
+        };
+        addComponents(lowDecompositionCache);
+        addComponents(wideDecompositionCache);
+        return bytes;
+    }
+
     bool usesWideDecompositionCache() const
     {
         return edgeCount > numeric_limits<uint64_t>::digits;

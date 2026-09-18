@@ -46,7 +46,8 @@ public:
         std::pmr::memory_resource *keyUpstream =
             std::pmr::get_default_resource()
     ):
-        keyArena(requireUpstream(keyUpstream)),
+        keyStorage(requireUpstream(keyUpstream)),
+        keyArena(&keyStorage),
         slots(normaliseCapacity(initialCapacity))
     {}
 
@@ -100,6 +101,12 @@ public:
         return slots.size();
     }
 
+    /** Exact retained slot capacity and upstream monotonic-arena allocations. */
+    [[nodiscard]] std::uint64_t retainedBytes() const noexcept
+    {
+        return slots.capacity() * sizeof(slot) + keyStorage.bytes;
+    }
+
 private:
     static constexpr std::size_t minimumCapacity = 8;
 
@@ -127,6 +134,40 @@ private:
     static constexpr std::size_t foundDistance =
         std::numeric_limits<std::size_t>::max();
 
+    // Count arena block allocations, not each copied key or lookup. Keeping
+    // this resource before the arena also preserves destruction ordering.
+    class retainedKeyResource final : public std::pmr::memory_resource
+    {
+    public:
+        explicit retainedKeyResource(std::pmr::memory_resource *resource):
+            upstream(resource) {}
+        std::uint64_t bytes = 0;
+
+    private:
+        std::pmr::memory_resource *upstream;
+
+        void *do_allocate(std::size_t amount, std::size_t alignment) override
+        {
+            void *allocation = upstream->allocate(amount, alignment);
+            bytes += amount;
+            return allocation;
+        }
+
+        void do_deallocate(
+            void *allocation, std::size_t amount, std::size_t alignment
+        ) override
+        {
+            upstream->deallocate(allocation, amount, alignment);
+            bytes -= amount;
+        }
+
+        bool do_is_equal(const std::pmr::memory_resource &other) const noexcept override
+        {
+            return this == &other;
+        }
+    };
+
+    retainedKeyResource keyStorage;
     std::pmr::monotonic_buffer_resource keyArena;
     std::vector<slot> slots;
     std::size_t sizeValue = 0;
@@ -365,25 +406,47 @@ public:
         return bytes;
     }
 
+    static std::size_t reserveBytesFromEnvironment()
+    {
+        const char *value = std::getenv(
+            "PARALLELASSEMBLYCPP_SHARED_CACHE_RESERVE_BYTES"
+        );
+        if (value == nullptr) return 0;
+        const std::string_view text(value);
+        std::size_t bytes = 0;
+        const auto parsed = std::from_chars(
+            text.data(), text.data() + text.size(), bytes
+        );
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+            throw std::invalid_argument("invalid shared cache reserve byte budget");
+        return bytes;
+    }
+
     /**
      * Worker indices own unsynchronised arenas; concurrent callers must use
      * distinct indices. The upstream must outlive the table and support
      * concurrent refills. maxBytes caps retained entry/key bytes, split evenly
      * over shards; zero means unlimited. Index arrays and arena slack are
      * reported separately and are not included in this admission budget.
+     * reserveBytes independently budgets extra hash/pointer arrays allocated
+     * before workers start. Capacities round down to powers of two, evenly
+     * across shards; zero retains the inline indices. This is a startup
+     * reservation, not a growth limit. No entries or keys are preallocated.
      */
     explicit sharedAssemblyTranspositionTable(
         std::size_t workerCount = 0,
         std::pmr::memory_resource *workerUpstream =
             std::pmr::new_delete_resource(),
         policy admissionPolicy = policy::shared,
-        std::size_t maxBytes = 0
+        std::size_t maxBytes = 0,
+        std::size_t reserveBytes = 0
     ):
         allocationResource(workerUpstream),
         admissionPolicyValue(admissionPolicy),
         bounded(maxBytes != 0),
         shardByteBudget(maxBytes / shardCount)
     {
+        reserveIndices(reserveBytes);
         workerPools.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker)
             workerPools.push_back(std::make_unique<
@@ -399,9 +462,14 @@ public:
             // destructible keys. Release those arenas in bulk without a
             // pointer-chasing pass over every occupied slot at shutdown.
             if (selected.directAllocatedBytes == 0) continue;
-            for (entry *stored : selected.activeKeys())
+            const std::span<std::uint32_t> hashes = selected.activeHashes();
+            const std::span<entry *> keys = selected.activeKeys();
+            for (std::size_t index = 0; index < hashes.size(); ++index)
             {
-                if (stored != nullptr && stored->pooled == 0)
+                // Empty pointer slots are deliberately uninitialised.
+                if (hashes[index] == 0) continue;
+                entry *stored = keys[index];
+                if (stored->pooled == 0)
                 {
                     const std::size_t bytes = entryBytes(stored->length);
                     std::pmr::new_delete_resource()->deallocate(
@@ -433,16 +501,24 @@ public:
      * and directly allocated keys. Timings are collected only in telemetry
      * builds. Growth duration includes allocation, rehash and old-index free
      * under the lock; maxGrowthNanoseconds is the longest individual growth.
+     * Rehash measures only the relocation loop. Lock hold includes all lookup
+     * critical-section work, including exceptional exits, but excludes mutex
+     * acquisition/release and the timer's own accounting. Arena refills count
+     * and time upstream allocation attempts, including failed attempts.
      */
     struct statistics
     {
         std::uint64_t hitCount = 0;
         std::uint64_t missCount = 0;
         std::uint64_t collisionChainSteps = 0;
+        std::uint64_t metadataRejectCount = 0;
+        std::uint64_t keyComparisonCount = 0;
         std::uint64_t allocatedBytes = 0;
         std::uint64_t lockAcquisitionCount = 0;
         std::uint64_t lockWaitCount = 0;
         std::uint64_t lockWaitNanoseconds = 0;
+        std::uint64_t lockHoldNanoseconds = 0;
+        std::uint64_t maxLockHoldNanoseconds = 0;
         std::uint64_t admissionCount = 0;
         std::uint64_t admissionRejectionCount = 0;
         std::uint64_t prunedHitCount = 0;
@@ -454,6 +530,11 @@ public:
         std::uint64_t rehashedEntries = 0;
         std::uint64_t growthNanoseconds = 0;
         std::uint64_t maxGrowthNanoseconds = 0;
+        std::uint64_t rehashNanoseconds = 0;
+        std::uint64_t maxRehashNanoseconds = 0;
+        std::uint64_t arenaRefillCount = 0;
+        std::uint64_t arenaRefillNanoseconds = 0;
+        std::uint64_t maxArenaRefillNanoseconds = 0;
     };
 
     [[nodiscard]] bool lookupEnabled() const noexcept
@@ -512,10 +593,16 @@ public:
             result.hitCount += source.hitCount;
             result.missCount += source.missCount;
             result.collisionChainSteps += source.collisionChainSteps;
+            result.metadataRejectCount += source.metadataRejectCount;
+            result.keyComparisonCount += source.keyComparisonCount;
             result.allocatedBytes += source.allocatedBytes;
             result.lockAcquisitionCount += source.lockAcquisitionCount;
             result.lockWaitCount += source.lockWaitCount;
             result.lockWaitNanoseconds += source.lockWaitNanoseconds;
+            result.lockHoldNanoseconds += source.lockHoldNanoseconds;
+            result.maxLockHoldNanoseconds = std::max(
+                result.maxLockHoldNanoseconds, source.maxLockHoldNanoseconds
+            );
             result.admissionCount += source.admissionCount;
             result.admissionRejectionCount += source.admissionRejectionCount;
             result.prunedHitCount += source.prunedHitCount;
@@ -526,9 +613,13 @@ public:
             result.maxGrowthNanoseconds = std::max(
                 result.maxGrowthNanoseconds, source.maxGrowthNanoseconds
             );
+            result.rehashNanoseconds += source.rehashNanoseconds;
+            result.maxRehashNanoseconds = std::max(
+                result.maxRehashNanoseconds, source.maxRehashNanoseconds
+            );
             result.slotBytes += sizeof(selected.initialKeys) +
                 sizeof(selected.initialHashes) +
-                selected.expandedKeys.capacity() * sizeof(entry *) +
+                selected.expandedHashes.size() * sizeof(entry *) +
                 selected.expandedHashes.capacity() * sizeof(std::uint32_t);
             result.admissionFilterBytes +=
                 selected.admissionFilter.capacity() * sizeof(std::uint32_t);
@@ -537,6 +628,16 @@ public:
         result.arenaAllocatedBytes += allocationResource.bytes.load(
             std::memory_order_relaxed
         );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        result.arenaRefillCount = allocationResource.refillCount.load(
+            std::memory_order_relaxed
+        );
+        result.arenaRefillNanoseconds = allocationResource.refillNanoseconds.load(
+            std::memory_order_relaxed
+        );
+        result.maxArenaRefillNanoseconds =
+            allocationResource.maxRefillNanoseconds.load(std::memory_order_relaxed);
+#endif
         return result;
     }
 
@@ -578,7 +679,9 @@ private:
         std::array<std::uint32_t, minimumShardCapacity> initialHashes{};
         std::array<entry *, minimumShardCapacity> initialKeys{};
         std::vector<std::uint32_t> expandedHashes;
-        std::vector<entry *> expandedKeys;
+        // Only occupied metadata slots have initialised pointers. Keeping the
+        // pointer array uninitialised avoids zeroing it under the growth lock.
+        std::unique_ptr<entry *[]> expandedKeys;
         // A bounded, direct-mapped first-sighting filter, allocated only for
         // selective mode. Fingerprints control admission, never equality.
         std::vector<std::uint32_t> admissionFilter;
@@ -594,15 +697,41 @@ private:
 
         std::span<entry *> activeKeys() noexcept
         {
-            if (expandedKeys.empty()) return initialKeys;
-            return expandedKeys;
+            if (expandedHashes.empty()) return initialKeys;
+            return {expandedKeys.get(), expandedHashes.size()};
         }
     };
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    struct scopedDuration
+    {
+        std::uint64_t &total;
+        std::uint64_t &maximum;
+        const std::chrono::steady_clock::time_point started =
+            std::chrono::steady_clock::now();
+
+        ~scopedDuration() noexcept
+        {
+            const auto elapsed = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started
+                ).count()
+            );
+            total += elapsed;
+            maximum = std::max(maximum, elapsed);
+        }
+    };
+#endif
 
     class measuredResource final : public std::pmr::memory_resource
     {
     public:
         std::atomic<std::uint64_t> bytes{0};
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        std::atomic<std::uint64_t> refillCount{0};
+        std::atomic<std::uint64_t> refillNanoseconds{0};
+        std::atomic<std::uint64_t> maxRefillNanoseconds{0};
+#endif
         explicit measuredResource(std::pmr::memory_resource *resource):
             upstream(resource)
         {
@@ -611,9 +740,43 @@ private:
         }
     private:
         std::pmr::memory_resource *upstream;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        struct refillDuration
+        {
+            measuredResource &resource;
+            const std::chrono::steady_clock::time_point started =
+                std::chrono::steady_clock::now();
+
+            ~refillDuration() noexcept
+            {
+                const auto elapsed = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - started
+                    ).count()
+                );
+                resource.refillCount.fetch_add(1, std::memory_order_relaxed);
+                resource.refillNanoseconds.fetch_add(
+                    elapsed, std::memory_order_relaxed
+                );
+                auto maximum = resource.maxRefillNanoseconds.load(
+                    std::memory_order_relaxed
+                );
+                while (maximum < elapsed &&
+                    !resource.maxRefillNanoseconds.compare_exchange_weak(
+                        maximum, elapsed, std::memory_order_relaxed
+                    )) {}
+            }
+        };
+#endif
         void *do_allocate(std::size_t size, std::size_t alignment) override
         {
-            void *result = upstream->allocate(size, alignment);
+            void *result;
+            {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                const refillDuration duration{*this};
+#endif
+                result = upstream->allocate(size, alignment);
+            }
             bytes.fetch_add(size, std::memory_order_relaxed);
             return result;
         }
@@ -638,6 +801,41 @@ private:
     bool bounded;
     std::size_t shardByteBudget;
 
+    static std::size_t maximumExpandedCapacity(const shard &selected) noexcept
+    {
+        // Retain the vector's previous pointer-array size bound, including
+        // the byte limit imposed by representable iterator differences.
+        return std::min(
+            selected.expandedHashes.max_size(),
+            static_cast<std::size_t>(
+                std::numeric_limits<std::ptrdiff_t>::max()
+            ) / sizeof(entry *)
+        );
+    }
+
+    void reserveIndices(std::size_t byteBudget)
+    {
+        if (!lookupEnabled()) return;
+        // Inline storage stays part of the table object. Budget only the
+        // additional arrays, including their empty slots, without overflow.
+        const std::size_t slotsPerShard = byteBudget / shardCount /
+            (sizeof(std::uint32_t) + sizeof(entry *));
+        const std::size_t maximumCapacity = maximumExpandedCapacity(shards.front());
+        const std::size_t limit = std::min(slotsPerShard, maximumCapacity);
+        std::size_t capacity = minimumShardCapacity;
+        while (capacity <= limit / 2) capacity *= 2;
+        if (capacity == minimumShardCapacity) return;
+        // Constructor failure releases every previously allocated array.
+        // No shard mutex is held and no worker can observe a partial reserve.
+        for (shard &selected : shards)
+        {
+            std::vector<std::uint32_t> hashes(capacity);
+            auto keys = std::make_unique_for_overwrite<entry *[]>(capacity);
+            selected.expandedHashes.swap(hashes);
+            selected.expandedKeys.swap(keys);
+        }
+    }
+
     consideration considerWithResource(
         std::span<const int> key,
         int sumDupBonds,
@@ -659,6 +857,13 @@ private:
         std::unique_lock lock = lockShard(
             selected, lockWaited, lockWaitNanoseconds
         );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        // Declared after the lock so exceptional exits record while protected.
+        const scopedDuration lockDuration{
+            selected.counters.lockHoldNanoseconds,
+            selected.counters.maxLockHoldNanoseconds
+        };
+#endif
         const entryFindResult found = find(selected, key, hash);
         selected.counters.collisionChainSteps += found.collisionChainSteps;
         if (found.value != nullptr)
@@ -746,6 +951,9 @@ private:
         {
             if (hashes[index] == storedHash)
             {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                ++selected.counters.keyComparisonCount;
+#endif
                 entry *candidate = selected.activeKeys()[index];
                 if (keysEqual(*candidate, key))
                 {
@@ -754,6 +962,10 @@ private:
                     return result;
                 }
             }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            else
+                ++selected.counters.metadataRejectCount;
+#endif
             ++result.collisionChainSteps;
             index = (index + 1) & mask;
         }
@@ -790,23 +1002,30 @@ private:
         {
             const std::span<std::uint32_t> hashes = selected.activeHashes();
             const std::span<entry *> keys = selected.activeKeys();
-            const std::size_t maximumCapacity = std::min(
-                selected.expandedHashes.max_size(),
-                selected.expandedKeys.max_size()
-            );
+            const std::size_t maximumCapacity = maximumExpandedCapacity(selected);
             if (hashes.size() > maximumCapacity / 4)
                 throw std::length_error("shared transposition shard is too large");
             // Allocate both indices before mutating the shard. If either
             // allocation fails, every existing key remains reachable.
             std::vector<std::uint32_t> expandedHashes(hashes.size() * 4);
-            std::vector<entry *> expandedKeys(hashes.size() * 4);
-            for (std::size_t index = 0; index < hashes.size(); ++index)
+            auto expandedKeys = std::make_unique_for_overwrite<entry *[]>(
+                hashes.size() * 4
+            );
             {
-                if (hashes[index] == 0) continue;
-                const std::size_t destination =
-                    emptySlot(expandedHashes, hashes[index]);
-                expandedHashes[destination] = hashes[index];
-                expandedKeys[destination] = keys[index];
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                const scopedDuration rehashDuration{
+                    selected.counters.rehashNanoseconds,
+                    selected.counters.maxRehashNanoseconds
+                };
+#endif
+                for (std::size_t index = 0; index < hashes.size(); ++index)
+                {
+                    if (hashes[index] == 0) continue;
+                    const std::size_t destination =
+                        emptySlot(expandedHashes, hashes[index]);
+                    expandedHashes[destination] = hashes[index];
+                    expandedKeys[destination] = keys[index];
+                }
             }
             selected.expandedHashes.swap(expandedHashes);
             selected.expandedKeys.swap(expandedKeys);

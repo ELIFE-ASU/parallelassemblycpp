@@ -15,13 +15,15 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 if __package__:
-    from . import benchmark
+    from . import benchmark, search_profiles
 else:
     import benchmark
+    import search_profiles
 
 
 POLICY_ENV = "PARALLELASSEMBLYCPP_SHARED_CACHE_POLICY"
 BYTES_ENV = "PARALLELASSEMBLYCPP_SHARED_CACHE_BYTES"
+RESERVE_BYTES_ENV = "PARALLELASSEMBLYCPP_SHARED_CACHE_RESERVE_BYTES"
 POLICIES = ("shared", "local", "selective")
 DEFAULT_SELECTIVE_BYTES = 256 * 1024 * 1024
 
@@ -123,6 +125,7 @@ def execution_configs(
         ("OMP_PLACES", "cores"),
         (POLICY_ENV, "shared"),
         (BYTES_ENV, "0"),
+        (RESERVE_BYTES_ENV, "0"),
     ]
     configs = {}
     for name, extra in [
@@ -271,6 +274,10 @@ def summary_rows(
             ("baseline", baseline_profiles[result.case.name]),
         ):
             row[f"{role}_peak_rss_kib"] = profile["peak_rss_kib"]
+            for field, value in search_profiles.summary_fields(
+                profile.get("telemetry")
+            ).items():
+                row[f"{role}_{field}"] = value
             cache = shared_cache_fields(profile)
             for field, value in cache.items():
                 row[f"{role}_cache_{field}"] = value

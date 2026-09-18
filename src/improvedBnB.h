@@ -1,6 +1,22 @@
 #pragma once
 
 #include "compilerAttributes.h"
+#include <cstdlib>
+#include <string_view>
+
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL bool parallelChildFirst = false;
+inline PARALLELASSEMBLYCPP_SEARCH_LOCAL bool parallelMatchingRefresh = true;
+
+inline bool parallelSearchBooleanSetting(const char *name, bool defaultValue)
+{
+    const char *setting = std::getenv(name);
+    if (setting == nullptr) return defaultValue;
+    if (std::string_view(setting) == "0") return false;
+    if (std::string_view(setting) == "1") return true;
+    throw std::invalid_argument(std::string(name) + " must be 0 or 1");
+}
+#endif
 
 /**
  * @brief Enumerate all subgraphs during the initial phase of the pathway algorithm. See Seet et al section 4.3 Duplicate Enumeration
@@ -973,6 +989,9 @@ void recordImprovedAssemblyIndex(
         bestAssemblyIndex = min(bestAssemblyIndex, observed);
         if (candidate > bestAssemblyIndex) return;
     }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    recordSearchTelemetryIncumbent(candidate);
+#endif
     if (activeDistributedSearch != nullptr)
     {
         activeDistributedSearch->publishIncumbent(candidate);
@@ -999,6 +1018,17 @@ void recordImprovedAssemblyIndex(
     if (writeIntermediateAssemblyIndices)
         intermediateAssemblyIndices.emplace_back(time, bestAssemblyIndex);
 }
+
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+inline void recordSearchStateBoundPrune()
+{
+    if (searchTelemetryEnabled) [[unlikely]]
+    {
+        ++searchTelemetry.counters.statesPruned;
+        ++searchTelemetry.counters.statesBoundPruned;
+    }
+}
+#endif
 
 template<
     matchingEquivalenceMode equivalenceMode,
@@ -1048,7 +1078,10 @@ bool continueCanonicalAssemblySearchWithWorkspace(
         if (immediatelyPruned != nullptr) *immediatelyPruned = true;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         if (searchTelemetryEnabled) [[unlikely]]
+        {
             ++searchTelemetry.counters.assemblyCachePrunedHits;
+            ++searchTelemetry.counters.statesPruned;
+        }
 #endif
         return true;
     }
@@ -1182,7 +1215,8 @@ bool continueAssemblySearchWithWorkspace(
     int sumDupBonds,
     int &bestAssemblyIndex,
     ufdsMaskWorkspace &fragmentationWorkspace,
-    assemblySearchStorage &searchStorage
+    assemblySearchStorage &searchStorage,
+    bool *immediatelyPruned = nullptr
 )
 {
     return continueCanonicalAssemblySearchWithWorkspace<
@@ -1199,7 +1233,8 @@ bool continueAssemblySearchWithWorkspace(
         bestAssemblyIndex,
         fragmentationWorkspace,
         searchStorage,
-        &matching
+        &matching,
+        immediatelyPruned
     );
 }
 
@@ -1229,7 +1264,9 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     const bool usePairBound =
         fragmentationWorkspace.edgeCount >= pairBoundMinimumMoleculeEdges;
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
-    matchingBoundRefresh<true> boundRefresh(sharedAssemblyIndex);
+    matchingBoundRefresh<true> boundRefresh(
+        parallelMatchingRefresh ? sharedAssemblyIndex : nullptr);
+    [[maybe_unused]] bool keptFirstChild = false;
 #else
     matchingBoundRefresh<false> boundRefresh(nullptr);
 #endif
@@ -1244,6 +1281,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
     }
     if (searchShouldStop()) return;
 
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.statesExpanded;
+#endif
     dagAssemblySearchFrameScope frameScope(
         searchStorage,
         input.fragments.size()
@@ -1338,6 +1379,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                 matchingBoundWork::duplicateClass
             );
 #endif
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            if (searchTelemetryEnabled && earlyAssemblyIndexBound >= bestAssemblyIndex)
+                ++searchTelemetry.counters.duplicateClassesPruned;
+#endif
             if (earlyAssemblyIndexBound < bestAssemblyIndex)
             {
                 int matchingClassBound = numeric_limits<int>::min();
@@ -1375,6 +1420,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                 bestAssemblyIndex,
                                 matchingBoundWork::duplicateClass
                             );
+#endif
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                            if (searchTelemetryEnabled)
+                                ++searchTelemetry.counters.duplicateClassesPruned;
 #endif
                             continue;
                         }
@@ -1505,6 +1554,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                         matchingBoundWork::occurrencePair
                                     );
 #endif
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                    if (searchTelemetryEnabled)
+                                        ++searchTelemetry.counters.occurrencePairsPruned;
+#endif
                                     return true;
                                 }
                             }
@@ -1575,6 +1628,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                     static_cast<unsigned int>(relativeDepth)
                                 : ParallelTaskScheduler::maximumTaskDepth + 1;
                             if (
+                                (!parallelChildFirst || keptFirstChild) &&
                                 taskDepth <=
                                     ParallelTaskScheduler::maximumTaskDepth &&
                                 parallelTaskScheduler != nullptr &&
@@ -1605,6 +1659,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             candidateKey,
                             fragmentationWorkspace
                         )) return false;
+                        bool immediatelyPruned = false;
                         // Parallel searches retain donation capability while
                         // runtime starvation telemetry and the depth bound
                         // decide whether this particular descendant moves.
@@ -1624,9 +1679,18 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                             sumDupBonds,
                             bestAssemblyIndex,
                             fragmentationWorkspace,
-                            searchStorage
+                            searchStorage,
+                            allowParallelDonation ? &immediatelyPruned : nullptr
                         )) return false;
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+                        // A transposition hit has not explored a child. Keep
+                        // trying locally until one actually enters recursion.
+                        keptFirstChild = keptFirstChild || !immediatelyPruned;
+#endif
                     }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                    else recordSearchStateBoundPrune();
+#endif
                     return true;
                 };
                 bool completed;
@@ -1843,6 +1907,10 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                                                     matchingBoundWork::fragmentPairBlock
                                                 );
 #endif
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                                                if (searchTelemetryEnabled)
+                                                    ++searchTelemetry.counters.fragmentPairBlocksPruned;
+#endif
                                                 return true;
                                             }
                                         }
@@ -1915,6 +1983,8 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
 
     vector<initialDuplicateClassLevel> duplicateLevels;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled) [[unlikely]]
+        ++searchTelemetry.counters.statesExpanded;
     setSearchTelemetryPhase(SearchTelemetryPhase::initialEnumeration);
 #endif
     const bool hasInitialMatchings = initialRecursiveEnumeration(
@@ -2040,6 +2110,9 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
                         searchStorage
                     )) return false;
                 }
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                else recordSearchStateBoundPrune();
+#endif
                 return true;
             };
             bool completed;
@@ -2121,6 +2194,24 @@ void initialRecursiveAssemblyWithWorkspace(
     }
 }
 
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+inline void captureLocalSearchCacheTelemetry(
+    const assemblySearchStorage &searchStorage,
+    const ufdsMaskWorkspace &fragmentationWorkspace
+)
+{
+    if (!searchTelemetryEnabled) return;
+    const CanonicalCacheRetainedBytes canonical = localCanonicalCacheRetainedBytes();
+    searchTelemetry.localCaches = {
+        canonical.maskCacheBytes,
+        canonical.graphCacheBytes,
+        canonical.treeInternerBytes,
+        searchStorage.states.retainedBytes(),
+        fragmentationWorkspace.decompositionCacheRetainedBytes()
+    };
+}
+#endif
+
 template<bool trackPath>
 bool runImprovedAssemblySearch(
     vector<dagLevel> &dag,
@@ -2147,6 +2238,7 @@ bool runImprovedAssemblySearch(
     );
 
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
+    captureLocalSearchCacheTelemetry(searchStorage, fragmentationWorkspace);
     setSearchTelemetryPhase(SearchTelemetryPhase::output);
 #endif
     // Append the numeric result even when the search stops at a limit.
@@ -2389,6 +2481,10 @@ void prepareParallelSearchContext(
         false
     );
     context.rootAssemblyIndex = root.assemblyIndex();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    recordSearchTelemetryIncumbent(context.rootAssemblyIndex);
+    if (searchTelemetryEnabled) ++searchTelemetry.counters.statesExpanded;
+#endif
 
     vector<initialDuplicateClassLevel> levels;
     duplicateClassIndexWorkspace classIndex;
@@ -2468,7 +2564,8 @@ void configureParallelSharedReuse(
             localWorkerCount,
             std::pmr::new_delete_resource(),
             sharedAssemblyTranspositionTable::policyFromEnvironment(),
-            sharedAssemblyTranspositionTable::maxBytesFromEnvironment()
+            sharedAssemblyTranspositionTable::maxBytesFromEnvironment(),
+            sharedAssemblyTranspositionTable::reserveBytesFromEnvironment()
         );
 }
 
@@ -2478,6 +2575,12 @@ void configureParallelWorker(
     std::size_t workerIndex
 )
 {
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+    parallelChildFirst = parallelSearchBooleanSetting(
+        "PARALLELASSEMBLYCPP_CHILD_FIRST", false);
+    parallelMatchingRefresh = parallelSearchBooleanSetting(
+        "PARALLELASSEMBLYCPP_MATCHING_REFRESH", true);
+#endif
     // Establish a safe empty state first so cleanup is unconditional even if
     // a later allocation or graph configuration throws.
     sharedTargetMolecule = nullptr;
@@ -2639,7 +2742,13 @@ bool runParallelRootJobImpl(
     worker.candidate.sumDupBonds = sumDupBonds;
     if (
         worker.candidate.lowerBoundAssemblyIndex() >= worker.assemblyIndex
-    ) return true;
+    )
+    {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        recordSearchStateBoundPrune();
+#endif
+        return true;
+    }
 
     IntegerVector &candidateKey = worker.search.candidateKey;
     if (!canoniseAssemblyStateAndBuildKey(
@@ -2689,6 +2798,8 @@ bool runParallelRootJob(
     >(context, jobIndex, worker);
 }
 
+#include "parallelGreedyBootstrap.h"
+
 /** Evaluate the strongest one-step branch before workers enter the queue. */
 void warmStartParallelIncumbent(
     const SearchContext &context,
@@ -2697,6 +2808,15 @@ void warmStartParallelIncumbent(
 )
 {
     if (jobIndex >= context.rootJobs.size() || searchShouldStop()) return;
+    if (parallelGreedyBootstrapEnabled())
+    {
+        [[maybe_unused]] const auto result =
+            runParallelGreedyBootstrap(context, jobIndex, worker);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (result.steps > 0) ++searchWarmStartBranches;
+#endif
+        return;
+    }
     const rootJobDescriptor &job = context.rootJobs[jobIndex];
     const rootOccurrenceDescriptor &firstOccurrence =
         context.rootOccurrences[job.firstOccurrence];
@@ -2787,6 +2907,9 @@ bool runParallelTaskImpl(
     }
     if (task.lowerBoundAssemblyIndex >= worker.assemblyIndex)
     {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        recordSearchStateBoundPrune();
+#endif
         immediatelyPruned = true;
         return true;
     }
@@ -3016,6 +3139,10 @@ void runParallelRootJobs(
  */
 bool improvedBnB(molGraph &molecule, ofstream &outputStream)
 {
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled)
+        searchTelemetry.searchStartedNanoseconds = searchTelemetryWallNanoseconds();
+#endif
     sharedTargetMolecule = nullptr;
     sharedUniverseEdgeList = nullptr;
     startTime = clock();

@@ -1,5 +1,8 @@
 # Benchmarks
 
+The [search locality experiment](search-locality-results.md) records the
+8/28-worker comparison, incumbent trajectories, cache retention, and validation.
+
 The benchmark tools run isolated ParallelAssemblyCpp calculations, verify their
 assembly indices, and report wall time and program-reported `std::clock` ticks.
 Plotting requires Matplotlib, included in `environment.yml`. For an existing
@@ -213,7 +216,7 @@ distributed root-queue participation, dynamic branch leases, global root-branch
 coverage, depth-two and deeper task transfers, local executions and steals,
 scheduler idle waits, deep-refill activations, task-queue high-water marks,
 maximum executed task depth, incumbent warm starts, steady-clock worker timing,
-and all 37 raw search counters per worker plus their exact aggregate. The
+and all raw search counters per worker plus their exact aggregate. The
 parallel aggregate also reports shared-L2 hits, misses, collision-chain probe
 steps, retained entry bytes, and contended shard-lock waits and wait time.
 Parallel phase memory is disabled because `/proc` peak resets are process-wide.
@@ -425,6 +428,59 @@ bypassing L2 lookups. The default solver policy remains unrestricted sharing.
 the reference, and `--variant-env NAME:KEY=VALUE` overrides one candidate.
 Evaluate runtime and pruning alongside hit rate: even an infrequent hit may
 avoid a costly subtree.
+
+### Index reservation and critical-section profiling
+
+L2 keeps four-byte hash metadata contiguous and loads a key pointer only after
+the metadata matches. The final comparison still checks the entire key and its
+length. Expanded pointer arrays are allocated without a redundant zero fill:
+hash metadata identifies occupied slots for lookup, growth, and destruction.
+Telemetry reports `metadata_reject_count` and `key_comparison_count` separately
+from `collision_chain_steps`, so probe counts need not be mistaken for pointer
+loads.
+
+`PARALLELASSEMBLYCPP_SHARED_CACHE_RESERVE_BYTES` optionally reserves additional
+hash/pointer arrays before workers start. The default is zero. The budget is
+split over 64 shards and capacities round down to powers of two. Reservations
+no larger than the inline capacity do nothing; local-only policy also skips
+reservation. The budget excludes the existing inline arrays and does not cap
+later growth, entry/key admission, or arena slack. On a 64-bit build, 50,331,648
+bytes reserves 65,536 slots per shard. Preallocation is included in wall time
+and RSS; moving work out of a lock does not necessarily make the search faster.
+
+Compare the same executable with and without reservation:
+
+```bash
+python benchmarks/shared_cache_experiment.py \
+  --baseline-executable build/parallel/ParallelAssemblyCppOMP \
+  --executable build/parallel/ParallelAssemblyCppOMP \
+  --baseline-telemetry-executable build/parallel/ParallelAssemblyCppOMPTelemetry \
+  --telemetry-executable build/parallel/ParallelAssemblyCppOMPTelemetry \
+  --variant reserve48=shared \
+  --variant-env reserve48:PARALLELASSEMBLYCPP_SHARED_CACHE_RESERVE_BYTES=50331648 \
+  --threads 8 --runs 6 --warmup 1 \
+  --output-dir build/reserve-experiment
+```
+
+The driver explicitly defaults both roles' reserve budgets to zero, protecting
+comparisons from inherited settings. Use ordinary executables for timings and
+separate telemetry executables for profiling. Lock-hold durations cover lookup,
+admission, key allocation, and growth under the shard lock, including exception
+exits. Growth includes index allocation, rehash, and old-index release; rehash
+times only the relocation loop. Arena-refill durations measure worker arenas'
+upstream allocation attempts, including failures, rather than every key
+allocation.
+Each duration has a total and maximum. These intervals overlap and totals sum
+across workers; they do not measure CPU utilization or critical-path savings.
+Instrumented timings include timer overhead and OS preemption.
+
+Sharing immutable keys with L1 remains a separate ownership change. L1 currently
+copies a missing key before consulting L2, so it would need a lookup/commit split
+and a common immutable key representation, while keeping scores private. Any
+borrowed L2 key must outlive every referring L1; rejected admissions still need
+L1-owned storage. Index eviction alone can preserve search-lifetime arena keys,
+but reclaiming their memory would require pins, reference counts, or retiring
+whole generations only after all referring L1 caches are cleared.
 
 ## LTO and PGO
 
@@ -659,6 +715,94 @@ To collect a separate untimed telemetry calculation at each count, build
 Telemetry uses the candidate's thread count and placement and is excluded from
 the timing summary.
 
+With `--telemetry`, both the OpenMP sweep and `hybrid_scaling.py` also write
+`search-profiles.json` and add search-work columns to `scaling.txt`. The hybrid
+driver uses `ParallelAssemblyCppHybridTelemetry` and applies the same MPI launcher,
+rank count, thread count, and binding as the timed candidate. Each placement's
+profile records the full incumbent trajectory, expanded/pruned-state counts,
+canonical-mask hits and misses, and retained bytes for worker-local caches.
+The underlying paired report retains every worker's counters and trajectory.
+
+For example, collect the requested 8-to-28-worker comparison on an allocation
+with at least 28 available physical cores:
+
+```bash
+python benchmarks/paclitaxel_scaling.py \
+  --build-dir build/parallel --threads 8 28 --physical-cores-only \
+  --runs 6 --warmup 1 --telemetry --output-dir build/paclitaxel-work-profile
+python benchmarks/hybrid_scaling.py \
+  --build-dir build/parallel --cpus 28 --layouts 2x4 2x14 4x7 \
+  --runs 6 --warmup 1 --telemetry --output-dir build/paclitaxel-hybrid-work-profile
+```
+
+`incumbent_trajectory` records strict improvements as
+`{elapsed_nanoseconds, assembly_index, rank, global_worker_index}`. Its clock is
+steady wall time since search initialization, including initial enumeration;
+MPI rank starts are barrier aligned. The combined trajectory describes discovery
+of feasible incumbents, so its last timestamp is when the final incumbent was
+first found, rather than when optimality was proved or every MPI rank received
+the new bound. `trajectory_index=internal_before_disjoint_compensation` identifies
+internal search indices; for disconnected inputs these can differ from the
+compensated assembly index in solver output. Compare timestamps with the
+profile run duration to distinguish discovery time from proof work. Worker
+trajectories may be empty when a worker publishes no improvement.
+
+`states_expanded` counts materialized search states reaching expansion;
+`states_pruned` counts materialized states rejected by the incumbent bound or
+assembly-state cache, and `states_bound_pruned` identifies the bound subset.
+`duplicate_classes_pruned`, `occurrence_pairs_pruned`, and
+`fragment_pair_blocks_pruned` count avoided branches at different loop levels;
+they must not be added to state counts. A rise in matching visits or canonical
+misses alone cannot distinguish search order, pruning, and cache replication.
+
+`local_caches` reports retained capacity at worker completion, with separate
+canonical-mask, canonical-graph, canonical-tree, assembly-state, and residual
+decomposition estimates. Totals sum across workers and MPI ranks. These are
+capacity estimates excluding allocator overhead, shared storage, and scratch
+space; they are neither process RSS nor a simultaneously sampled memory peak.
+Compare them with the separate RSS profile from `shared_cache_experiment.py`
+before increasing cache capacity. That experiment's CSV now includes state
+counts, canonical-mask misses, final-incumbent time, and retained-byte columns
+for both candidate and baseline profiles.
+
+The local mask cache defaults to `ASSEMBLY_CANONICAL_MASK_CACHE=flat`;
+`ASSEMBLY_CANONICAL_MASK_CACHE=unordered` selects the previous backend for
+comparisons. The flat backend stores one- and two-word mask keys directly,
+while each cache generation initially uses the unordered map. On the 512th
+distinct mask, eligible domains promote all entries into a flat table whose
+first allocation is 1,024 slots (24 KiB). Smaller working sets stay unordered;
+wider masks always use the unordered path. Clearing the cache resets activation
+while retaining any allocated flat capacity for reuse. The flat table grows
+at 70% load up to 65,536 slots, with an unordered overflow table retaining
+additional entries. Only the flat allocation is capped; total cache storage
+retains the existing unbounded semantics because DAG construction needs every
+admitted mask. Exact canonicalization is unchanged.
+For a controlled same-binary comparison with raw timings and separate profiles:
+
+```bash
+python benchmarks/shared_cache_experiment.py \
+  --baseline-executable build/parallel/ParallelAssemblyCppOMP \
+  --executable build/parallel/ParallelAssemblyCppOMP \
+  --baseline-telemetry-executable build/parallel/ParallelAssemblyCppOMPTelemetry \
+  --telemetry-executable build/parallel/ParallelAssemblyCppOMPTelemetry \
+  --threads 8 --parallel on --suite profile --case paclitaxel \
+  --baseline-env ASSEMBLY_CANONICAL_MASK_CACHE=unordered \
+  --variant flat=shared --variant-env flat:ASSEMBLY_CANONICAL_MASK_CACHE=flat \
+  --runs 6 --warmup 1 --output-dir build/paclitaxel-flat-mask-comparison
+```
+
+The other experiment switches are `PARALLELASSEMBLYCPP_CHILD_FIRST=1`, which
+keeps a promising child on the current worker while donating siblings, and
+`PARALLELASSEMBLYCPP_GREEDY_BOOTSTRAP=1`, which tries a greedy initial solution
+within fixed limits of 32 steps, 65,536 jobs, and 262,144 parent-fragment checks.
+Both default to `0`. `PARALLELASSEMBLYCPP_MATCHING_REFRESH=0` disables the
+existing batch-boundary incumbent refresh for an A/B comparison; its default
+is `1`. Pass these through `--baseline-env` and `--variant-env` in the experiment
+driver, changing one switch at a time. Use the incumbent trajectory to decide
+whether bootstrap work is justified, then compare timings and total expanded
+states with child-first donation. No switch adds a synchronization operation
+to every matching iteration.
+
 For a single four-thread comparison using the general runner:
 
 ```bash
@@ -716,3 +860,30 @@ cmake --preset parallel-tests
 cmake --build --preset parallel-tests
 ctest --preset parallel-tests
 ```
+
+To cover every registered test, including the full serial regression manifest,
+use an unfiltered CTest invocation. The `parallel-tests` test preset itself
+selects only tests labelled `parallel`:
+
+```bash
+cmake --preset parallel-tests -DPARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS=ON
+cmake --build --preset parallel-tests
+ctest --test-dir build/parallel-tests --output-on-failure
+```
+
+Omitting `--suite` selects every unique benchmark case once (37 cases across
+`full`, `profile`, and `scaling`; `quick` is contained in `full`). A complete
+paired benchmark check, with no timing gate on short cases, is:
+
+```bash
+python benchmarks/benchmark.py \
+  --baseline-executable build/before/ParallelAssemblyCpp \
+  --executable build/parallel/ParallelAssemblyCpp \
+  --runs 6 --warmup 1 --timeout 600 \
+  --json-output build/all-cases-comparison.json
+```
+
+Inspect individual longer cases and paired wall-time ratios as well as the suite
+total. Use a fresh report path and an idle machine; telemetry runs are separate
+from timings. Two rounds with no warm-up provide a fast correctness/performance
+smoke check, while the repeated default above is more useful for judging gains.

@@ -235,6 +235,7 @@ struct ParallelReplicaResult
     string error;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     ParallelSearchWorkerTelemetry telemetry;
+    vector<IncumbentTelemetryEvent> incumbentTrajectory;
 #endif
 };
 
@@ -1268,6 +1269,9 @@ bool runPreparedDeterministicSearch(
             )) break;
         }
 
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        captureLocalSearchCacheTelemetry(worker.search, worker.fragmentation);
+#endif
         if (targetAssemblyIndex.has_value())
         {
             if constexpr (trackPath)
@@ -1343,9 +1347,16 @@ ParallelSearchResult runParallelSearch(
 )
 {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    // Align rank-local wall-clock epochs without assuming synchronized steady
+    // clocks across hosts. This instrumentation-only barrier precedes setup.
+    if (searchTelemetryEnabled) MPI_Barrier(MPI_COMM_WORLD);
+#endif
     const uint64_t parallelStartedNanoseconds = searchTelemetryEnabled
         ? searchTelemetryWallNanoseconds()
         : 0;
+    if (searchTelemetryEnabled)
+        searchTelemetry.searchStartedNanoseconds = parallelStartedNanoseconds;
 #endif
     SearchContext searchContext;
     string preparationError;
@@ -1671,6 +1682,7 @@ ParallelSearchResult runParallelSearch(
                 // concurrent workers. Siblings collect counters and time only.
                 resetSearchTelemetry(false);
             }
+            searchTelemetry.searchStartedNanoseconds = parallelStartedNanoseconds;
         }
 #endif
         try
@@ -1720,6 +1732,9 @@ ParallelSearchResult runParallelSearch(
                     );
                 }
                 result.assemblyIndex = worker.assemblyIndex;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                captureLocalSearchCacheTelemetry(worker.search, worker.fragmentation);
+#endif
             }
             clearParallelWorkerMasks();
             result.succeeded = true;
@@ -1788,6 +1803,12 @@ ParallelSearchResult runParallelSearch(
                 static_cast<uint64_t>(searchWarmStartBranches),
                 workerElapsedNanoseconds
             );
+            result.incumbentTrajectory = std::move(searchTelemetry.incumbentTrajectory);
+            for (auto &event : result.incumbentTrajectory)
+            {
+                event.mpiRank = result.telemetry.mpiRank;
+                event.globalWorkerIndex = result.telemetry.globalWorkerIndex;
+            }
             result.telemetry.taskSerializationNanoseconds =
                 searchTaskSerializationNanoseconds;
             result.telemetry.taskExecutionNanoseconds =
@@ -1966,6 +1987,8 @@ ParallelSearchResult runParallelSearch(
             telemetry.prunedHits = stats.prunedHitCount;
             telemetry.updatedHits = stats.updatedHitCount;
             telemetry.collisionChainSteps = stats.collisionChainSteps;
+            telemetry.metadataRejectCount = stats.metadataRejectCount;
+            telemetry.keyComparisonCount = stats.keyComparisonCount;
             telemetry.allocatedBytes = stats.allocatedBytes;
             telemetry.arenaAllocatedBytes = stats.arenaAllocatedBytes;
             telemetry.slotBytes = stats.slotBytes;
@@ -1974,16 +1997,29 @@ ParallelSearchResult runParallelSearch(
             telemetry.rehashedEntries = stats.rehashedEntries;
             telemetry.growthNanoseconds = stats.growthNanoseconds;
             telemetry.maxGrowthNanoseconds = stats.maxGrowthNanoseconds;
+            telemetry.rehashNanoseconds = stats.rehashNanoseconds;
+            telemetry.maxRehashNanoseconds = stats.maxRehashNanoseconds;
+            telemetry.arenaRefillCount = stats.arenaRefillCount;
+            telemetry.arenaRefillNanoseconds = stats.arenaRefillNanoseconds;
+            telemetry.maxArenaRefillNanoseconds = stats.maxArenaRefillNanoseconds;
             telemetry.lockAcquisitions = stats.lockAcquisitionCount;
             telemetry.lockWaits = stats.lockWaitCount;
             telemetry.lockWaitNanoseconds = stats.lockWaitNanoseconds;
+            telemetry.lockHoldNanoseconds = stats.lockHoldNanoseconds;
+            telemetry.maxLockHoldNanoseconds = stats.maxLockHoldNanoseconds;
         }
 
         vector<ParallelSearchWorkerTelemetry> localWorkerTelemetry;
         localWorkerTelemetry.reserve(replicas.size());
+        vector<IncumbentTelemetryEvent> localIncumbentEvents;
         for (const ParallelReplicaResult &replica : replicas)
+        {
             localWorkerTelemetry.push_back(replica.telemetry);
+            localIncumbentEvents.insert(localIncumbentEvents.end(),
+                replica.incumbentTrajectory.begin(), replica.incumbentTrajectory.end());
+        }
 
+        vector<IncumbentTelemetryEvent> gatheredIncumbentEvents;
         vector<ParallelSearchWorkerTelemetry> gatheredWorkerTelemetry;
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
         const int localTelemetryBytes = static_cast<int>(
@@ -2035,8 +2071,30 @@ ParallelSearchResult runParallelSearch(
             0,
             MPI_COMM_WORLD
         );
+        const int localEventBytes = static_cast<int>(
+            localIncumbentEvents.size() * sizeof(IncumbentTelemetryEvent));
+        MPI_Gather(&localEventBytes, 1, MPI_INT,
+            isPrimaryProcess() ? telemetryBytesPerRank.data() : nullptr,
+            1, MPI_INT, 0, MPI_COMM_WORLD);
+        if (isPrimaryProcess())
+        {
+            int gatheredBytes = 0;
+            for (int rank = 0; rank < parallelAssemblyCppMpiSize; ++rank)
+            {
+                telemetryDisplacements[rank] = gatheredBytes;
+                gatheredBytes += telemetryBytesPerRank[rank];
+            }
+            gatheredIncumbentEvents.resize(
+                static_cast<size_t>(gatheredBytes) / sizeof(IncumbentTelemetryEvent));
+        }
+        MPI_Gatherv(localIncumbentEvents.data(), localEventBytes, MPI_BYTE,
+            isPrimaryProcess() ? gatheredIncumbentEvents.data() : nullptr,
+            isPrimaryProcess() ? telemetryBytesPerRank.data() : nullptr,
+            isPrimaryProcess() ? telemetryDisplacements.data() : nullptr,
+            MPI_BYTE, 0, MPI_COMM_WORLD);
 #else
         gatheredWorkerTelemetry = std::move(localWorkerTelemetry);
+        gatheredIncumbentEvents = std::move(localIncumbentEvents);
 #endif
         if (isPrimaryProcess())
         {
@@ -2065,7 +2123,8 @@ ParallelSearchResult runParallelSearch(
                     globalRuntimeLimit == 0 &&
                     globalEnumerationLimit == 0 &&
                     globalUserInterrupt == 0,
-                std::move(gatheredWorkerTelemetry)
+                std::move(gatheredWorkerTelemetry),
+                std::move(gatheredIncumbentEvents)
             );
         }
     }

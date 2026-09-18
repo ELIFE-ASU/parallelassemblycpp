@@ -350,8 +350,11 @@ def run_solver(
     telemetry: bool = False,
     automatic_threads: bool = False,
     parallel_mode: str | None = None,
+    environment_overrides: Mapping[str, str] | None = None,
 ) -> tuple[int, dict[str, Any] | None]:
     environment = os.environ.copy()
+    if environment_overrides is not None:
+        environment.update(environment_overrides)
     if topology is not None:
         # A default-mode test must not inherit a developer's local override.
         environment.pop("PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE", None)
@@ -531,6 +534,8 @@ def validate_shared_assembly_cache(
         "pruned_hits",
         "updated_hits",
         "collision_chain_steps",
+        "metadata_reject_count",
+        "key_comparison_count",
         "allocated_bytes",
         "arena_allocated_bytes",
         "slot_bytes",
@@ -539,9 +544,16 @@ def validate_shared_assembly_cache(
         "rehashed_entries",
         "growth_nanoseconds",
         "max_growth_nanoseconds",
+        "rehash_nanoseconds",
+        "max_rehash_nanoseconds",
+        "arena_refill_count",
+        "arena_refill_nanoseconds",
+        "max_arena_refill_nanoseconds",
         "lock_acquisitions",
         "lock_waits",
         "lock_wait_nanoseconds",
+        "lock_hold_nanoseconds",
+        "max_lock_hold_nanoseconds",
     )
     parsed = {
         name: require_nonnegative_integer(counters.get(name), f"{path}.{name}")
@@ -579,11 +591,38 @@ def validate_shared_assembly_cache(
         parsed["max_growth_nanoseconds"] <= parsed["growth_nanoseconds"],
         f"{path} maximum growth duration exceeds total growth time",
     )
+    require(
+        parsed["metadata_reject_count"] + parsed["key_comparison_count"]
+        == parsed["collision_chain_steps"] + parsed["hits"],
+        f"{path} probe counters are inconsistent",
+    )
+    for operation in ("lock_hold", "rehash", "arena_refill"):
+        require(
+            parsed[f"max_{operation}_nanoseconds"]
+            <= parsed[f"{operation}_nanoseconds"],
+            f"{path} maximum {operation} duration exceeds its total time",
+        )
+    require(
+        parsed["rehash_nanoseconds"]
+        <= parsed["growth_nanoseconds"]
+        <= parsed["lock_hold_nanoseconds"],
+        f"{path} rehash/growth/lock hold durations are inconsistent",
+    )
+    require(
+        parsed["arena_refill_nanoseconds"] <= parsed["lock_hold_nanoseconds"],
+        f"{path} arena refill duration exceeds lock hold time",
+    )
+    if parsed["arena_refill_count"] == 0:
+        require(
+            parsed["arena_refill_nanoseconds"] == 0,
+            f"{path} reports refill time without a refill attempt",
+        )
     if parsed["growth_count"] == 0:
         require(
             parsed["rehashed_entries"] == 0
             and parsed["growth_nanoseconds"] == 0
-            and parsed["max_growth_nanoseconds"] == 0,
+            and parsed["max_growth_nanoseconds"] == 0
+            and parsed["rehash_nanoseconds"] == 0,
             f"{path} reports growth work without a growth event",
         )
     if parsed["table_count"] == 0:
@@ -719,6 +758,68 @@ def validate_mpi_refill_telemetry(
         maxima["mpi_maximum_progress_gap_nanoseconds"] <= elapsed,
         f"{prefix}: MPI progress gap exceeds the complete parallel search",
     )
+
+
+def validate_search_work_telemetry(
+    document: Mapping[str, Any],
+    aggregate: Mapping[str, Any],
+    workers: Sequence[Mapping[str, Any]],
+    prefix: str,
+) -> None:
+    """Check work counts, dynamic incumbent histories, and cache reductions."""
+    counters = require_mapping(document.get("counters"), f"{prefix}.counters")
+    if "states_expanded" not in counters:
+        return  # Accept reports emitted before work/trajectory instrumentation.
+    for index, worker in enumerate(workers):
+        values = require_mapping(worker.get("counters"), f"{prefix}.worker[{index}]")
+        require(
+            values["states_pruned"]
+            == values["states_bound_pruned"] + values["assembly_cache_pruned_hits"],
+            f"{prefix}: worker {index} state pruning reasons do not add up",
+        )
+    for key in (
+        "states_expanded", "states_pruned", "states_bound_pruned",
+        "duplicate_classes_pruned", "occurrence_pairs_pruned",
+        "fragment_pair_blocks_pruned",
+    ):
+        require(counters[key] == aggregate["counters"][key],
+                f"{prefix}: top-level {key} differs from worker aggregate")
+
+    top_caches = require_mapping(document.get("local_caches"), f"{prefix}.local_caches")
+    cache_fields = [name for name in top_caches if name.endswith("_retained_bytes")]
+    require(bool(cache_fields), f"{prefix}: retained cache measurements are missing")
+    for name in cache_fields:
+        expected = sum(worker["local_caches"][name] for worker in workers)
+        require(top_caches[name] == expected,
+                f"{prefix}: {name} differs from worker sum")
+    require(top_caches == aggregate["local_caches"],
+            f"{prefix}: retained cache aggregate differs from top-level measurements")
+    for owner in [document, *workers]:
+        cache = owner["local_caches"]
+        require(cache["total_retained_bytes"] == sum(
+            cache[name] for name in cache_fields if name != "total_retained_bytes"),
+            f"{prefix}: retained cache total differs from components")
+        events = owner.get("incumbent_trajectory")
+        require(
+            isinstance(events, list),
+            f"{prefix}: incumbent trajectory must be a list",
+        )
+        previous_time = -1
+        previous_best = math.inf
+        for event in events:
+            elapsed = require_nonnegative_integer(event.get("elapsed_nanoseconds"),
+                                                   f"{prefix}.incumbent.elapsed_nanoseconds")
+            require(elapsed >= previous_time,
+                    f"{prefix}: incumbent trajectory times move backwards")
+            require(isinstance(event.get("assembly_index"), int) and
+                    event["assembly_index"] < previous_best,
+                    f"{prefix}: incumbent trajectory does not strictly improve")
+            if owner is not document:
+                require(event["rank"] == owner["rank"] and
+                        event["global_worker_index"] == owner["global_worker_index"],
+                        f"{prefix}: incumbent trajectory belongs to another worker")
+            previous_time = elapsed
+            previous_best = event["assembly_index"]
 
 
 def validate_parallel_telemetry(
@@ -936,6 +1037,7 @@ def validate_parallel_telemetry(
         parallel.get("aggregate"), f"{prefix}: parallel.aggregate"
     )
     validate_mpi_refill_telemetry(workers, aggregate, topology, prefix)
+    validate_search_work_telemetry(document, aggregate, workers, prefix)
     # This exact nesting is intentional: reductions must never be inferred from
     # the process-level telemetry counters.
     validate_counter_sum(
@@ -1902,6 +2004,41 @@ def run_automatic_thread_selection_suite(
     return len(scenarios)
 
 
+# These fixtures prove scheduler starvation/donation under the established
+# search order. Greedy bounds and local-first descent can exhaust the same
+# small frontier before any donation is needed, so exercise those settings in
+# an additional correctness run instead of weakening the scheduler assertions.
+SCHEDULER_FIXTURE_ENVIRONMENT = {
+    "PARALLELASSEMBLYCPP_GREEDY_BOOTSTRAP": "0",
+    "PARALLELASSEMBLYCPP_CHILD_FIRST": "0",
+}
+
+
+def run_enabled_search_experiment_telemetry(
+    telemetry_openmp: Path,
+    case: SolverCase,
+    topology: ParallelTopology,
+    serial_index: int,
+    timeout: float,
+) -> int:
+    if not any(os.environ.get(name) == "1" for name in SCHEDULER_FIXTURE_ENVIRONMENT):
+        return 0
+    index, document = run_solver(
+        telemetry_openmp, case, timeout, topology=topology, telemetry=True,
+    )
+    require(document is not None, f"{case.name}: experiment telemetry is absent")
+    require(
+        index == serial_index,
+        f"{case.name}: experiment index {index} does not match serial {serial_index}",
+    )
+    validate_parallel_telemetry(
+        document, case, topology, require_adaptive_splitting=True,
+    )
+    print(f"PASS telemetry {case.name}: enabled search experiments retain "
+          "root coverage, counter consistency, and index parity")
+    return 1
+
+
 def run_sparse_adaptive_telemetry_suite(
     serial: Path,
     telemetry_openmp: Path,
@@ -1922,6 +2059,7 @@ def run_sparse_adaptive_telemetry_suite(
         timeout,
         topology=topology,
         telemetry=True,
+        environment_overrides=SCHEDULER_FIXTURE_ENVIRONMENT,
     )
     require(document is not None, f"{case.name}: telemetry document is absent")
     require(
@@ -1939,7 +2077,9 @@ def run_sparse_adaptive_telemetry_suite(
     print(
         f"PASS telemetry {case.name}: forced-parallel depth-two work and index parity"
     )
-    return 2
+    return 2 + run_enabled_search_experiment_telemetry(
+        telemetry_openmp, case, topology, serial_index, timeout,
+    )
 
 
 def run_late_refill_adaptive_telemetry_suite(
@@ -1962,6 +2102,7 @@ def run_late_refill_adaptive_telemetry_suite(
         timeout,
         topology=topology,
         telemetry=True,
+        environment_overrides=SCHEDULER_FIXTURE_ENVIRONMENT,
     )
     require(document is not None, f"{case.name}: telemetry document is absent")
     require(
@@ -2041,7 +2182,9 @@ def run_late_refill_adaptive_telemetry_suite(
         f"{root_candidates} roots across the {low_watermark}-task low "
         f"watermark and index parity"
     )
-    return 2
+    return 2 + run_enabled_search_experiment_telemetry(
+        telemetry_openmp, case, topology, serial_index, timeout,
+    )
 
 
 def run_distributed_telemetry_suite(

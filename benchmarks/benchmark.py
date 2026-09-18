@@ -23,6 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, TypeGuard, cast
 
+if __package__:
+    from . import search_profiles
+else:
+    import search_profiles
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -146,6 +151,17 @@ SHARED_CACHE_ADMISSION_FIELDS = (
     "max_growth_nanoseconds",
     "arena_allocated_bytes",
     "admission_filter_bytes",
+)
+SHARED_CACHE_LAYOUT_FIELDS = (
+    "metadata_reject_count",
+    "key_comparison_count",
+    "lock_hold_nanoseconds",
+    "max_lock_hold_nanoseconds",
+    "rehash_nanoseconds",
+    "max_rehash_nanoseconds",
+    "arena_refill_count",
+    "arena_refill_nanoseconds",
+    "max_arena_refill_nanoseconds",
 )
 
 
@@ -976,6 +992,42 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
                 invalid_parallel("inconsistent shared assembly-cache growth timing")
         elif (value["misses"] == 0) != (value["allocated_bytes"] == 0):
             invalid_parallel("inconsistent shared assembly-cache allocation")
+        if any(name in value for name in SHARED_CACHE_LAYOUT_FIELDS):
+            if not admission_fields or any(
+                not is_nonnegative_integer(value.get(name))
+                for name in SHARED_CACHE_LAYOUT_FIELDS
+            ):
+                invalid_parallel("invalid shared assembly-cache layout counters")
+            names += SHARED_CACHE_LAYOUT_FIELDS
+            if value["metadata_reject_count"] + value["key_comparison_count"] != (
+                value["collision_chain_steps"] + value["hits"]
+            ):
+                invalid_parallel("inconsistent shared assembly-cache probe counters")
+            for operation in ("lock_hold", "rehash", "arena_refill"):
+                if (
+                    value[f"max_{operation}_nanoseconds"]
+                    > value[f"{operation}_nanoseconds"]
+                ):
+                    invalid_parallel(
+                        f"inconsistent shared assembly-cache {operation} timing"
+                    )
+            if (
+                not (
+                    value["rehash_nanoseconds"]
+                    <= value["growth_nanoseconds"]
+                    <= value["lock_hold_nanoseconds"]
+                )
+                or value["arena_refill_nanoseconds"] > value["lock_hold_nanoseconds"]
+            ):
+                invalid_parallel("inconsistent shared assembly-cache nested timing")
+            if value["growth_count"] == 0 and (
+                value["growth_nanoseconds"]
+                or value["rehash_nanoseconds"]
+                or value["rehashed_entries"]
+            ):
+                invalid_parallel("shared assembly-cache work without growth event")
+            if value["arena_refill_count"] == 0 and value["arena_refill_nanoseconds"]:
+                invalid_parallel("shared assembly-cache refill timing without refill")
         if value["table_count"] == 0 and any(
             value[name] != 0 for name in names if name != "table_count"
         ):
@@ -1295,6 +1347,12 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         raise BenchmarkError(f"partial phase memory has an overall peak in {path.name}")
 
     if "parallel" not in telemetry:
+        try:
+            search_profiles.validate_search_profile(telemetry)
+        except ValueError as error:
+            raise BenchmarkError(
+                f"invalid search profile in {path.name}: {error}"
+            ) from error
         return telemetry
     parallel = telemetry["parallel"]
     if not isinstance(parallel, dict):
@@ -1867,6 +1925,12 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
         for name in parallel_counter_names
     ):
         invalid_parallel("aggregate counters do not match legacy telemetry")
+    try:
+        search_profiles.validate_search_profile(telemetry)
+    except ValueError as error:
+        raise BenchmarkError(
+            f"invalid search profile in {path.name}: {error}"
+        ) from error
     return telemetry
 
 

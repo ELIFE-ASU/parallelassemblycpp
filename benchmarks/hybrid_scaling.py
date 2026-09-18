@@ -21,12 +21,19 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 if __package__:
-    from . import benchmark, check_parallel_scaling, cpu_topology, paclitaxel_scaling
+    from . import (
+        benchmark,
+        check_parallel_scaling,
+        cpu_topology,
+        paclitaxel_scaling,
+        search_profiles,
+    )
 else:
     import benchmark
     import check_parallel_scaling
     import cpu_topology
     import paclitaxel_scaling
+    import search_profiles
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,14 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs", type=benchmark.positive_int, default=6)
     parser.add_argument("--warmup", type=benchmark.non_negative_int, default=1)
     parser.add_argument("--timeout", type=benchmark.positive_float, default=600.0)
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help=(
+            "collect one extra untimed ParallelAssemblyCppHybridTelemetry "
+            "run per layout"
+        ),
+    )
     parser.add_argument(
         "--mpirun",
         type=Path,
@@ -216,6 +231,18 @@ def make_runs(
         common.extend(("--baseline-env", setting))
     if arguments.baseline_launcher:
         common.extend(("--baseline-launcher", shlex.join(arguments.baseline_launcher)))
+    if arguments.telemetry:
+        common.extend(
+            (
+                "--telemetry",
+                "--telemetry-executable",
+                str(
+                    paclitaxel_scaling.executable_path(
+                        build, "ParallelAssemblyCppHybridTelemetry"
+                    )
+                ),
+            )
+        )
     runs = []
     for layout in arguments.layouts:
         report = output / f"hybrid-{layout}.json"
@@ -327,7 +354,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary_path = output / "scaling.txt"
         topology_path = output / "cpu-topology.json"
         plot_path = output / "scaling.png"
-        calculations = len(runs) * 2 * (arguments.runs + arguments.warmup)
+        calculations = len(runs) * (
+            2 * (arguments.runs + arguments.warmup) + int(arguments.telemetry)
+        )
         description = (
             f"Driver CPU: {topology.model}\n"
             f"Allocated physical cores: {arguments.cpus}\n"
@@ -393,6 +422,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary.write(description + "\n")
         with contextlib.redirect_stdout(summary):
             check_parallel_scaling.print_report(results)
+        if arguments.telemetry:
+            summary.write(
+                search_profiles.write_placement_profiles(
+                    summary_path.with_name("search-profiles.json"),
+                    [(f"hybrid-{run.layout}", run.report) for run in runs],
+                )
+            )
         save_scaling_plot(results, runs, plot_path, figure)
         summary_path.write_text(summary.getvalue(), encoding="utf-8")
         print(f"\n{summary.getvalue()}", end="")

@@ -135,6 +135,33 @@ class HybridScalingTests(unittest.TestCase):
             )
         ]
 
+    def test_telemetry_dry_run_uses_hybrid_binary_and_one_extra_calculation(
+        self,
+    ) -> None:
+        status, stdout, stderr = self.run_main(
+            [
+                "--cpus",
+                "8",
+                "--layouts",
+                "2x4",
+                "--runs",
+                "2",
+                "--warmup",
+                "0",
+                "--telemetry",
+                "--dry-run",
+            ]
+        )
+        self.assertEqual(status, 0, stderr)
+        commands = self.benchmark_commands(stdout)
+        self.assertEqual(len(commands), 1)
+        arguments = benchmark.create_argument_parser().parse_args(commands[0])
+        self.assertTrue(arguments.telemetry)
+        self.assertEqual(
+            arguments.telemetry_executable.name, "ParallelAssemblyCppHybridTelemetry"
+        )
+        self.assertIn("Calculations including warm-ups: 5", stdout)
+
     def test_sweep_writes_valid_paired_results_and_separate_rank_curves(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

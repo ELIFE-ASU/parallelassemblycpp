@@ -12,8 +12,11 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <memory_resource>
 #include <random>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -41,11 +44,17 @@ public:
     std::size_t allocationCalls = 0;
     std::size_t deallocationCalls = 0;
     std::size_t allocatedBytes = 0;
+    bool failNextAllocation = false;
 
 private:
     void *do_allocate(std::size_t bytes, std::size_t alignment) override
     {
         ++allocationCalls;
+        if (failNextAllocation)
+        {
+            failNextAllocation = false;
+            throw std::bad_alloc();
+        }
         allocatedBytes += bytes;
         return std::pmr::new_delete_resource()->allocate(bytes, alignment);
     }
@@ -71,6 +80,32 @@ private:
         return this == &other;
     }
 };
+
+void assertSharedMeasurements(
+    const sharedAssemblyTranspositionTable::statistics &stats
+)
+{
+    assert(stats.maxLockHoldNanoseconds <= stats.lockHoldNanoseconds);
+    assert(stats.maxRehashNanoseconds <= stats.rehashNanoseconds);
+    assert(stats.rehashNanoseconds <= stats.growthNanoseconds);
+    assert(stats.growthNanoseconds <= stats.lockHoldNanoseconds);
+    assert(stats.maxArenaRefillNanoseconds <= stats.arenaRefillNanoseconds);
+    assert(stats.arenaRefillNanoseconds <= stats.lockHoldNanoseconds);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    assert(stats.metadataRejectCount + stats.keyComparisonCount ==
+        stats.hitCount + stats.collisionChainSteps);
+#else
+    assert(stats.metadataRejectCount == 0);
+    assert(stats.keyComparisonCount == 0);
+    assert(stats.lockHoldNanoseconds == 0);
+    assert(stats.maxLockHoldNanoseconds == 0);
+    assert(stats.rehashNanoseconds == 0);
+    assert(stats.maxRehashNanoseconds == 0);
+    assert(stats.arenaRefillCount == 0);
+    assert(stats.arenaRefillNanoseconds == 0);
+    assert(stats.maxArenaRefillNanoseconds == 0);
+#endif
+}
 
 void testBasicResultsAndExactKeys()
 {
@@ -104,6 +139,7 @@ void testScratchCopyAndHitAllocations()
 {
     countingMemoryResource resource;
     assemblyTranspositionTable table(8, &resource);
+    assert(table.retainedBytes() == table.capacity() * 16);
 
     std::vector<int> scratch(4096);
     for (std::size_t index = 0; index < scratch.size(); index++)
@@ -114,6 +150,7 @@ void testScratchCopyAndHitAllocations()
     assert(resource.allocationCalls > 0);
     const std::size_t allocationsAfterMiss = resource.allocationCalls;
     const std::size_t bytesAfterMiss = resource.allocatedBytes;
+    assert(table.retainedBytes() == table.capacity() * 16 + bytesAfterMiss);
 
     // If the table retained the borrowed span, changing scratch would change
     // its stored key and the original value below would become another miss.
@@ -126,6 +163,7 @@ void testScratchCopyAndHitAllocations()
     // Dominated and improved hits must not request additional arena storage.
     assert(resource.allocationCalls == allocationsAfterMiss);
     assert(resource.allocatedBytes == bytesAfterMiss);
+    assert(table.retainedBytes() == table.capacity() * 16 + bytesAfterMiss);
 }
 
 void testGrowthPreservesEntries()
@@ -264,6 +302,8 @@ void testSharedExactKeysAndHashCollisions()
     assert(stats.hitCount + stats.missCount == 9);
     assert(stats.lockAcquisitionCount == 9);
     assert(stats.lockWaitCount <= stats.lockAcquisitionCount);
+    assert(stats.arenaRefillCount == 0);
+    assertSharedMeasurements(stats);
 }
 
 void testSharedBorrowedScratchLifetime()
@@ -324,6 +364,10 @@ void testSharedWorkerHitsDoNotConsumeArenaStorage()
         assert(stats.allocatedBytes == retainedBytesAfterMiss);
         assert(stats.arenaAllocatedBytes == upstream.allocatedBytes);
         assert(stats.arenaAllocatedBytes >= stats.allocatedBytes);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        assert(stats.arenaRefillCount == upstream.allocationCalls);
+#endif
+        assertSharedMeasurements(stats);
     }
     assert(upstream.deallocationCalls == upstream.allocationCalls);
 }
@@ -421,6 +465,7 @@ void testSharedConcurrentSameKeyMonotonicUpdate()
     assert(stats.allocatedBytes > key.size() * sizeof(int));
     assert(stats.allocatedBytes <
         2 * (key.size() * sizeof(int) + 64));
+    assertSharedMeasurements(stats);
 }
 
 void testSharedIndependentKeyShardStress()
@@ -559,13 +604,18 @@ void testSharedFlatShardGrowthPreservesEntries()
     assert(stats.arenaAllocatedBytes == stats.allocatedBytes);
     assert(stats.admissionFilterBytes == 0);
     assert(stats.maxGrowthNanoseconds == stats.growthNanoseconds);
+    assert(stats.maxRehashNanoseconds == stats.rehashNanoseconds);
+    assert(stats.arenaRefillCount == 0);
+    assertSharedMeasurements(stats);
 #ifndef ASSEMBLY_ENABLE_TELEMETRY
     assert(stats.growthNanoseconds == 0);
     assert(stats.maxGrowthNanoseconds == 0);
 #endif
 }
 
-std::vector<std::array<int, 4>> keysForOneShard(std::size_t count)
+std::vector<std::array<int, 4>> keysForOneShard(
+    std::size_t count, std::size_t shard = 0
+)
 {
     std::vector<std::array<int, 4>> keys;
     keys.reserve(count);
@@ -573,10 +623,327 @@ std::vector<std::array<int, 4>> keysForOneShard(std::size_t count)
     {
         const std::array<int, 4> key{0x13579bdf, 3, 7, candidate};
         if ((assemblyTranspositionTable::keyHash(key) &
-             (sharedAssemblyTranspositionTable::shardCount - 1)) == 0)
+             (sharedAssemblyTranspositionTable::shardCount - 1)) == shard)
             keys.push_back(key);
     }
     return keys;
+}
+
+constexpr std::size_t minimumUsefulReserveBytes =
+    sharedAssemblyTranspositionTable::shardCount * 2048 *
+    (sizeof(std::uint32_t) + sizeof(void *));
+
+void testSharedReserveBudgetBoundaries()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    const std::uint64_t initialSlotBytes =
+        sharedAssemblyTranspositionTable().stats().slotBytes;
+    for (const std::size_t budget : {
+        std::size_t{0}, std::size_t{1}, minimumUsefulReserveBytes - 1,
+        minimumUsefulReserveBytes, minimumUsefulReserveBytes * 2 - 1,
+        minimumUsefulReserveBytes * 2
+    })
+    {
+        countingMemoryResource upstream;
+        sharedAssemblyTranspositionTable table(
+            1, &upstream, policy::shared, 0, budget
+        );
+        const auto stats = table.stats();
+        assert(table.size() == 0);
+        assert(stats.growthCount == 0);
+        assert(stats.rehashedEntries == 0);
+        assert(stats.lockAcquisitionCount == 0);
+        assert(stats.allocatedBytes == 0);
+        assert(upstream.allocationCalls == 0);
+        const std::uint64_t extraSlots = stats.slotBytes - initialSlotBytes;
+        assert(extraSlots <= budget);
+        if (budget < minimumUsefulReserveBytes)
+            assert(extraSlots == 0);
+        else if (budget < minimumUsefulReserveBytes * 2)
+            assert(extraSlots == minimumUsefulReserveBytes);
+        else
+            assert(extraSlots == minimumUsefulReserveBytes * 2);
+    }
+}
+
+void testSharedReservedGrowthPreservesZeroHashAndScores()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    sharedAssemblyTranspositionTable table(
+        1, std::pmr::new_delete_resource(), policy::shared, 0,
+        minimumUsefulReserveBytes
+    );
+    const auto reserved = table.stats();
+    const std::array<int, 2> zeroHashKey{0, 118251589};
+    assert(assemblyTranspositionTable::keyHash(zeroHashKey) == 0);
+    assert(table.considerWithBestForWorker(zeroHashKey, 23, 0).outcome ==
+        tableResult::inserted);
+    const auto keys = keysForOneShard(1800);
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        assert(table.considerWithBestForWorker(
+            keys[index], static_cast<int>(index), 0
+        ).outcome == tableResult::inserted);
+        // Reserving delays growth beyond the original shard capacity.
+        if (index == 999)
+        {
+            assert(table.stats().growthCount == 0);
+            assert(table.stats().slotBytes == reserved.slotBytes);
+        }
+    }
+    const auto grown = table.stats();
+    assert(grown.growthCount == 1);
+    assert(grown.rehashedEntries > 1000);
+    assert(grown.rehashedEntries < keys.size());
+    assert(grown.slotBytes > reserved.slotBytes);
+    assert(table.size() == keys.size() + 1);
+    assert(grown.admissionRejectionCount == 0);
+    assertSharedMeasurements(grown);
+    assert(table.considerWithBestForWorker(zeroHashKey, 22, 0).bestSumDupBonds ==
+        23);
+    assert(table.considerWithBestForWorker(zeroHashKey, 24, 0).outcome ==
+        tableResult::improved);
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        const auto found = table.considerWithBestForWorker(
+            keys[index], static_cast<int>(index) - 1, 0
+        );
+        assert(found.outcome == tableResult::dominated);
+        assert(found.bestSumDupBonds == static_cast<int>(index));
+    }
+}
+
+void testSharedFullHashCollisionsSurviveGrowthAndReserve()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    const std::array<int, 4> firstCollision{
+        -1744324134, -1879786136, 873751343, 1729211343
+    };
+    const std::array<int, 3> secondCollision{
+        1933699411, -1276699930, -106575768
+    };
+    const std::uint32_t hash = assemblyTranspositionTable::keyHash(firstCollision);
+    assert(hash == assemblyTranspositionTable::keyHash(secondCollision));
+    const auto keys = keysForOneShard(
+        1800, hash & (sharedAssemblyTranspositionTable::shardCount - 1)
+    );
+    for (const std::size_t reserve : {
+        std::size_t{0}, minimumUsefulReserveBytes
+    })
+    {
+        sharedAssemblyTranspositionTable table(
+            1, std::pmr::new_delete_resource(), policy::shared, 0, reserve
+        );
+        assert(table.considerWithBestForWorker(firstCollision, 100, 0).outcome ==
+            tableResult::inserted);
+        assert(table.considerWithBestForWorker(secondCollision, 2, 0).outcome ==
+            tableResult::inserted);
+        for (const auto &key : keys)
+            assert(table.considerWithBestForWorker(key, 5, 0).outcome ==
+                tableResult::inserted);
+        assert(table.stats().growthCount > 0);
+        assert(table.size() == keys.size() + 2);
+        auto found = table.considerWithBestForWorker(firstCollision, 99, 0);
+        assert(found.outcome == tableResult::dominated);
+        assert(found.bestSumDupBonds == 100);
+        found = table.considerWithBestForWorker(secondCollision, 3, 0);
+        assert(found.outcome == tableResult::improved);
+        assert(found.bestSumDupBonds == 3);
+        found = table.considerWithBestForWorker(firstCollision, 99, 0);
+        assert(found.outcome == tableResult::dominated);
+        assert(found.bestSumDupBonds == 100);
+        found = table.considerWithBestForWorker(secondCollision, 2, 0);
+        assert(found.outcome == tableResult::dominated);
+        assert(found.bestSumDupBonds == 3);
+        const auto stats = table.stats();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        assert(stats.metadataRejectCount > 0);
+        assert(stats.keyComparisonCount > stats.hitCount);
+#endif
+        assertSharedMeasurements(stats);
+    }
+}
+
+void testSharedArenaFailureReleasesLockAndPreservesEntries()
+{
+    countingMemoryResource upstream;
+    {
+        sharedAssemblyTranspositionTable table(1, &upstream);
+        // Fill one shard to its growth threshold using direct allocations.
+        // The next miss grows its indices and then fails its first arena
+        // refill, leaving an empty slot with an uninitialised key pointer.
+        const auto keys = keysForOneShard(820);
+        for (std::size_t index = 0; index + 1 < keys.size(); ++index)
+            assert(table.consider(keys[index], 17) == tableResult::inserted);
+        const auto before = table.stats();
+        assert(before.growthCount == 0);
+        upstream.failNextAllocation = true;
+        bool failed = false;
+        try
+        {
+            static_cast<void>(table.considerWithBestForWorker(keys.back(), 3, 0));
+        }
+        catch (const std::bad_alloc &)
+        {
+            failed = true;
+        }
+        assert(failed);
+        assert(table.size() == keys.size() - 1);
+        const auto afterFailure = table.stats();
+        assert(afterFailure.growthCount == 1);
+        assert(afterFailure.slotBytes > before.slotBytes);
+        assert(afterFailure.allocatedBytes == before.allocatedBytes);
+        assert(afterFailure.arenaAllocatedBytes == before.arenaAllocatedBytes);
+        assert(afterFailure.lockAcquisitionCount == before.lockAcquisitionCount);
+        assert(afterFailure.hitCount == before.hitCount);
+        assert(afterFailure.missCount == before.missCount);
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        assert(afterFailure.arenaRefillCount == 1);
+        assert(afterFailure.lockHoldNanoseconds >= before.lockHoldNanoseconds);
+#endif
+        assertSharedMeasurements(afterFailure);
+        for (std::size_t index = 0; index + 1 < keys.size(); ++index)
+        {
+            const auto existing = table.considerWithBestForWorker(keys[index], 16, 0);
+            assert(existing.outcome == tableResult::dominated);
+            assert(existing.bestSumDupBonds == 17);
+        }
+        assert(table.considerWithBestForWorker(keys.back(), 3, 0).outcome ==
+            tableResult::inserted);
+        assert(table.considerWithBestForWorker(keys.back(), 2, 0).outcome ==
+            tableResult::dominated);
+        assert(table.size() == keys.size());
+        const auto recovered = table.stats();
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        assert(recovered.arenaRefillCount == upstream.allocationCalls);
+        assert(recovered.arenaRefillCount == 2);
+#endif
+        assertSharedMeasurements(recovered);
+    }
+    // One attempted upstream allocation failed and has no block to release.
+    assert(upstream.deallocationCalls + 1 == upstream.allocationCalls);
+}
+
+void testSharedSparseReservedMixedOwnership()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    countingMemoryResource upstream;
+    {
+        sharedAssemblyTranspositionTable table(
+            1, &upstream, policy::shared, 0, minimumUsefulReserveBytes
+        );
+        const auto keys = keysForOneShard(3);
+        assert(table.consider(keys[0], 7) == tableResult::inserted);
+        assert(table.considerWithBestForWorker(keys[1], 11, 0).outcome ==
+            tableResult::inserted);
+        assert(table.consider(keys[2], 17) == tableResult::inserted);
+        assert(table.consider(keys[1], 10) == tableResult::dominated);
+        assert(table.considerWithBestForWorker(keys[0], 6, 0).outcome ==
+            tableResult::dominated);
+        assert(table.considerWithBestForWorker(keys[2], 16, 0).outcome ==
+            tableResult::dominated);
+        assert(table.size() == 3);
+        assert(table.stats().growthCount == 0);
+        // Destruction must inspect occupancy before reading any of the many
+        // empty pointer slots and must free only the directly owned keys.
+    }
+    assert(upstream.deallocationCalls == upstream.allocationCalls);
+}
+
+void testSharedReserveRespectsAdmissionAndLocalPolicies()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    const std::uint64_t initialSlotBytes =
+        sharedAssemblyTranspositionTable().stats().slotBytes;
+    for (const policy mode : {policy::shared, policy::selective, policy::local})
+    {
+        countingMemoryResource upstream;
+        sharedAssemblyTranspositionTable table(
+            1, &upstream, mode, 1, minimumUsefulReserveBytes
+        );
+        const auto initial = table.stats();
+        assert(initial.slotBytes == initialSlotBytes +
+            (mode == policy::local ? 0 : minimumUsefulReserveBytes));
+        const std::array<int, 3> key{4, 1, 2};
+        for (int score = 10; score >= 0; --score)
+        {
+            const auto result = table.considerWithBestForWorker(key, score, 0);
+            assert(result.outcome == tableResult::inserted);
+            assert(result.bestSumDupBonds == score);
+        }
+        assert(table.size() == 0);
+        assert(upstream.allocationCalls == 0);
+        const auto stats = table.stats();
+        assert(stats.slotBytes == initial.slotBytes);
+        assert(stats.allocatedBytes == 0);
+        assert(stats.growthCount == 0);
+        assert(stats.admissionRejectionCount == (mode == policy::local ? 0 : 11));
+        assert(stats.lockAcquisitionCount == (mode == policy::local ? 0 : 11));
+    }
+}
+
+void testSharedReserveEnvironmentParsing()
+{
+    constexpr const char *name = "PARALLELASSEMBLYCPP_SHARED_CACHE_RESERVE_BYTES";
+    const char *original = std::getenv(name);
+    const bool hadOriginal = original != nullptr;
+    const std::string saved = hadOriginal ? original : "";
+    const auto setValue = [name](const char *value)
+    {
+#ifdef _WIN32
+        assert(_putenv_s(name, value == nullptr ? "" : value) == 0);
+#else
+        if (value == nullptr) assert(unsetenv(name) == 0);
+        else assert(setenv(name, value, 1) == 0);
+#endif
+    };
+    setValue(nullptr);
+    assert(sharedAssemblyTranspositionTable::reserveBytesFromEnvironment() == 0);
+    for (const std::size_t value : {
+        std::size_t{0}, minimumUsefulReserveBytes,
+        std::numeric_limits<std::size_t>::max()
+    })
+    {
+        setValue(std::to_string(value).c_str());
+        assert(sharedAssemblyTranspositionTable::reserveBytesFromEnvironment() ==
+            value);
+    }
+    const std::string overflow =
+        std::to_string(std::numeric_limits<std::size_t>::max()) + "0";
+    for (const std::string &value : std::vector<std::string>{
+        "-1", "+1", " 1", "1 ", "1KiB", overflow
+    })
+    {
+        setValue(value.c_str());
+        bool rejected = false;
+        try
+        {
+            static_cast<void>(
+                sharedAssemblyTranspositionTable::reserveBytesFromEnvironment()
+            );
+        }
+        catch (const std::invalid_argument &)
+        {
+            rejected = true;
+        }
+        assert(rejected);
+    }
+#ifndef _WIN32
+    setValue("");
+    bool rejectedEmpty = false;
+    try
+    {
+        static_cast<void>(
+            sharedAssemblyTranspositionTable::reserveBytesFromEnvironment()
+        );
+    }
+    catch (const std::invalid_argument &)
+    {
+        rejectedEmpty = true;
+    }
+    assert(rejectedEmpty);
+#endif
+    setValue(hadOriginal ? saved.c_str() : nullptr);
 }
 
 void testSharedByteBudgetPreservesExistingScores()
@@ -815,6 +1182,13 @@ int main()
     testSharedConcurrentSameKeyMonotonicUpdate();
     testSharedIndependentKeyShardStress();
     testSharedFlatShardGrowthPreservesEntries();
+    testSharedReserveBudgetBoundaries();
+    testSharedReservedGrowthPreservesZeroHashAndScores();
+    testSharedFullHashCollisionsSurviveGrowthAndReserve();
+    testSharedArenaFailureReleasesLockAndPreservesEntries();
+    testSharedSparseReservedMixedOwnership();
+    testSharedReserveRespectsAdmissionAndLocalPolicies();
+    testSharedReserveEnvironmentParsing();
     testSharedByteBudgetPreservesExistingScores();
     testSharedBudgetSmallerThanKeyRejectsWithoutAllocation();
     testSharedSelectiveAdmissionAndScores();
