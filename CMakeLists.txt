@@ -771,10 +771,24 @@ function(parallelassemblycpp_add_python_test name timeout)
 endfunction()
 
 if(BUILD_TESTING)
+  find_package(Threads REQUIRED)
   parallelassemblycpp_add_unit_test(
     active-word-mask
     parallelassemblycpp_active_word_mask_tests
     unitTests/activeWordMaskTester.cpp
+  )
+  parallelassemblycpp_add_unit_test(
+    active-word-mask-lifetime
+    parallelassemblycpp_active_word_mask_lifetime_tests
+    unitTests/activeWordMaskLifetimeTester.cpp
+  )
+  target_link_libraries(
+    parallelassemblycpp_active_word_mask_lifetime_tests
+    PRIVATE Threads::Threads
+  )
+  set_tests_properties(
+    unit.active-word-mask-lifetime
+    PROPERTIES LABELS "unit;parallel"
   )
   parallelassemblycpp_add_unit_test(
     assembly-transposition-table
@@ -877,7 +891,6 @@ if(BUILD_TESTING)
     )
   endif()
   if(TARGET MPI::MPI_CXX)
-    find_package(Threads REQUIRED)
     add_executable(
       parallelassemblycpp_mpi_refill_tests
       unitTests/mpiRefillTester.cpp

@@ -149,7 +149,7 @@ public:
     /** Configure this domain's logical width without a fixed bit ceiling. */
     static void configure(std::size_t bitCount) noexcept
     {
-        clearArena();
+        arena_.clear();
         activeBitCount_ = bitCount;
         activeWordCount_ = bitCount / wordBits + (bitCount % wordBits != 0);
     }
@@ -891,6 +891,29 @@ private:
     {
         ArenaBlock *blocks = nullptr;
         WideWords *freeWords = nullptr;
+
+        ~ArenaState() noexcept
+        {
+            clear();
+            // Persistent masks or containers can be initialized before the
+            // arena and therefore destroyed after it. Retire the domain so
+            // their destructors do not access the freed wide-word storage.
+            activeBitCount_ = 0;
+            activeWordCount_ = 0;
+        }
+
+        void clear() noexcept
+        {
+            ArenaBlock *block = blocks;
+            while (block != nullptr)
+            {
+                ArenaBlock *next = block->next;
+                ::operator delete(block);
+                block = next;
+            }
+            blocks = nullptr;
+            freeWords = nullptr;
+        }
     };
 
     union Storage
@@ -1024,19 +1047,6 @@ private:
     {
         constexpr std::size_t alignment = alignof(WideWords);
         return (value + alignment - 1) & ~(alignment - 1);
-    }
-
-    static void clearArena() noexcept
-    {
-        ArenaBlock *block = arena_.blocks;
-        while (block != nullptr)
-        {
-            ArenaBlock *next = block->next;
-            ::operator delete(block);
-            block = next;
-        }
-        arena_.blocks = nullptr;
-        arena_.freeWords = nullptr;
     }
 
     WideWords *ensureUniqueWords()
