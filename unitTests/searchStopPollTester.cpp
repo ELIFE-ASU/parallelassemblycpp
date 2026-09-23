@@ -102,11 +102,7 @@ bool distributedRootMappingsAreValid()
 void setInterruptFlag(bool value)
 {
     searchCancellationFlag.store(value);
-#ifdef _WIN32
     interruptFlag.store(value);
-#else
-    interruptFlag = value;
-#endif
 }
 
 int main()

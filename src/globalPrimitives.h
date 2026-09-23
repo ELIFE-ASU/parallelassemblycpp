@@ -69,15 +69,16 @@ int maximumEnumerationCount = 50000000;
 
 PARALLELASSEMBLYCPP_SEARCH_LOCAL string moleculeName;
 PARALLELASSEMBLYCPP_SEARCH_LOCAL EdgeMask allEdges;
-#ifdef _WIN32
-    std::atomic_bool interruptFlag = false;
-    std::atomic_bool userInterruptReceived = false;
-#else
-    volatile std::sig_atomic_t interruptFlag = 0;
-    volatile std::sig_atomic_t userInterruptReceived = 0;
-#endif
-// Solver workers use a real C++ atomic for cooperative cancellation. POSIX
-// signal handlers retain sig_atomic_t flags and never write this object.
+// Signal handlers and solver workers share these flags. Lock-free atomic
+// operations are signal-safe and also synchronize access across threads.
+static_assert(
+    std::atomic_bool::is_always_lock_free,
+    "Interrupt flags must be lock-free for signal-handler safety"
+);
+std::atomic_bool interruptFlag = false;
+std::atomic_bool userInterruptReceived = false;
+// Solver workers use a separate flag for cooperative cancellation so it does
+// not mark runtime limits or distributed cancellation as a user interrupt.
 std::atomic_bool searchCancellationFlag = false;
 PARALLELASSEMBLYCPP_SEARCH_LOCAL clock_t startTime = 0;
 unsigned long long maximumRuntimeTicks =
@@ -210,20 +211,12 @@ constexpr size_t schedulerCacheLineBytes = 64;
 
 bool interruptionRequested()
 {
-    #ifdef _WIN32
-        return interruptFlag.load() || searchCancellationFlag.load();
-    #else
-        return interruptFlag != 0 || searchCancellationFlag.load();
-    #endif
+    return interruptFlag.load() || searchCancellationFlag.load();
 }
 
 bool receivedUserInterrupt()
 {
-    #ifdef _WIN32
-        return userInterruptReceived.load();
-    #else
-        return userInterruptReceived != 0;
-    #endif
+    return userInterruptReceived.load();
 }
 
 /**
