@@ -13,6 +13,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cmake-minimum:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install minimum supported CMake
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-minimum"
+          "$RUNNER_TEMP/cmake-minimum/bin/python" -m pip install --only-binary=:all: cmake==3.25.0
+          echo "$RUNNER_TEMP/cmake-minimum/bin" >> "$GITHUB_PATH"
+
+      - name: Verify CMake version and configure release
+        run: |
+          cmake --version
+          test "$(cmake --version | head -n 1)" = 'cmake version 3.25.0'
+          cmake --preset release
+
+      - name: Build release with minimum supported CMake
+        run: cmake --build --preset release --parallel 2
+
+      - name: Smoke-test release CLI
+        run: build/release/ParallelAssemblyCpp --help
+
+      - name: Verify installed CMake library package
+        run: |
+          cmake --install build/release --prefix build/stage
+          cmake -S unitTests/packageConsumer -B build/package-consumer -G Ninja \
+            -DCMAKE_PREFIX_PATH="$PWD/build/stage"
+          cmake --build build/package-consumer --parallel 2
+          ctest --test-dir build/package-consumer --output-on-failure --no-tests=error
+
   strict-clang:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

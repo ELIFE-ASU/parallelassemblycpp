@@ -12,6 +12,7 @@ of Assembly Chemical Space of Molecular Graphs*](https://arxiv.org/abs/2410.0910
 ## Quick start
 
 Requirements: CMake 3.25 or newer, Ninja, and a C++20 compiler.
+CI checks the release build and installed library with CMake 3.25.0.
 
 Install these tools directly, or create and activate the supplied Conda
 environment:
