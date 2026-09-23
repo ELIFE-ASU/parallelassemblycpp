@@ -120,7 +120,8 @@ jobs:
 
       - name: Build portable package candidate
         run: |
-          CXX=/usr/bin/g++ CXXFLAGS= LDFLAGS= cmake --preset release
+          # Emit the ISA requirement note that the readelf portability guards inspect.
+          CXX=/usr/bin/g++ CXXFLAGS=-mneeded LDFLAGS= cmake --preset release
           cmake --build --preset release
 
       - name: Verify staged install
@@ -233,5 +234,5 @@ jobs:
           cmake -E chdir "$source_root" ruff check .
           python "$source_root/tools/check_repository.py"
           python "$source_root/unitTests/unitTester.py" --audit
-          CXX=/usr/bin/g++ CXXFLAGS= LDFLAGS= cmake -E chdir "$source_root" cmake --preset release
+          CXX=/usr/bin/g++ CXXFLAGS=-mneeded LDFLAGS= cmake -E chdir "$source_root" cmake --preset release
           cmake -E chdir "$source_root" cmake --build --preset release
