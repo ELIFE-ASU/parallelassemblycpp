@@ -2565,11 +2565,7 @@ void prepareInProcessCalculation()
 {
     // A runtime budget uses the shared stop flag. Clear it before each item so
     // a limited calculation cannot stop the remainder of an in-process batch.
-#ifdef _WIN32
     interruptFlag.store(false);
-#else
-    interruptFlag = 0;
-#endif
     searchCancellationFlag.store(false);
 }
 

@@ -21,11 +21,11 @@
     }
 #else
     void signalHandler(int) {
-        // Signal handlers may only perform async-signal-safe work. The search
-        // observes this flag and unwinds normally so enabled outputs are
+        // These atomics are guaranteed lock-free and signal-safe. The search
+        // observes the flags and unwinds normally so enabled outputs are
         // written and flushed by the regular control flow.
-        userInterruptReceived = 1;
-        interruptFlag = 1;
+        userInterruptReceived.store(true);
+        interruptFlag.store(true);
     }
 
     void disableInterruptHandler() {
