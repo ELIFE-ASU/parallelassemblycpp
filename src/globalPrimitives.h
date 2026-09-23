@@ -302,7 +302,7 @@ PARALLELASSEMBLYCPP_NOINLINE bool searchShouldStopSlowPath()
  * Without an interruption, a distributed controller, or a runtime budget the
  * poll is a few loads, kept inline so the many boundary polls stay cheap.
  */
-PARALLELASSEMBLYCPP_ALWAYS_INLINE inline bool searchShouldStop()
+PARALLELASSEMBLYCPP_ALWAYS_INLINE bool searchShouldStop()
 {
     if (
         !interruptionRequested() &&
@@ -331,7 +331,7 @@ PARALLELASSEMBLYCPP_NOINLINE bool searchShouldStopPeriodicallyDue()
 /**
  * @brief Check cancellation at a bounded cadence inside cheap inner loops.
  */
-PARALLELASSEMBLYCPP_ALWAYS_INLINE inline bool searchShouldStopPeriodically()
+PARALLELASSEMBLYCPP_ALWAYS_INLINE bool searchShouldStopPeriodically()
 {
     if (searchStopInnerPollCountdown != 0) [[likely]]
     {

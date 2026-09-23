@@ -343,7 +343,19 @@ public:
     /** Experiment controls, read once before workers enter the search. */
     static policy policyFromEnvironment()
     {
+#if defined(_MSC_VER)
+        char *buffer = nullptr;
+        std::size_t length = 0;
+        const auto status = _dupenv_s(
+            &buffer, &length, "PARALLELASSEMBLYCPP_SHARED_CACHE_POLICY"
+        );
+        const std::unique_ptr<char, decltype(&std::free)> owner(buffer, &std::free);
+        if (status != 0)
+            throw std::runtime_error("could not read shared cache policy");
+        const char *value = owner.get();
+#else
         const char *value = std::getenv("PARALLELASSEMBLYCPP_SHARED_CACHE_POLICY");
+#endif
         if (value == nullptr || std::string_view(value) == "shared")
             return policy::shared;
         if (std::string_view(value) == "local") return policy::local;
@@ -353,7 +365,19 @@ public:
 
     static std::size_t maxBytesFromEnvironment()
     {
+#if defined(_MSC_VER)
+        char *buffer = nullptr;
+        std::size_t length = 0;
+        const auto status = _dupenv_s(
+            &buffer, &length, "PARALLELASSEMBLYCPP_SHARED_CACHE_BYTES"
+        );
+        const std::unique_ptr<char, decltype(&std::free)> owner(buffer, &std::free);
+        if (status != 0)
+            throw std::runtime_error("could not read shared cache byte budget");
+        const char *value = owner.get();
+#else
         const char *value = std::getenv("PARALLELASSEMBLYCPP_SHARED_CACHE_BYTES");
+#endif
         if (value == nullptr) return 0;
         const std::string_view text(value);
         std::size_t bytes = 0;
