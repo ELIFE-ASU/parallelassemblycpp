@@ -1,6 +1,7 @@
 name: parallelassemblycpp
 channels:
   - conda-forge
+  - nodefaults
 dependencies:
   - cmake>=4.3
   - cxx-compiler
