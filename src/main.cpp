@@ -2437,22 +2437,30 @@ bool stringAssemblyCalculator(const string &input)
 
     ifstream inputFile;
     ofstream outputFile;
+    const string outputName = input + "Out";
     bool ready = true;
     if (isPrimaryProcess())
     {
+        error_code equivalentError;
         inputFile.open(input);
         if (!inputFile.is_open())
         {
             cerr << "error: could not open input file '" << input << "'\n";
             ready = false;
         }
+        else if (filesystem::equivalent(input, outputName, equivalentError))
+        {
+            cerr << "error: output file '" << outputName
+                 << "' would overwrite input file '" << input << "'\n";
+            ready = false;
+        }
         else
         {
             if (verbose) cout << "Input: " << input << '\n';
-            outputFile.open(input + "Out");
+            outputFile.open(outputName);
             if (!outputFile.is_open())
             {
-                cerr << "error: could not open output file '" << input << "Out'\n";
+                cerr << "error: could not open output file '" << outputName << "'\n";
                 ready = false;
             }
         }
@@ -2614,6 +2622,12 @@ bool stringAssemblyCalculator(const string &input)
                 if (pathwayOutputEnabled)
                 {
                     const string pathwayName = input + "_" + to_string(lineIndex) + "_Pathway";
+                    error_code equivalentError;
+                    if (filesystem::equivalent(input, pathwayName, equivalentError))
+                        throw std::runtime_error(
+                            "output file '" + pathwayName +
+                            "' would overwrite input file '" + input + "'"
+                        );
                     if (!strings::writePathway(pathwayName, value, result, error))
                         throw std::runtime_error(error);
                 }
@@ -2647,7 +2661,7 @@ bool stringAssemblyCalculator(const string &input)
         outputFile.close();
         if (!outputFile)
         {
-            cerr << "error: could not write output file '" << input << "Out'\n";
+            cerr << "error: could not write output file '" << outputName << "'\n";
             succeeded = false;
         }
     }

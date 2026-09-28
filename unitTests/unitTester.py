@@ -423,6 +423,67 @@ def make_mask_capacity_graph(component_sizes: Sequence[int]) -> str:
     )
 
 
+def run_string_output_alias_checks(executable: Path) -> int:
+    """Reject enabled output aliases without changing the source records."""
+    scenarios = 0
+    with tempfile.TemporaryDirectory(prefix="parallelassemblycpp-output-alias-") as name:
+        root = Path(name)
+        for target in ("inputOut", "input_0_Pathway", "input_1_Pathway"):
+            for link_mode in ("symlink", "hardlink"):
+                for pathway in ((True,) if target == "inputOut" else (False, True)):
+                    case_directory = root / f"{target}-{link_mode}-{int(pathway)}"
+                    case_directory.mkdir()
+                    input_path = case_directory / "input"
+                    before = b"abab\nabcabc\n"
+                    input_path.write_bytes(before)
+                    output_path = case_directory / target
+                    if link_mode == "symlink":
+                        try:
+                            output_path.symlink_to(input_path.name)
+                        except OSError as error:
+                            # Windows can require a privilege for symlink creation.
+                            if os.name == "nt" and error.winerror in (5, 1314):
+                                continue
+                            raise
+                    else:
+                        output_path.hardlink_to(input_path)
+                    completed = run_cli_command(
+                        executable,
+                        ["input", "--run-strings=1", f"--pathway={int(pathway)}"],
+                        case_directory,
+                    )
+                    require_cli(
+                        input_path.read_bytes() == before
+                        and output_path.read_bytes() == before,
+                        f"string output corrupted input through {target} {link_mode}",
+                        completed,
+                    )
+                    if target == "inputOut" or pathway:
+                        require_cli(
+                            completed.returncode == 1
+                            and target in completed.stderr
+                            and "would overwrite input" in completed.stderr,
+                            f"string output must reject {target} {link_mode} aliases",
+                            completed,
+                        )
+                    else:
+                        require_cli(
+                            completed.returncode == 0,
+                            f"disabled pathway must allow {target} {link_mode} aliases",
+                            completed,
+                        )
+                        indices = ASSEMBLY_INDEX_PATTERN.findall(
+                            (case_directory / "inputOut").read_text()
+                        )
+                        require_cli(
+                            indices == ["2", "3"],
+                            "disabled pathway alias changed the string results",
+                            completed,
+                        )
+                    scenarios += 1
+    return scenarios
+
+
 def run_flag_matrix_checks(executable: Path, telemetry_supported: bool) -> int:
     """Exercise every flag spelling against actual molecular and string inputs."""
     spellings = {
@@ -2592,6 +2653,7 @@ def run_cli_checks(executable: Path) -> int:
                 )
             scenarios += 1
 
+    scenarios += run_string_output_alias_checks(executable)
     scenarios += run_flag_matrix_checks(executable, bool(telemetry_supported))
     scenarios += run_input_output_matrix_checks(executable, bool(telemetry_supported))
     return scenarios

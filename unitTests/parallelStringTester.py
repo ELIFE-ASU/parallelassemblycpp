@@ -43,6 +43,7 @@ def run_case(
     pathway: bool = True,
     input_exists: bool = True,
     output_blocked: bool = False,
+    output_alias: str | None = None,
     extra: tuple[str, ...] = (),
     expected_error: str | None = None,
     expected_fallback: str | None = None,
@@ -65,6 +66,9 @@ def run_case(
             (directory / "input").write_bytes("\r\n".join(INPUTS).encode("utf-8"))
         if output_blocked:
             (directory / "inputOut").mkdir()
+        if output_alias is not None:
+            input_before = (directory / "input").read_bytes()
+            (directory / output_alias).hardlink_to(directory / "input")
         arguments = [
             *launcher,
             str(executable),
@@ -86,7 +90,16 @@ def run_case(
                 raise AssertionError(
                     f"expected rejection {expected_error!r}\n{details}"
                 )
-            if not output_blocked and (directory / "inputOut").exists():
+            if output_alias is not None:
+                if (directory / "input").read_bytes() != input_before:
+                    raise AssertionError(
+                        f"output alias {output_alias} corrupted the input\n{details}"
+                    )
+                if output_alias not in completed.stderr:
+                    raise AssertionError(
+                        f"output alias diagnostic omitted {output_alias}\n{details}"
+                    )
+            elif not output_blocked and (directory / "inputOut").exists():
                 raise AssertionError(
                     f"rejected options created an output file\n{details}"
                 )
@@ -265,6 +278,18 @@ def main() -> int:
                         if output_blocked
                         else "could not open input file"
                     ),
+                    timeout=arguments.timeout,
+                )
+                runs += 1
+            for output_alias in ("inputOut", "input_3_Pathway"):
+                run_case(
+                    executable.resolve(),
+                    launcher=launcher,
+                    mode="on",
+                    threads=threads,
+                    accept_reversed=False,
+                    output_alias=output_alias,
+                    expected_error="would overwrite input",
                     timeout=arguments.timeout,
                 )
                 runs += 1
