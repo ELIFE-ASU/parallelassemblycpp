@@ -11,6 +11,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "../src/stringAssembly.h"
@@ -837,6 +838,231 @@ void testIntervalUtilities()
     );
 }
 
+void requireMatching(
+    const implementation::ValidMatching &actual,
+    const implementation::ValidMatching &expected,
+    const std::string &description
+)
+{
+    require(
+        actual.first == expected.first && actual.second == expected.second &&
+            actual.firstFragment == expected.firstFragment &&
+            actual.secondFragment == expected.secondFragment &&
+            actual.fragmentLength == expected.fragmentLength,
+        description
+    );
+}
+
+void requireDuplicateSetMatchesOracle(
+    int length,
+    const std::vector<implementation::PotentialDuplicate> &occurrences,
+    const std::vector<Interval> &fragments,
+    const std::string &description
+)
+{
+    implementation::DuplicateSet duplicates(length);
+    for (const auto &occurrence : occurrences) duplicates.insert(occurrence);
+
+    // Deliberately enumerate every pair independently of the extrema checks.
+    std::vector<bool> valid(occurrences.size(), false);
+    std::vector<implementation::ValidMatching> expectedMatchings;
+    for (size_t first = 0; first < occurrences.size(); first++)
+    {
+        for (size_t second = first + 1; second < occurrences.size(); second++)
+        {
+            const auto &left = occurrences[first];
+            const auto &right = occurrences[second];
+            if (
+                left.fragment == right.fragment &&
+                left.interval.offset < right.interval.offset + length &&
+                right.interval.offset < left.interval.offset + length
+            ) continue;
+            valid[first] = true;
+            valid[second] = true;
+            expectedMatchings.push_back(
+                {left.interval, right.interval, left.fragment, right.fragment,
+                    length}
+            );
+        }
+    }
+    const bool expectedValid = !expectedMatchings.empty();
+    const implementation::DuplicateSet &immutableDuplicates = duplicates;
+    require(
+        immutableDuplicates.isValid() == expectedValid,
+        description + ": set validity differs from pair oracle"
+    );
+
+    // Search consumed the old pair vector from its back; preserve that order.
+    auto cursor = immutableDuplicates.matchingCursor();
+    implementation::ValidMatching matching;
+    for (auto expected = expectedMatchings.rbegin();
+         expected != expectedMatchings.rend(); ++expected)
+    {
+        require(cursor.next(matching), description + ": cursor ended early");
+        requireMatching(matching, *expected, description + ": pair order");
+    }
+    require(!cursor.next(matching), description + ": cursor has extra pairs");
+    require(!cursor.next(matching), description + ": exhausted cursor restarted");
+
+    std::vector<implementation::PotentialDuplicate> expectedExtensions;
+    std::vector<std::vector<Interval>> expectedSurvivors(fragments.size());
+    for (size_t index = 0; index < occurrences.size(); index++)
+    {
+        if (!valid[index]) continue;
+        const auto &occurrence = occurrences[index];
+        expectedSurvivors[occurrence.fragment].push_back(occurrence.interval);
+        const Interval &fragment = fragments[occurrence.fragment];
+        if (occurrence.interval.offset + length < fragment.offset + fragment.length)
+        {
+            expectedExtensions.push_back(
+                {{occurrence.interval.offset, length + 1}, occurrence.fragment}
+            );
+        }
+    }
+
+    for (const bool collectSurvivors : {false, true})
+    {
+        std::vector<implementation::FixedIntervalMap> survivingIntervals(
+            fragments.size(), implementation::FixedIntervalMap(length)
+        );
+        std::vector<implementation::PotentialDuplicate> extensions;
+        require(
+            immutableDuplicates.extendValidOccurrences(
+                extensions, fragments,
+                collectSurvivors ? &survivingIntervals : nullptr
+            ) == expectedValid,
+            description + ": extension return value differs from validity"
+        );
+        require(
+            extensions.size() == expectedExtensions.size(),
+            description + ": wrong number of extended occurrences"
+        );
+        for (size_t index = 0; index < extensions.size(); index++)
+        {
+            require(
+                extensions[index].interval == expectedExtensions[index].interval &&
+                    extensions[index].fragment == expectedExtensions[index].fragment,
+                description + ": extended occurrence or insertion order changed"
+            );
+        }
+        if (!collectSurvivors) continue;
+
+        for (size_t fragment = 0; fragment < fragments.size(); fragment++)
+        {
+            auto intervals = expectedSurvivors[fragment];
+            std::sort(intervals.begin(), intervals.end(),
+                [] (const Interval &left, const Interval &right)
+                {
+                    return left.offset < right.offset;
+                }
+            );
+            std::vector<Interval> merged;
+            for (const Interval &interval : intervals)
+            {
+                if (
+                    merged.empty() ||
+                    merged.back().offset + merged.back().length < interval.offset
+                ) merged.push_back(interval);
+                else merged.back().length = std::max(
+                    merged.back().length,
+                    interval.offset + interval.length - merged.back().offset
+                );
+            }
+            requireIntervals(
+                survivingIntervals[fragment].intervals(), merged,
+                description + ": surviving intervals in fragment " +
+                    std::to_string(fragment)
+            );
+        }
+    }
+}
+
+void testDuplicateSets()
+{
+    requireDuplicateSetMatchesOracle(3, {}, {}, "empty duplicate set");
+    requireDuplicateSetMatchesOracle(
+        3, {{{2, 3}, 0}}, {{0, 6}}, "singleton duplicate set"
+    );
+    requireDuplicateSetMatchesOracle(
+        3, {{{2, 3}, 0}, {{4, 3}, 0}, {{0, 3}, 0}}, {{0, 9}},
+        "middle occurrence overlaps both valid extremes"
+    );
+    requireDuplicateSetMatchesOracle(
+        3, {{{3, 3}, 0}, {{0, 3}, 0}}, {{0, 6}},
+        "touching occurrences"
+    );
+    requireDuplicateSetMatchesOracle(
+        3, {{{0, 3}, 1}, {{0, 3}, 0}}, {{0, 6}, {0, 6}},
+        "identical offsets in different fragments"
+    );
+    requireDuplicateSetMatchesOracle(
+        3, {{{3, 3}, 0}, {{0, 3}, 1}}, {{0, 6}, {0, 3}},
+        "valid terminal occurrences cannot extend"
+    );
+
+    for (int length = 2; length <= 4; length++)
+    {
+        const std::vector<implementation::PotentialDuplicate> candidates{
+            {{4, length}, 0}, {{0, length}, 1}, {{1, length}, 0},
+            {{9, length}, 2}, {{0, length}, 0}, {{6, length}, 0},
+            {{3, length}, 1}, {{2, length}, 0}
+        };
+        for (size_t mask = 0; mask < (size_t{1} << candidates.size()); mask++)
+        {
+            std::vector<implementation::PotentialDuplicate> occurrences;
+            for (size_t index = 0; index < candidates.size(); index++)
+            {
+                if ((mask & (size_t{1} << index)) != 0)
+                    occurrences.push_back(candidates[index]);
+            }
+            const std::string description = "duplicate oracle length " +
+                std::to_string(length) + ", mask " + std::to_string(mask);
+            requireDuplicateSetMatchesOracle(
+                length, occurrences, {{0, 12}, {0, 12}, {8, 7}}, description
+            );
+            std::reverse(occurrences.begin(), occurrences.end());
+            requireDuplicateSetMatchesOracle(
+                length, occurrences, {{0, 12}, {0, 12}, {8, 7}},
+                description + ", reversed insertion order"
+            );
+        }
+    }
+
+    implementation::DuplicateSet duplicates(2);
+    for (const int offset : {0, 2, 4, 6}) duplicates.insert({{offset, 2}, 0});
+    auto cursor = duplicates.matchingCursor();
+    implementation::ValidMatching matching;
+    require(cursor.next(matching), "cursor did not yield its first pair");
+    auto copy = cursor;
+    require(cursor.next(matching), "cursor did not yield its second pair");
+    requireMatching(matching, {{2, 2}, {6, 2}, 0, 0, 2}, "original cursor advanced");
+    require(cursor.next(matching), "cursor did not yield its third pair");
+    requireMatching(matching, {{2, 2}, {4, 2}, 0, 0, 2}, "original cursor advanced again");
+    require(copy.next(matching), "copied cursor did not retain its position");
+    requireMatching(matching, {{2, 2}, {6, 2}, 0, 0, 2}, "copied cursor is independent");
+    auto fresh = duplicates.matchingCursor();
+    require(fresh.next(matching), "a fresh cursor did not start independently");
+    requireMatching(matching, {{4, 2}, {6, 2}, 0, 0, 2}, "fresh cursor position");
+
+    // Billions of possible pairs must remain cheap when only a prefix is read.
+    constexpr int occurrenceCount = 100000;
+    implementation::DuplicateSet repetitive(2);
+    for (int offset = 0; offset < occurrenceCount; offset++)
+        repetitive.insert({{offset, 2}, 0});
+    auto prefix = repetitive.matchingCursor();
+    for (const auto &[first, second] : std::vector<std::pair<int, int>>{
+             {occurrenceCount - 3, occurrenceCount - 1},
+             {occurrenceCount - 4, occurrenceCount - 1},
+             {occurrenceCount - 4, occurrenceCount - 2}})
+    {
+        require(prefix.next(matching), "large duplicate cursor ended early");
+        requireMatching(
+            matching, {{first, 2}, {second, 2}, 0, 0, 2},
+            "large duplicate cursor prefix order"
+        );
+    }
+}
+
 void testMultiStepPathways()
 {
     struct TestCase
@@ -1501,6 +1727,7 @@ int main()
         testParallelCancellation();
 #endif
         testIntervalUtilities();
+        testDuplicateSets();
         testMultiStepPathways();
         testReverseEquivalence();
         testSearchStops();
