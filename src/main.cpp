@@ -2233,6 +2233,8 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
                     "was built without parallel support\n";
             return false;
         }
+        cerr << "parallel: serial fallback: this executable was built "
+                "without parallel support\n";
 #endif
     }
 
@@ -2410,16 +2412,16 @@ bool stringAssemblyCalculator(const string &input)
         const bool configured = configuredLocalParallelThreadCount(localThreads, reason);
         if (!stringPhaseSucceeded(configured))
         {
-            if (isPrimaryProcess())
-                cerr << "error: " << (reason.empty()
-                    ? "could not configure string workers on another MPI rank"
-                    : reason) << '\n';
-            return false;
+            if (reason.empty())
+                reason = "could not configure string workers on another MPI rank";
         }
-        reason = parallelCompatibilityFallbackReason(localThreads);
-        useParallel = stringPhaseSucceeded(reason.empty());
-        if (!useParallel && reason.empty())
-            reason = "parallel string execution is unavailable on another MPI rank";
+        else
+        {
+            reason = parallelCompatibilityFallbackReason(localThreads);
+            useParallel = stringPhaseSucceeded(reason.empty());
+            if (!useParallel && reason.empty())
+                reason = "parallel string execution is unavailable on another MPI rank";
+        }
 #else
         reason = "this executable was built without parallel support";
 #endif
@@ -2446,6 +2448,7 @@ bool stringAssemblyCalculator(const string &input)
         }
         else
         {
+            if (verbose) cout << "Input: " << input << '\n';
             outputFile.open(input + "Out");
             if (!outputFile.is_open())
             {
@@ -2548,6 +2551,8 @@ bool stringAssemblyCalculator(const string &input)
             succeeded = false;
             break;
         }
+        if (isPrimaryProcess() && verbose)
+            cout << "String " << lineIndex + 1 << ": " << value << '\n';
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
         if (useParallel)
         {
@@ -3108,6 +3113,33 @@ int main(int argc, char** argv)
     {
         if (isPrimaryProcess()) help();
         return 0;
+    }
+
+    // The fixed report name can itself be the input, including through an
+    // alias or an omitted .mol suffix. Check before creating any outputs.
+    if (memoryReportEnabled)
+    {
+        int reportSafe = 1;
+        if (isPrimaryProcess())
+        {
+            string inputPath = arguments.input;
+            error_code statusError;
+            if (
+                !stringAssemblyMode && !hasMolfileExtension(inputPath) &&
+                !filesystem::exists(inputPath, statusError) && !statusError
+            ) inputPath += ".mol";
+            error_code equivalentError;
+            if (filesystem::equivalent(inputPath, "memUsage", equivalentError))
+            {
+                cerr << "error: memory report 'memUsage' would overwrite input file '"
+                     << inputPath << "'\n";
+                reportSafe = 0;
+            }
+        }
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        MPI_Bcast(&reportSafe, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+        if (reportSafe == 0) return 1;
     }
 
     bool succeeded = stringAssemblyMode

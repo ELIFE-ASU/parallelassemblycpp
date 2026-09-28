@@ -26,7 +26,9 @@ Input:
   An SDF input reads only its first record, which must be V2000.
   Molfile output names omit a recognised suffix.
   With --run-strings=1, INPUT is read exactly as a text file containing one
-  string per line.
+  UTF-8 string per line. Each Unicode code point is one symbol, without
+  normalization. LF, CRLF, empty lines, and a final line without a newline
+  are supported. String pathway positions and lengths count code points.
 
 Options:
   -h, --help
@@ -58,6 +60,7 @@ Notes:
   runtime default by estimated work per worker, shared across MPI ranks with
   at least one thread per rank (at least two total workers for --parallel=on).
   Explicit counts are never reduced by the workload cap.
+  --threads is unused when --parallel=off.
   Finite --runtime budgets and --write-intermediate-mas require serial search;
   a parallel-enabled executable reports an auto fallback or an on-mode error.
   Pathway output is supported after parallel optimization by deterministic
@@ -65,15 +68,20 @@ Notes:
   --runtime is a cooperative std::clock budget and may overrun while an
   operation finishes. CLOCKS_PER_SEC converts ticks to seconds; the clock
   source is platform-specific.
-  --enum-max includes one-edge masks.
+  --enum-max includes one-edge masks and applies only to graph inputs.
   A limited search records its best index and status in INPUTOut; the index may
   not be minimal.
   String assembly distributes search branches within each line across OpenMP
   threads and/or MPI ranks, preserving input order and deterministic pathways.
   String threads are capped by available root jobs; short strings may not
   benefit from parallel execution. Telemetry and intermediate-index output
-  are unavailable in string mode. --accept-palindromes affects string mode
-  only and identifies a fragment with its reversal.
+  are unavailable in string mode. Explicit --enum-max and --remove-hydrogens
+  options, and --compensate-disjoint=1, are also rejected in string mode.
+  --accept-palindromes=1 identifies a fragment with its reversal in string
+  mode and is rejected for graph inputs. Disabled boolean options such as
+  --compensate-disjoint=0 are accepted in either mode.
+  --memory-report=1 is available only on Linux and rejects an input that
+  would be overwritten by ./memUsage.
 
 Outputs:
   INPUTOut              Assembly index, status, and std::clock ticks.

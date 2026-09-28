@@ -36,7 +36,7 @@
 namespace parallelassemblycpp::detail::stringAssembly
 {
 
-/** A half-open interval in the original string. */
+/** A half-open interval of Unicode scalar values in the original string. */
 struct Interval
 {
     int offset = 0;
@@ -108,6 +108,30 @@ struct Result
 
 namespace implementation
 {
+
+/** Decode symbols once, retaining byte boundaries when writing UTF-8 text. */
+inline std::u32string decodeInput(
+    std::string_view input,
+    std::vector<size_t> *byteOffsets = nullptr
+)
+{
+    std::u32string result;
+    for (size_t offset = 0; offset < input.size();)
+    {
+        const utf8::DecodedCharacter decoded = utf8::decode(input, offset);
+        if (decoded.length == 0)
+            throw std::invalid_argument(
+                "string input is not valid UTF-8 at byte " + std::to_string(offset)
+            );
+        if (result.size() >= static_cast<size_t>(std::numeric_limits<int>::max()) - 1)
+            throw std::invalid_argument("string is too long to index");
+        if (byteOffsets != nullptr) byteOffsets->push_back(offset);
+        result.push_back(decoded.codePoint);
+        offset += decoded.length;
+    }
+    if (byteOffsets != nullptr) byteOffsets->push_back(input.size());
+    return result;
+}
 
 /** Sorted union of intervals having one fixed insertion length. */
 class FixedIntervalMap
@@ -363,10 +387,10 @@ struct ParallelControl
 
 class Search
 {
-    std::string original_;
+    std::u32string original_;
     Options options_;
     std::clock_t started_ = 0;
-    std::unordered_map<std::string, int> stringIds_;
+    std::unordered_map<std::u32string, int> stringIds_;
     std::unordered_map<Interval, int, IntervalHash> intervalIds_;
     std::unordered_map<int, std::vector<int>> rollingHash_;
     std::unordered_map<std::vector<int>, int, IntegerVectorHash> states_;
@@ -504,15 +528,15 @@ class Search
         ) targetReached_ = true;
     }
 
-    [[nodiscard]] std::string canonicalText(const Interval &interval) const
+    [[nodiscard]] std::u32string canonicalText(const Interval &interval) const
     {
-        std::string text = original_.substr(
+        std::u32string text = original_.substr(
             static_cast<size_t>(interval.offset),
             static_cast<size_t>(interval.length)
         );
         if (!options_.acceptReversed) return text;
 
-        std::string reversed(text.rbegin(), text.rend());
+        std::u32string reversed(text.rbegin(), text.rend());
         return std::min(text, reversed);
     }
 
@@ -523,7 +547,7 @@ class Search
         if (intervalEntry != intervalIds_.end()) id = intervalEntry->second;
         else
         {
-            const std::string text = canonicalText(interval);
+            const std::u32string text = canonicalText(interval);
             auto textEntry = stringIds_.find(text);
             if (textEntry == stringIds_.end())
             {
@@ -547,12 +571,11 @@ class Search
 
     [[nodiscard]] std::vector<Interval> preprocess() const
     {
-        std::unordered_map<unsigned char, int> firstOffsets;
+        std::unordered_map<char32_t, int> firstOffsets;
         std::vector<bool> duplicated(original_.size(), false);
         for (size_t index = 0; index < original_.size(); index++)
         {
-            const unsigned char symbol =
-                static_cast<unsigned char>(original_[index]);
+            const char32_t symbol = original_[index];
             const auto [entry, inserted] = firstOffsets.try_emplace(
                 symbol,
                 static_cast<int>(index)
@@ -1072,7 +1095,7 @@ class Search
     }
 
 public:
-    Search(std::string original, const Options &options):
+    Search(std::u32string original, const Options &options):
         original_(std::move(original)), options_(options) {}
 
     Result run()
@@ -1249,7 +1272,7 @@ inline std::vector<Interval> remnantIntervals(
 
 inline Result calculate(const std::string &input, const Options &options = {})
 {
-    return implementation::Search(input, options).run();
+    return implementation::Search(implementation::decodeInput(input), options).run();
 }
 
 inline bool writePathway(
@@ -1259,31 +1282,33 @@ inline bool writePathway(
     std::string &error
 )
 {
-    std::ofstream output(filename);
-    if (!output.is_open())
-    {
-        error = "could not open output file '" + filename + "'";
-        return false;
-    }
-
+    std::ofstream output;
     try
     {
+        std::vector<size_t> byteOffsets;
+        implementation::decodeInput(input, &byteOffsets);
+        output.open(filename);
+        if (!output.is_open())
+        {
+            error = "could not open output file '" + filename + "'";
+            return false;
+        }
         output << "{\n  \"file_graph\": [\n    {\n      \"Fragments\": [";
         implementation::writeJsonString(input, output);
         output << "],\n      \"Positions\": [0]\n    }\n  ],\n";
 
         const std::vector<Interval> remnants =
-            implementation::remnantIntervals(input.size(), result.pathway);
+            implementation::remnantIntervals(byteOffsets.size() - 1, result.pathway);
         output << "  \"remnant\": [\n    {\n      \"Fragments\": [";
         for (size_t index = 0; index < remnants.size(); index++)
         {
             if (index > 0) output << ',';
+            const size_t first = byteOffsets.at(static_cast<size_t>(remnants[index].offset));
+            const size_t last = byteOffsets.at(static_cast<size_t>(
+                remnants[index].offset + remnants[index].length
+            ));
             implementation::writeJsonString(
-                std::string_view(input).substr(
-                    static_cast<size_t>(remnants[index].offset),
-                    static_cast<size_t>(remnants[index].length)
-                ),
-                output
+                std::string_view(input).substr(first, last - first), output
             );
         }
         output << "],\n      \"Positions\": [";

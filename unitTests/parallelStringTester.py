@@ -25,6 +25,10 @@ INPUTS = (
     "abcababc",
     "abcabzzxyyxabcab",
     "0" * 25 + "1" * 25 + "2" * 25,
+    "\u00e9",
+    "\U0001f600\U0001f601\U0001f602",
+    "\U0001f600\U0001f601\U0001f600\U0001f601",
+    "\u03b1\u03b2\u03b3x\u03b3\u03b2\u03b1",
 )
 
 
@@ -35,11 +39,13 @@ def run_case(
     mode: str,
     threads: int,
     accept_reversed: bool,
+    thread_option: str | None = None,
     pathway: bool = True,
     input_exists: bool = True,
     output_blocked: bool = False,
     extra: tuple[str, ...] = (),
     expected_error: str | None = None,
+    expected_fallback: str | None = None,
     timeout: float,
 ) -> tuple[list[int], list[object]]:
     environment = os.environ.copy()
@@ -65,7 +71,7 @@ def run_case(
             "input",
             "--run-strings=1",
             f"--parallel={mode}",
-            f"--threads={threads}",
+            f"--threads={threads if thread_option is None else thread_option}",
             f"--pathway={int(pathway)}",
             f"--accept-palindromes={int(accept_reversed)}",
             *extra,
@@ -87,6 +93,12 @@ def run_case(
             return [], []
         if completed.returncode != 0:
             raise AssertionError(details)
+        if (
+            expected_fallback is not None
+            and ("parallel: serial fallback: " + expected_fallback)
+            not in completed.stderr
+        ):
+            raise AssertionError(f"missing expected serial fallback\n{details}")
         output = (directory / "inputOut").read_text(encoding="utf-8")
         indices = [
             int(match.group(1)) for match in ASSEMBLY_INDEX_PATTERN.finditer(output)
@@ -141,11 +153,11 @@ def main() -> int:
             accept_reversed=accept_reversed,
             timeout=arguments.timeout,
         )
-    if baselines[False][0] != [-1, 0, 5, 2, 6, 5, 4, 10, 20]:
+    if baselines[False][0] != [-1, 0, 5, 2, 6, 5, 4, 10, 20, 0, 2, 2, 6]:
         raise AssertionError(
             f"serial fixture indices are incorrect: {baselines[False][0]}"
         )
-    if baselines[True][0][4] != 4:
+    if baselines[True][0][4] != 4 or baselines[True][0][-1] != 4:
         raise AssertionError("serial reversal fixture has an incorrect index")
 
     runs = 2
@@ -190,6 +202,41 @@ def main() -> int:
             )
             if mode == "auto" and actual != baselines[False]:
                 raise AssertionError(f"{backend}: runtime fallback changed results")
+            runs += 1
+        for mode in ("on", "auto"):
+            actual = run_case(
+                executable.resolve(),
+                launcher=launcher,
+                mode=mode,
+                threads=threads,
+                thread_option="auto",
+                accept_reversed=False,
+                timeout=arguments.timeout,
+            )
+            if actual != baselines[False]:
+                raise AssertionError(f"{backend}: automatic threads changed results")
+            runs += 1
+        invalid_threads_reason = (
+            "--threads=2 requires an OpenMP-enabled executable"
+            if backend == "mpi"
+            else "--threads=3 exceeds the OpenMP thread limit 2"
+        )
+        for mode in ("on", "auto"):
+            actual = run_case(
+                executable.resolve(),
+                launcher=launcher,
+                mode=mode,
+                threads=threads,
+                thread_option=str(threads + 1),
+                accept_reversed=False,
+                expected_error=invalid_threads_reason if mode == "on" else None,
+                expected_fallback=invalid_threads_reason if mode == "auto" else None,
+                timeout=arguments.timeout,
+            )
+            if mode == "auto" and actual != baselines[False]:
+                raise AssertionError(
+                    f"{backend}: thread-limit fallback changed results"
+                )
             runs += 1
         without_pathways = run_case(
             executable.resolve(),

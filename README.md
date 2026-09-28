@@ -251,15 +251,15 @@ Nothing after `--` is treated as an option, so a later `--help` or
 | `-h`, `--help` | — | Show command help. |
 | `--` | — | Stop parsing options; read every later argument as `INPUT`. |
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
-| `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial DAG. |
+| `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial graph DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
 | `--run-strings=<0\|1>` | `0` | Treat `INPUT` as a file containing one string per line. |
-| `--accept-palindromes=<0\|1>` | `0` | Identify a string fragment with its reversal. |
+| `--accept-palindromes=<0\|1>` | `0` | In string mode, identify a fragment with its reversal. |
 | `--parallel=<auto\|on\|off>` | `off` | Select parallel search automatically, require it, or disable it. |
 | `--threads=<auto\|N>` | `auto` | Set the OpenMP thread count per process; `N` must be positive. |
 | `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from MOL/SDF and native graph inputs. |
-| `--verbose=<0\|1>` | `0` | Print the parsed input graph. |
-| `--compensate-disjoint=<0\|1>` | `0` | Subtract one per processed component after the first. |
+| `--verbose=<0\|1>` | `0` | Print the parsed graph or each input string. |
+| `--compensate-disjoint=<0\|1>` | `0` | For graphs, subtract one per processed component after the first. |
 | `--memory-report=<0\|1>` | `0` | Write Linux peak virtual memory to `memUsage`. |
 | `--telemetry=<0\|1>` | `0` | Write search telemetry. |
 | `--write-intermediate-mas=<0\|1>` | `0` | Write each improved index and its clock tick. |
@@ -268,6 +268,13 @@ Nothing after `--` is treated as an option, so a later `--help` or
 best index found so far, which may not be the proven minimum. Run
 `ParallelAssemblyCpp --help` for full details and accepted legacy option names.
 `--telemetry` is available only in telemetry-enabled executables.
+Graph mode rejects `--accept-palindromes=1`. String mode rejects explicit
+`--enum-max` and `--remove-hydrogens` options, and rejects
+`--compensate-disjoint=1`, because these options only apply to graphs.
+Disabled boolean options such as `--compensate-disjoint=0` remain accepted.
+`--threads` is only used when `--parallel` is `auto` or `on`.
+`--memory-report=1` is rejected outside Linux, and fails if `memUsage` refers
+to the input file, preserving the input.
 `--threads=auto` treats the OpenMP runtime default (including `OMP_NUM_THREADS`)
 as an upper limit. Once the prepared root jobs and DAG indicate enough work
 for parallel search, it estimates one worker per 32,768 work units and rounds
@@ -311,6 +318,11 @@ opened exactly as supplied and every line is processed as a separate string:
 ```bash
 ./build/release/ParallelAssemblyCpp strings.txt --run-strings=1
 ```
+
+String files must contain valid UTF-8. Each Unicode code point is one symbol;
+no Unicode normalization is applied. LF and CRLF line endings are accepted,
+empty lines are separate strings, and the last line need not end in a newline.
+Pathway positions and lengths count code points rather than UTF-8 bytes.
 
 Results are written to `strings.txtOut`. With pathway output enabled, the
 zero-based line number is included in each pathway name, such as

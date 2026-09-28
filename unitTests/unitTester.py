@@ -423,6 +423,610 @@ def make_mask_capacity_graph(component_sizes: Sequence[int]) -> str:
     )
 
 
+def run_flag_matrix_checks(executable: Path, telemetry_supported: bool) -> int:
+    """Exercise every flag spelling against actual molecular and string inputs."""
+    spellings = {
+        "runtime": ("runtime", "runTime"),
+        "enum-max": ("enum-max", "enumMax"),
+        "pathway": ("pathway",),
+        "run-strings": ("run-strings", "runStrings"),
+        "accept-palindromes": ("accept-palindromes", "acceptPalindromes", "palindrome"),
+        "parallel": ("parallel",),
+        "threads": ("threads",),
+        "remove-hydrogens": ("remove-hydrogens", "removeHydrogens"),
+        "verbose": ("verbose",),
+        "compensate-disjoint": (
+            "compensate-disjoint",
+            "compensateDisjoint",
+            "disjointCompensation",
+        ),
+        "memory-report": ("memory-report", "memTest", "testMemory"),
+        "write-intermediate-mas": ("write-intermediate-mas", "writeIntermediateMAs"),
+    }
+    if telemetry_supported:
+        spellings["telemetry"] = ("telemetry",)
+    boolean_flags = set(spellings) - {"runtime", "enum-max", "parallel", "threads"}
+    scenarios = 0
+    with tempfile.TemporaryDirectory(prefix="parallelassemblycpp-flags-") as directory:
+        root = Path(directory)
+
+        # Parsing must reject malformed values regardless of input mode, and
+        # before opening or overwriting any output files.
+        invalid_values = dict.fromkeys(
+            sorted(boolean_flags), ("", "2", "-1", "true", "01", "+1", " 1", "1 ")
+        )
+        invalid_values.update(
+            {
+                "runtime": ("", "-1", "+1", "1.0", " 1", "1 ", "18446744073709551616"),
+                "enum-max": ("", "0", "-1", "+1", "1.0", "2147483648"),
+                "threads": ("", "0", "-1", "+1", "1.0", "2147483648", "AUTO"),
+                "parallel": ("", "1", "ON", "false", "automatic"),
+            }
+        )
+        for strings in (False, True):
+            mode = "string" if strings else "molecular"
+            case_directory = root / f"invalid-{mode}"
+            case_directory.mkdir()
+            input_name = "input" if strings else "input.mol"
+            input_path = case_directory / input_name
+            if strings:
+                input_path.write_text("abcxcba\n")
+            else:
+                shutil.copy2(TEST_DIRECTORY / "butane.mol", input_path)
+            output = case_directory / "inputOut"
+            output.write_text("existing result\n")
+            for name, values in invalid_values.items():
+                mode_arguments = (
+                    [] if name == "run-strings" else [f"--run-strings={int(strings)}"]
+                )
+                for value in values:
+                    arguments = [input_name, *mode_arguments, f"--{name}={value}"]
+                    completed = run_cli_command(executable, arguments, case_directory)
+                    require_cli(
+                        completed.returncode == 2 and f"--{name}" in completed.stderr,
+                        f"{mode} should reject malformed --{name}={value!r}",
+                        completed,
+                    )
+                    require_cli(
+                        output.read_text() == "existing result\n",
+                        f"invalid --{name} unexpectedly changed an output",
+                        completed,
+                    )
+                    scenarios += 1
+                completed = run_cli_command(
+                    executable,
+                    [input_name, *mode_arguments, f"--{name}"],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 2
+                    and "requires a value" in completed.stderr,
+                    f"{mode} should reject --{name} without =VALUE",
+                    completed,
+                )
+                scenarios += 1
+
+        # Every canonical/legacy spelling accepts either dash prefix. Use real
+        # calculations so accepting an alias without applying it cannot pass.
+        for mode in ("mol", "native", "string"):
+            strings = mode == "string"
+            for name, names in spellings.items():
+                value = {
+                    "runtime": "0",
+                    "enum-max": "1",
+                    "run-strings": str(int(strings)),
+                    "accept-palindromes": str(int(strings)),
+                    "parallel": "off",
+                    "threads": "1",
+                    "remove-hydrogens": "0",
+                    "compensate-disjoint": "0",
+                    "write-intermediate-mas": str(int(not strings)),
+                    "telemetry": str(int(not strings)),
+                }.get(name, "1")
+                for spelling in names:
+                    for prefix in ("-", "--"):
+                        case_directory = root / f"case-{scenarios}"
+                        case_directory.mkdir()
+                        input_name = "input.mol" if mode == "mol" else "input"
+                        if mode == "mol":
+                            shutil.copy2(
+                                TEST_DIRECTORY / "butane.mol",
+                                case_directory / input_name,
+                            )
+                        elif mode == "native":
+                            (case_directory / input_name).write_text(
+                                "butane\n4\n1 2 2 3 3 4\nC C C C\n1 1 1\n"
+                            )
+                        else:
+                            (case_directory / input_name).write_text("abcxcba\n")
+                        defaults = {
+                            "run-strings": str(int(strings)),
+                            "pathway": "0",
+                            "parallel": "off",
+                        }
+                        defaults.pop(name, None)
+                        option = f"{prefix}{spelling}={value}"
+                        options = [
+                            f"--{key}={setting}" for key, setting in defaults.items()
+                        ]
+                        # Exercise options both before and after INPUT.
+                        arguments = [option, input_name, *options]
+                        completed = run_cli_command(
+                            executable, arguments, case_directory
+                        )
+                        output = case_directory / "inputOut"
+                        incompatible = (
+                            strings and name in {"enum-max", "remove-hydrogens"}
+                        ) or (
+                            name == "memory-report"
+                            and not sys.platform.startswith("linux")
+                        )
+                        if incompatible:
+                            require_cli(
+                                completed.returncode == 2
+                                and f"--{name}" in completed.stderr
+                                and not output.exists(),
+                                f"{mode} should explain inapplicable {option}",
+                                completed,
+                            )
+                            scenarios += 1
+                            continue
+                        require_cli(
+                            completed.returncode == 0,
+                            f"{mode} should execute {option}",
+                            completed,
+                        )
+                        expected_index = (
+                            4
+                            if strings and name == "accept-palindromes"
+                            else (6 if strings else 2)
+                        )
+                        require_cli(
+                            read_first_line_assembly_index(output) == expected_index,
+                            f"{mode} {option} returned the wrong index",
+                            completed,
+                        )
+                        pathway = case_directory / (
+                            "input_0_Pathway" if strings else "inputPathway"
+                        )
+                        require_cli(
+                            pathway.exists() == (name == "pathway"),
+                            f"{mode} {option} did not honor pathway output",
+                            completed,
+                        )
+                        if name == "pathway":
+                            document = json.loads(pathway.read_text())
+                            require_cli(
+                                {"file_graph", "remnant", "duplicates"}
+                                <= document.keys(),
+                                f"{mode} {option} wrote malformed pathway JSON",
+                                completed,
+                            )
+                        if name == "runtime":
+                            require_cli(
+                                "status: runtime limit reached" in output.read_text(),
+                                f"{mode} {option} did not enforce the runtime cap",
+                                completed,
+                            )
+                        if name == "enum-max":
+                            require_cli(
+                                "status: enumeration limit reached"
+                                in output.read_text(),
+                                f"{mode} {option} did not enforce the enumeration cap",
+                                completed,
+                            )
+                        if name == "verbose":
+                            require_cli(
+                                "Input: input" in completed.stdout,
+                                f"{mode} {option} did not print diagnostics",
+                                completed,
+                            )
+                        if name == "memory-report":
+                            memory = case_directory / "memUsage"
+                            require_cli(
+                                memory.exists() == sys.platform.startswith("linux"),
+                                f"{mode} {option} did not honor memory output",
+                                completed,
+                            )
+                        if name == "write-intermediate-mas" and not strings:
+                            require_cli(
+                                read_last_intermediate_index(
+                                    case_directory / "inputIntermediateMAs"
+                                )
+                                == expected_index,
+                                f"{mode} {option} did not write the final index",
+                                completed,
+                            )
+                        if name == "telemetry" and not strings:
+                            telemetry = case_directory / "inputTelemetry.json"
+                            require_cli(
+                                telemetry.is_file(),
+                                f"{mode} {option} did not write telemetry",
+                                completed,
+                            )
+                            require_cli(
+                                isinstance(json.loads(telemetry.read_text()), dict),
+                                f"{mode} {option} wrote malformed telemetry",
+                                completed,
+                            )
+                        scenarios += 1
+
+        # Applicability is checked after parsing the complete command, so the
+        # position and spelling of the mode selector cannot change the result.
+        for name, values, strings in (
+            ("enum-max", ("1", "50000000"), True),
+            ("remove-hydrogens", ("0", "1"), True),
+            ("compensate-disjoint", ("1",), True),
+            ("accept-palindromes", ("1",), False),
+        ):
+            for spelling in spellings[name]:
+                for value in values:
+                    option = f"-{spelling}={value}"
+                    for mode_first in (False, True):
+                        mode_option = f"--runStrings={int(strings)}"
+                        arguments = (
+                            [mode_option, option]
+                            if mode_first
+                            else [option, mode_option]
+                        )
+                        completed = run_cli_command(
+                            executable, ["missing-input", *arguments], root
+                        )
+                        require_cli(
+                            completed.returncode == 2
+                            and f"--{name}" in completed.stderr,
+                            f"applicability should reject {arguments!r} "
+                            "before reading input",
+                            completed,
+                        )
+                        scenarios += 1
+                    completed = run_cli_command(
+                        executable, ["--help", *arguments], root
+                    )
+                    require_cli(
+                        completed.returncode == 0,
+                        f"help should bypass the applicability of {option}",
+                        completed,
+                    )
+                    scenarios += 1
+
+        for arguments in ([""], ["", "input"], ["input", ""], ["--", "", "input"]):
+            completed = run_cli_command(executable, arguments, root)
+            require_cli(
+                completed.returncode == 2 and "INPUT" in completed.stderr,
+                f"an empty input argument should be rejected: {arguments!r}",
+                completed,
+            )
+            scenarios += 1
+
+        # Alias duplicates must refer to the same underlying flag. --help
+        # bypasses mode applicability, but must not hide malformed syntax.
+        for name, names in spellings.items():
+            value = {
+                "runtime": "1",
+                "enum-max": "1",
+                "parallel": "off",
+                "threads": "1",
+            }.get(name, "0")
+            for alias in names:
+                completed = run_cli_command(
+                    executable,
+                    ["--help", f"--{name}={value}", f"-{alias}={value}"],
+                    root,
+                )
+                require_cli(
+                    completed.returncode == 2 and "only once" in completed.stderr,
+                    f"-{alias} should duplicate --{name}",
+                    completed,
+                )
+                scenarios += 1
+
+        for option in (
+            "--runtime=18446744073709551615",
+            "--enum-max=2147483647",
+            "--threads=2147483647",
+        ):
+            completed = run_cli_command(executable, ["--help", option], root)
+            require_cli(
+                completed.returncode == 0,
+                f"the exact upper boundary {option} should parse",
+                completed,
+            )
+            scenarios += 1
+
+    return scenarios
+
+
+def run_input_output_matrix_checks(executable: Path, telemetry_supported: bool) -> int:
+    """Check names, optional output isolation, and I/O failures in every mode."""
+    scenarios = 0
+    with tempfile.TemporaryDirectory(prefix="parallelassemblycpp-inputs-") as directory:
+        root = Path(directory)
+        for mode in ("mol", "native", "string"):
+            strings = mode == "string"
+            for requested_name, absolute in (
+                ("input with spaces", False),
+                ("-h", False),
+                ("--runtime=0", False),
+                ("nested dir/input=name", False),
+                ("absolute input", True),
+                # In string mode, MOL/SDF suffixes must not switch the parser
+                # or be stripped from output names.
+                *(([("input.MOL", False), ("input.sdf", False)]) if strings else []),
+            ):
+                case_directory = root / f"names-{scenarios}"
+                case_directory.mkdir()
+                filename = requested_name + (".mol" if mode == "mol" else "")
+                input_path = case_directory / filename
+                input_path.parent.mkdir(parents=True, exist_ok=True)
+                if mode == "mol":
+                    shutil.copy2(TEST_DIRECTORY / "butane.mol", input_path)
+                elif mode == "native":
+                    input_path.write_text("butane\n4\n1 2 2 3 3 4\nC C C C\n1 1 1\n")
+                else:
+                    input_path.write_text("abab\n")
+                output_base = (
+                    input_path.with_suffix("") if mode == "mol" else input_path
+                )
+                output_path = Path(str(output_base) + "Out")
+                pathway_path = Path(
+                    str(output_base) + ("_0_Pathway" if strings else "Pathway")
+                )
+                argument = str(input_path) if absolute else filename
+                completed = run_cli_command(
+                    executable,
+                    [f"--run-strings={int(strings)}", "--pathway=1", "--", argument],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 0
+                    and read_first_line_assembly_index(output_path) == 2,
+                    f"{mode} should preserve input name {argument!r}",
+                    completed,
+                )
+                require_cli(
+                    pathway_path.is_file(),
+                    f"{mode} should preserve the pathway base for {argument!r}",
+                    completed,
+                )
+                json.loads(pathway_path.read_text())
+                scenarios += 1
+
+            for enabled in (False, True):
+                case_directory = root / f"outputs-{mode}-{int(enabled)}"
+                case_directory.mkdir()
+                input_name = "input.mol" if mode == "mol" else "input"
+                if mode == "mol":
+                    shutil.copy2(
+                        TEST_DIRECTORY / "butane.mol", case_directory / input_name
+                    )
+                elif mode == "native":
+                    (case_directory / input_name).write_text(
+                        "butane\n4\n1 2 2 3 3 4\nC C C C\n1 1 1\n"
+                    )
+                else:
+                    (case_directory / input_name).write_text("abab\n")
+                output_names = [
+                    "input_0_Pathway" if strings else "inputPathway",
+                    "memUsage",
+                ]
+                if not strings:
+                    output_names.append("inputIntermediateMAs")
+                    if telemetry_supported:
+                        output_names.append("inputTelemetry.json")
+                for name in output_names:
+                    (case_directory / name).write_text("existing output sentinel\n")
+                memory_enabled = enabled and sys.platform.startswith("linux")
+                options = [
+                    f"--run-strings={int(strings)}",
+                    f"--pathway={int(enabled)}",
+                    f"--memory-report={int(memory_enabled)}",
+                    "--verbose=0",
+                ]
+                if not strings:
+                    options.append(f"--write-intermediate-mas={int(enabled)}")
+                    if telemetry_supported:
+                        options.append(f"--telemetry={int(enabled)}")
+                completed = run_cli_command(
+                    executable, [input_name, *options], case_directory
+                )
+                require_cli(
+                    completed.returncode == 0,
+                    f"{mode} output toggles should work",
+                    completed,
+                )
+                require_cli(
+                    "Input:" not in completed.stdout
+                    and "Graph:" not in completed.stdout,
+                    f"{mode} --verbose=0 should suppress diagnostics",
+                    completed,
+                )
+                for name in output_names:
+                    should_change = enabled and (
+                        name != "memUsage" or sys.platform.startswith("linux")
+                    )
+                    require_cli(
+                        (
+                            (case_directory / name).read_text()
+                            != "existing output sentinel\n"
+                        )
+                        == should_change,
+                        f"{mode} enabled={enabled} mishandled {name}",
+                        completed,
+                    )
+                scenarios += 1
+
+            for target in (
+                "inputOut",
+                "input_0_Pathway" if strings else "inputPathway",
+            ):
+                case_directory = root / f"output-error-{mode}-{target}"
+                case_directory.mkdir()
+                input_name = "input.mol" if mode == "mol" else "input"
+                if mode == "mol":
+                    shutil.copy2(
+                        TEST_DIRECTORY / "butane.mol", case_directory / input_name
+                    )
+                elif mode == "native":
+                    (case_directory / input_name).write_text(
+                        "butane\n4\n1 2 2 3 3 4\nC C C C\n1 1 1\n"
+                    )
+                else:
+                    (case_directory / input_name).write_text("abab\n")
+                (case_directory / target).mkdir()
+                completed = run_cli_command(
+                    executable,
+                    [input_name, f"--run-strings={int(strings)}", "--pathway=1"],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 1 and target in completed.stderr,
+                    f"{mode} must report an unwritable {target}",
+                    completed,
+                )
+                scenarios += 1
+
+        for contents in (b"", b"\n", b"a\n", b" \t\n", b'quote"\\\t\x00\n'):
+            case_directory = root / f"string-records-{scenarios}"
+            case_directory.mkdir()
+            (case_directory / "input").write_bytes(contents)
+            completed = run_cli_command(
+                executable,
+                ["input", "--run-strings=1", "--pathway=1"],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"string mode should preserve record bytes {contents!r}",
+                completed,
+            )
+            records = contents.splitlines()
+            output_text = (case_directory / "inputOut").read_text()
+            require_cli(
+                len(ASSEMBLY_INDEX_PATTERN.findall(output_text)) == len(records),
+                f"string records {contents!r} produced the wrong number of results",
+                completed,
+            )
+            for index, record in enumerate(records):
+                pathway = json.loads(
+                    (case_directory / f"input_{index}_Pathway").read_text()
+                )
+                require_cli(
+                    pathway["file_graph"][0]["Fragments"] == [record.decode()],
+                    f"string pathway changed record {contents!r}",
+                    completed,
+                )
+            scenarios += 1
+
+        for contents in (
+            b"\x80",
+            b"\xc3",
+            b"\xc3(",
+            b"\xc0\xaf",
+            b"\xed\xa0\x80",
+            b"\xf5\x80\x80\x80",
+        ):
+            for pathway in (0, 1):
+                case_directory = root / f"invalid-utf8-{scenarios}"
+                case_directory.mkdir()
+                (case_directory / "input").write_bytes(contents + b"\n")
+                completed = run_cli_command(
+                    executable,
+                    ["input", "--run-strings=1", f"--pathway={pathway}", "--verbose=1"],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 1
+                    and "string input is not valid UTF-8" in completed.stderr,
+                    f"string input {contents!r} should fail with pathway={pathway}",
+                    completed,
+                )
+                require_cli(
+                    not (case_directory / "input_0_Pathway").exists(),
+                    "invalid UTF-8 must not create a malformed pathway",
+                    completed,
+                )
+                scenarios += 1
+
+        for mode in ("mol", "native", "string"):
+            for missing in (True, False):
+                case_directory = root / f"input-error-{mode}-{int(missing)}"
+                case_directory.mkdir()
+                input_name = "input.mol" if mode == "mol" else "input"
+                if not missing:
+                    (case_directory / input_name).mkdir()
+                completed = run_cli_command(
+                    executable,
+                    [input_name, f"--run-strings={int(mode == 'string')}"],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 1 and "input" in completed.stderr,
+                    f"{mode} should reject "
+                    f"{'missing' if missing else 'directory'} input",
+                    completed,
+                )
+                scenarios += 1
+
+        if sys.platform.startswith("linux"):
+            # Memory reports use a fixed filename in the working directory.
+            # A matching input or filesystem alias must never be overwritten.
+            for mode in ("native", "string", "mol-fallback"):
+                link_modes = (
+                    ("symlink", "hardlink")
+                    if mode == "mol-fallback"
+                    else ("same-path", "symlink", "hardlink")
+                )
+                for link_mode in link_modes:
+                    case_directory = root / f"memory-input-{mode}-{link_mode}"
+                    case_directory.mkdir()
+                    input_name = "memUsage" if link_mode == "same-path" else "input"
+                    input_path = case_directory / input_name
+                    if mode == "mol-fallback":
+                        input_path = input_path.with_suffix(".mol")
+                        shutil.copy2(TEST_DIRECTORY / "butane.mol", input_path)
+                    else:
+                        input_path.write_text(
+                            "abab\n"
+                            if mode == "string"
+                            else ("butane\n4\n1 2 2 3 3 4\nC C C C\n1 1 1\n")
+                        )
+                    memory_path = case_directory / "memUsage"
+                    if link_mode == "symlink":
+                        memory_path.symlink_to(input_path.name)
+                    elif link_mode == "hardlink":
+                        memory_path.hardlink_to(input_path)
+                    before = input_path.read_bytes()
+                    completed = run_cli_command(
+                        executable,
+                        [
+                            input_name,
+                            f"--run-strings={int(mode == 'string')}",
+                            "--memory-report=1",
+                        ],
+                        case_directory,
+                    )
+                    require_cli(
+                        completed.returncode == 1
+                        and "would overwrite input" in completed.stderr,
+                        f"memory output must reject {mode} {link_mode} collisions",
+                        completed,
+                    )
+                    require_cli(
+                        input_path.read_bytes() == before
+                        and memory_path.read_bytes() == before,
+                        f"memory output corrupted {mode} {link_mode} input",
+                        completed,
+                    )
+                    require_cli(
+                        not (case_directory / f"{input_name}Out").exists(),
+                        "memory/input collisions should be detected before calculation",
+                        completed,
+                    )
+                    scenarios += 1
+    return scenarios
+
+
 def run_cli_checks(executable: Path) -> int:
     """Exercise help, validation, aliases, input handling, and output flags."""
     scenarios = 0
@@ -1957,6 +2561,14 @@ def run_cli_checks(executable: Path) -> int:
             if memory_option is not None:
                 arguments.append(memory_option)
             completed = run_cli_command(executable, arguments, working_directory)
+            if expected_on_linux and not sys.platform.startswith("linux"):
+                require_cli(
+                    completed.returncode == 2 and "only on Linux" in completed.stderr,
+                    f"memory scenario {memory_option} should explain platform support",
+                    completed,
+                )
+                scenarios += 1
+                continue
             require_cli(
                 completed.returncode == 0,
                 f"memory scenario {memory_option or 'default'} should succeed",
@@ -1980,6 +2592,8 @@ def run_cli_checks(executable: Path) -> int:
                 )
             scenarios += 1
 
+    scenarios += run_flag_matrix_checks(executable, bool(telemetry_supported))
+    scenarios += run_input_output_matrix_checks(executable, bool(telemetry_supported))
     return scenarios
 
 

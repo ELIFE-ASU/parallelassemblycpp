@@ -61,7 +61,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "enum-max",
             "COUNT",
             "50000000",
-            "Limit connected subgraphs in initial enumeration.",
+            "Limit connected subgraphs in initial enumeration (graph inputs only).",
             {"enumMax"}
         },
         {
@@ -85,7 +85,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "accept-palindromes",
             "0|1",
             "0",
-            "Treat a string fragment and its reversal as equivalent.",
+            "Treat a string fragment and its reversal as equivalent (string inputs only).",
             {"acceptPalindromes", "palindrome"}
         },
         {
@@ -117,7 +117,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "verbose",
             "0|1",
             "0",
-            "Print the parsed input graph.",
+            "Print the parsed input graph or each input string.",
             {}
         },
         {
@@ -125,7 +125,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "compensate-disjoint",
             "0|1",
             "0",
-            "Subtract one for each processed component after the first.",
+            "Subtract one for each processed component after the first (graph inputs only).",
             {"compensateDisjoint", "disjointCompensation"}
         },
         {
@@ -382,6 +382,10 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
             continue;
         }
 
+        if (argument.empty())
+        {
+            throw std::invalid_argument("INPUT must not be empty");
+        }
         if (!parsed.input.empty())
         {
             throw std::invalid_argument(
@@ -394,6 +398,49 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
     if (!parsed.showHelp && parsed.input.empty())
     {
         throw std::invalid_argument("INPUT is required");
+    }
+    if (!parsed.showHelp)
+    {
+#ifndef __linux__
+        if (memoryReportEnabled)
+        {
+            throw std::invalid_argument(
+                "--memory-report=1 is available only on Linux"
+            );
+        }
+#endif
+        if (stringAssemblyMode)
+        {
+            // These graph operations have no counterpart in string search.
+            // Reject explicit options even when their values equal defaults,
+            // so a requested limit or preprocessing step is never ignored.
+            for (const InputFlagDefinition& definition : inputFlagDefinitions())
+            {
+                if (
+                    (definition.flag == InputFlag::enumMax ||
+                        definition.flag == InputFlag::removeHydrogensFlag) &&
+                    seenFlags.count(static_cast<int>(definition.flag)) != 0
+                )
+                {
+                    throw std::invalid_argument(
+                        inputFlagLabel(definition) +
+                        " is unavailable for string assembly"
+                    );
+                }
+            }
+            if (disjointCompensation)
+            {
+                throw std::invalid_argument(
+                    "--compensate-disjoint=1 is unavailable for string assembly"
+                );
+            }
+        }
+        else if (acceptReversedStrings)
+        {
+            throw std::invalid_argument(
+                "--accept-palindromes=1 requires --run-strings=1"
+            );
+        }
     }
     return parsed;
 }

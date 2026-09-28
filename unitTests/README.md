@@ -42,9 +42,15 @@ The harness always runs command-line checks before the selected regression
 cases. These cover validation, legacy names, limits, inputs, outputs, and Linux
 memory reporting. They also run the five-case upstream string corpus, validate
 line-ending and incompatible-option behavior, and check per-line pathway JSON.
+Every canonical and legacy flag spelling is exercised on actual inputs, with
+invalid values, duplicate aliases, unusual filenames, output failures, and
+disabled-output preservation checked separately. Graph-only flags in string
+mode and enabled reversal matching in graph mode must produce diagnostics.
 The focused `stringAssemblyTester` compares short binary and ternary inputs with
 an independent exhaustive search and covers interval merging, remnants,
-multi-step pathways, reversal, cancellation, and JSON escaping. `--build` also
+multi-step pathways, reversal, cancellation, and JSON escaping. Unicode strings
+also check code-point indexing, malformed UTF-8 rejection, and parity with
+serial, OpenMP, MPI, and hybrid execution. `--build` also
 compiles and runs the focused C++ tests, using an x86-64-v3 executable with
 telemetry as a test shortcut. Use a CMake portable build on older x86-64 or
 non-x86 systems.

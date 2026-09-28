@@ -310,7 +310,7 @@ public:
     }
 };
 
-std::string intervalText(const std::string &input, const Interval &interval)
+std::u32string intervalText(const std::u32string &input, const Interval &interval)
 {
     return input.substr(
         static_cast<size_t>(interval.offset),
@@ -347,6 +347,7 @@ void requireConsistentPathway(
     bool acceptReversed = false
 )
 {
+    const std::u32string symbols = implementation::decodeInput(input);
     int duplicatedSymbols = 0;
     std::vector<Interval> removed;
     for (size_t index = 0; index < result.pathway.size(); index++)
@@ -354,8 +355,8 @@ void requireConsistentPathway(
         const PathwayStep &step = result.pathway[index];
         const std::string prefix =
             "pathway step " + std::to_string(index) + ' ';
-        requireValidInterval(step.match, input.size(), prefix + "match");
-        requireValidInterval(step.duplicate, input.size(), prefix + "duplicate");
+        requireValidInterval(step.match, symbols.size(), prefix + "match");
+        requireValidInterval(step.duplicate, symbols.size(), prefix + "duplicate");
         require(
             step.match.length == step.duplicate.length,
             prefix + "uses unequal fragment lengths"
@@ -374,9 +375,9 @@ void requireConsistentPathway(
             );
         }
 
-        const std::string match = intervalText(input, step.match);
-        const std::string duplicate = intervalText(input, step.duplicate);
-        std::string reversedDuplicate(duplicate.rbegin(), duplicate.rend());
+        const std::u32string match = intervalText(symbols, step.match);
+        const std::u32string duplicate = intervalText(symbols, step.duplicate);
+        std::u32string reversedDuplicate(duplicate.rbegin(), duplicate.rend());
         require(
             match == duplicate || (acceptReversed && match == reversedDuplicate),
             prefix + "does not identify equivalent text"
@@ -387,7 +388,7 @@ void requireConsistentPathway(
 
     require(
         result.assemblyIndex ==
-            static_cast<int>(input.size()) - duplicatedSymbols - 1,
+            static_cast<int>(symbols.size()) - duplicatedSymbols - 1,
         "assembly index is inconsistent with the returned pathway"
     );
 }
@@ -418,7 +419,9 @@ void testShardedSearch()
 {
     const std::vector<std::string> inputs{
         "", "x", "abcdef", "abab", "aaaa", "abcxcba",
-        "ababcdcd", "abcababc", "abcabzzxyyxabcab", numberedBlocks(10)
+        "ababcdcd", "abcababc", "abcabzzxyyxabcab", numberedBlocks(10),
+        "\xc3\xa9" "aXa" "\xc3\xa9",
+        "\xf0\x9f\x98\x80\xf0\x9f\x98\x81\xf0\x9f\x98\x82"
     };
     for (const bool acceptReversed : {false, true})
     {
@@ -429,7 +432,7 @@ void testShardedSearch()
             const Result serial = calculate(input, serialOptions);
             for (const size_t shardCount : {size_t{2}, size_t{3}, size_t{16}})
             {
-                int minimumIndex = static_cast<int>(input.size()) - 1;
+                int minimumIndex = static_cast<int>(implementation::decodeInput(input).size()) - 1;
                 for (size_t shard = 0; shard < shardCount; shard++)
                 {
                     Options options = serialOptions;
@@ -526,7 +529,9 @@ void testParallelSearch()
 
         const std::vector<std::string> inputs{
             "abcdef", "abcxcba", "ababcdcd", "abcababc",
-            "abcabzzxyyxabcab", numberedBlocks(10), numberedBlocks(25)
+            "abcabzzxyyxabcab", numberedBlocks(10), numberedBlocks(25),
+            "\xc3\xa9" "aXa" "\xc3\xa9",
+            "\xf0\x9f\x98\x80\xf0\x9f\x98\x81\xf0\x9f\x98\x82"
         };
         for (const int threadCount : {2, 4})
             for (const std::string &input : inputs)
@@ -1057,6 +1062,39 @@ void testSearchStops()
     requireConsistentPathway(partialInput, partiallySearched);
 }
 
+void testOptionValidation()
+{
+    const auto rejected = [](const Options &options, const std::string &message)
+    {
+        for (const std::string &input : {std::string(), std::string("abab")})
+        {
+            bool failed = false;
+            try { static_cast<void>(calculate(input, options)); }
+            catch (const std::invalid_argument &error)
+            {
+                failed = std::string(error.what()).find(message) != std::string::npos;
+            }
+            require(failed, "invalid search options were accepted: " + message);
+        }
+    };
+    Options options;
+    options.threadCount = 0;
+    rejected(options, "thread count must be positive");
+    options.threadCount = -1;
+    rejected(options, "thread count must be positive");
+    options = {};
+    options.shardCount = 0;
+    rejected(options, "invalid string search shard");
+    options.shardCount = 2;
+    options.shardIndex = 2;
+    rejected(options, "invalid string search shard");
+#if !defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+    options = {};
+    options.threadCount = 2;
+    rejected(options, "require an OpenMP-enabled executable");
+#endif
+}
+
 /**
  * Non-ASCII text used to reach the pathway file as raw bytes, which left the
  * file unreadable whenever those bytes were not valid UTF-8.
@@ -1109,6 +1147,19 @@ void testNonAsciiJsonOutput()
             rejected = true;
         }
         require(rejected, "malformed UTF-8 was written to JSON");
+        for (const bool reconstructPathway : {false, true})
+        {
+            Options options;
+            options.reconstructPathway = reconstructPathway;
+            bool searchRejected = false;
+            try { static_cast<void>(calculate(value, options)); }
+            catch (const std::invalid_argument &error)
+            {
+                searchRejected = std::string(error.what()).find("not valid UTF-8") !=
+                    std::string::npos;
+            }
+            require(searchRejected, "malformed UTF-8 was accepted by the search");
+        }
     }
 
     // The writer reports the failure through writePathway rather than
@@ -1131,7 +1182,7 @@ void testNonAsciiJsonOutput()
 
     // Split so the hex escape cannot swallow the following characters.
     const std::string invalidInput = "AB\xff" "AB";
-    const Result invalidResult = calculate(invalidInput);
+    const Result invalidResult;
     std::string error;
     require(
         !writePathway(outputPath.string(), invalidInput, invalidResult, error),
@@ -1141,6 +1192,123 @@ void testNonAsciiJsonOutput()
         error.find("not valid UTF-8") != std::string::npos,
         "writePathway did not explain the malformed input: " + error
     );
+    require(
+        !std::filesystem::exists(outputPath),
+        "malformed UTF-8 created a partial pathway file"
+    );
+}
+
+void testUnicodeStrings()
+{
+    const std::string accent = "\xc3\xa9";
+    const std::string emoji = "\xf0\x9f\x98\x80";
+    const std::string ideograph = "\xe4\xb8\xad";
+    const std::vector<std::pair<std::string, std::string>> cases{
+        {accent, "a"},
+        {accent + accent, "aa"},
+        {"\xf0\x9f\x98\x80\xf0\x9f\x98\x81\xf0\x9f\x98\x82", "abc"},
+        {accent + "aXa" + accent, "abxba"},
+        {accent + "a" + accent + "a", "abab"},
+        {emoji + accent + ideograph + emoji + accent + ideograph, "abcabc"},
+        {std::string("a\0a\0", 4), "abab"},
+        {"e\xcc\x81", "ab"}
+    };
+    for (const bool acceptReversed : {false, true})
+    {
+        Options options;
+        options.acceptReversed = acceptReversed;
+        for (const auto &[input, ascii] : cases)
+        {
+            const Result result = calculate(input, options);
+            const Result expected = calculate(ascii, options);
+            require(
+                result.assemblyIndex == expected.assemblyIndex,
+                "Unicode search changed the index under symbol relabelling"
+            );
+            requireSamePathway(result, expected, "Unicode scalar positions");
+            requireConsistentPathway(input, result, acceptReversed);
+        }
+
+        ReferenceSearch reference(acceptReversed);
+        for (size_t length = 0; length <= 6; length++)
+        {
+            for (size_t bits = 0; bits < (size_t{1} << length); bits++)
+            {
+                std::string ascii;
+                std::string input;
+                for (size_t index = 0; index < length; index++)
+                {
+                    const bool second = (bits & (size_t{1} << index)) != 0;
+                    ascii += second ? 'b' : 'a';
+                    input += second ? emoji : accent;
+                }
+                const Result result = calculate(input, options);
+                require(
+                    result.assemblyIndex == reference.assemblyIndex(ascii),
+                    "Unicode search disagrees with the independent reference"
+                );
+                requireConsistentPathway(input, result, acceptReversed);
+            }
+        }
+    }
+
+    for (const auto &[input, ascii] : cases)
+    {
+        for (const bool cancel : {false, true})
+        {
+            Options options;
+            if (cancel) options.cancellationRequested = &cancelImmediately;
+            else options.runtimeTicks = 0;
+            const Result stopped = calculate(input, options);
+            require(
+                stopped.assemblyIndex == static_cast<int>(ascii.size()) - 1 &&
+                    stopped.interrupted == cancel &&
+                    stopped.runtimeLimitReached != cancel,
+                "Unicode limited search did not preserve its scalar-value upper bound"
+            );
+            requireConsistentPathway(input, stopped);
+        }
+    }
+
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path outputPath = std::filesystem::temp_directory_path() /
+        ("parallelassemblycpp-string-unicode-" + std::to_string(nonce) + ".json");
+    struct RemoveFile
+    {
+        std::filesystem::path path;
+        ~RemoveFile()
+        {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{outputPath};
+    for (const auto &[input, ascii] : cases)
+    {
+        static_cast<void>(ascii);
+        std::string error;
+        require(
+            writePathway(outputPath.string(), input, calculate(input), error),
+            "valid UTF-8 failed to write its pathway: " + error
+        );
+        std::ifstream file(outputPath);
+        std::ostringstream contents;
+        contents << file.rdbuf();
+        const std::string json = withoutJsonFormatting(contents.str());
+        std::ostringstream encoded;
+        implementation::writeJsonString(input, encoded);
+        require(
+            json.find("\"Fragments\":[" + encoded.str() + "]") != std::string::npos,
+            "Unicode pathway did not preserve its input"
+        );
+        if (input == accent + "a" + accent + "a")
+        {
+            require(
+                json.find("\"Fragments\":[\"\\u00E9a\"]") != std::string::npos &&
+                    json.find("\"Left\":[0,2],\"Right\":[2,2]") != std::string::npos,
+                "Unicode pathway mixed byte and scalar-value positions"
+            );
+        }
+    }
 }
 
 void testJsonAndPathwayOutput()
@@ -1336,8 +1504,10 @@ int main()
         testMultiStepPathways();
         testReverseEquivalence();
         testSearchStops();
+        testOptionValidation();
         testJsonAndPathwayOutput();
         testNonAsciiJsonOutput();
+        testUnicodeStrings();
     }
     catch (const std::exception &error)
     {
