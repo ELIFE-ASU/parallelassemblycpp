@@ -153,11 +153,12 @@ bool hasMolfileExtension(const string &filename)
     return extension == ".mol" || extension == ".sdf";
 }
 
-/** Load one supported input without creating any output files. */
+/** Load one supported input, optionally returning the path actually opened. */
 bool loadMoleculeInput(
     const string &input,
     molGraph &molGraphOutput,
-    string &error
+    string &error,
+    string *loadedInputPath = nullptr
 )
 {
     const bool explicitMolfile = hasMolfileExtension(input);
@@ -173,6 +174,7 @@ bool loadMoleculeInput(
             parsedName = input;
             if (explicitMolfile) molfileParser(exactFile, molGraphOutput);
             else graphio(exactFile, molGraphOutput);
+            if (loadedInputPath != nullptr) *loadedInputPath = parsedName;
             return true;
         }
 
@@ -197,6 +199,7 @@ bool loadMoleculeInput(
                 if (verbose) cout << "Input: " << molfileName << '\n';
                 parsedName = molfileName;
                 molfileParser(molfile, molGraphOutput);
+                if (loadedInputPath != nullptr) *loadedInputPath = parsedName;
                 return true;
             }
             error = "input file not found: '" + input + "' (also tried '" +
@@ -2696,11 +2699,14 @@ bool assemblyCalculator(const string &input)
             : input;
     molGraph molecule;
     string inputError;
+    string loadedInputPath;
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
     const bool configuredVerbose = verbose;
     if (!isPrimaryProcess()) verbose = false;
 #endif
-    int inputLoaded = loadMoleculeInput(input, molecule, inputError) ? 1 : 0;
+    int inputLoaded = loadMoleculeInput(
+        input, molecule, inputError, &loadedInputPath
+    ) ? 1 : 0;
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
     verbose = configuredVerbose;
     int allInputsLoaded = inputLoaded;
@@ -2726,24 +2732,46 @@ bool assemblyCalculator(const string &input)
     }
 
     const string outputName = outputBase + "Out";
+    moleculeName = outputBase + "Pathway";
     ofstream outputFile;
     int outputReady = 1;
     if (isPrimaryProcess())
     {
-        outputFile.open(outputName);
-        if (!outputFile.is_open()) outputReady = 0;
+        const auto preservesInput = [&](const string &filename)
+        {
+            error_code equivalentError;
+            if (!filesystem::equivalent(
+                loadedInputPath, filename, equivalentError
+            )) return true;
+            cerr << "error: output file '" << filename
+                 << "' would overwrite input file '" << loadedInputPath << "'\n";
+            return false;
+        };
+        // Check every enabled destination before opening any output, including
+        // sidecars and aliases of an input loaded through the .mol fallback.
+        outputReady = preservesInput(outputName) &&
+            (!pathwayOutputEnabled || preservesInput(moleculeName)) &&
+            (!writeIntermediateAssemblyIndices ||
+                preservesInput(outputBase + "IntermediateMAs"));
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+        if (outputReady && searchTelemetryEnabled)
+            outputReady = preservesInput(outputBase + "Telemetry.json");
+#endif
+        if (outputReady)
+        {
+            outputFile.open(outputName);
+            if (!outputFile.is_open())
+            {
+                cerr << "error: could not open output file '" << outputName << "'\n";
+                outputReady = 0;
+            }
+        }
     }
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
     MPI_Bcast(&outputReady, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
-    if (!outputReady)
-    {
-        if (isPrimaryProcess())
-            cerr << "error: could not open output file '" << outputName << "'\n";
-        return false;
-    }
+    if (!outputReady) return false;
 
-    moleculeName = outputBase + "Pathway";
     if (isPrimaryProcess())
         outputFile << outputBase << " has assembly index: ";
     // improvedBnB propagates recoverPathway2's requested-output status.
