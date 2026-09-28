@@ -244,69 +244,87 @@ struct ValidMatching
 class DuplicateSet
 {
     size_t fragmentLength_ = 0;
-    std::vector<FixedIntervalMap> intervalsByFragment_;
     std::vector<PotentialDuplicate> occurrences_;
+    int minimumOffset_ = 0;
+    int maximumOffset_ = 0;
+    bool multipleFragments_ = false;
 
 public:
-    DuplicateSet(size_t fragmentLength, size_t fragmentCount):
-        fragmentLength_(fragmentLength),
-        intervalsByFragment_(
-            fragmentCount,
-            FixedIntervalMap(static_cast<int>(fragmentLength))
-        ) {}
+    explicit DuplicateSet(size_t fragmentLength):
+        fragmentLength_(fragmentLength) {}
 
     void insert(const PotentialDuplicate &occurrence)
     {
+        if (occurrences_.empty())
+        {
+            minimumOffset_ = occurrence.interval.offset;
+            maximumOffset_ = occurrence.interval.offset;
+        }
+        else
+        {
+            minimumOffset_ = std::min(minimumOffset_, occurrence.interval.offset);
+            maximumOffset_ = std::max(maximumOffset_, occurrence.interval.offset);
+            multipleFragments_ = multipleFragments_ ||
+                occurrence.fragment != occurrences_.front().fragment;
+        }
         occurrences_.push_back(occurrence);
-        intervalsByFragment_[occurrence.fragment].insert(
-            occurrence.interval.offset
-        );
     }
 
-    [[nodiscard]] bool isValid() const
+    [[nodiscard]] bool isValid() const noexcept
     {
-        size_t populatedFragments = 0;
-        const FixedIntervalMap *onlyFragment = nullptr;
-        for (const FixedIntervalMap &intervals : intervalsByFragment_)
-        {
-            if (intervals.empty()) continue;
-            populatedFragments++;
-            onlyFragment = &intervals;
-            if (populatedFragments > 1) return true;
-        }
-        return onlyFragment != nullptr &&
-            onlyFragment->containsTwoDisjointInsertions();
+        return !occurrences_.empty() &&
+            (multipleFragments_ ||
+                maximumOffset_ - minimumOffset_ >= static_cast<int>(fragmentLength_));
     }
 
-    [[nodiscard]] std::vector<ValidMatching> matchings() const
+    /** Visits pairs in reverse insertion order without storing the pairs. */
+    class MatchingCursor
     {
-        std::vector<ValidMatching> result;
-        for (size_t first = 0; first < occurrences_.size(); first++)
+        const DuplicateSet *duplicates_ = nullptr;
+        // One past the first occurrence; second_ descends over its partners.
+        size_t first_ = 0;
+        size_t second_ = 0;
+
+    public:
+        MatchingCursor() = default;
+
+        explicit MatchingCursor(const DuplicateSet &duplicates):
+            duplicates_(&duplicates),
+            first_(duplicates.isValid() ? duplicates.occurrences_.size() - 1 : 0),
+            second_(duplicates.occurrences_.size()) {}
+
+        bool next(ValidMatching &matching)
         {
-            for (
-                size_t second = first + 1;
-                second < occurrences_.size();
-                second++
-            )
+            while (first_ > 0)
             {
-                const PotentialDuplicate &left = occurrences_[first];
-                const PotentialDuplicate &right = occurrences_[second];
-                if (
-                    left.fragment == right.fragment &&
-                    left.overlaps(right)
-                ) continue;
-                result.push_back(
-                    {
-                        left.interval,
-                        right.interval,
-                        left.fragment,
-                        right.fragment,
-                        static_cast<int>(fragmentLength_)
-                    }
-                );
+                while (second_ > first_)
+                {
+                    const PotentialDuplicate &left =
+                        duplicates_->occurrences_[first_ - 1];
+                    const PotentialDuplicate &right =
+                        duplicates_->occurrences_[--second_];
+                    if (
+                        left.fragment == right.fragment &&
+                        left.overlaps(right)
+                    ) continue;
+                    matching = {
+                        left.interval, right.interval,
+                        left.fragment, right.fragment,
+                        static_cast<int>(duplicates_->fragmentLength_)
+                    };
+                    return true;
+                }
+                first_--;
+                second_ = duplicates_->occurrences_.size();
             }
+            return false;
         }
-        return result;
+    };
+
+    /** The set must remain alive and unchanged while its cursor is in use. */
+    [[nodiscard]] MatchingCursor matchingCursor() const
+    {
+        return MatchingCursor(*this);
     }
 
     bool extendValidOccurrences(
@@ -315,44 +333,24 @@ public:
         std::vector<FixedIntervalMap> *survivingIntervals = nullptr
     ) const
     {
-        std::vector<bool> valid(occurrences_.size(), false);
-        for (size_t first = 0; first < occurrences_.size(); first++)
-        {
-            for (
-                size_t second = first + 1;
-                second < occurrences_.size();
-                second++
-            )
-            {
-                const PotentialDuplicate &left = occurrences_[first];
-                const PotentialDuplicate &right = occurrences_[second];
-                if (
-                    left.fragment == right.fragment &&
-                    left.overlaps(right)
-                ) continue;
-
-                valid[first] = true;
-                valid[second] = true;
-                if (survivingIntervals != nullptr)
-                {
-                    (*survivingIntervals)[left.fragment].insert(
-                        left.interval.offset
-                    );
-                    (*survivingIntervals)[right.fragment].insert(
-                        right.interval.offset
-                    );
-                }
-            }
-        }
-
         bool extendedAny = false;
-        for (size_t index = 0; index < occurrences_.size(); index++)
+        for (const PotentialDuplicate &occurrence : occurrences_)
         {
-            if (!valid[index]) continue;
-            occurrences_[index].extend(
-                output,
-                fragments[occurrences_[index].fragment]
-            );
+            // Different fragments always supply a partner. In one fragment,
+            // an equal-length occurrence has a disjoint partner exactly when
+            // it is far enough from one of the two extreme offsets.
+            const int offset = occurrence.interval.offset;
+            if (
+                !multipleFragments_ &&
+                offset - minimumOffset_ < static_cast<int>(fragmentLength_) &&
+                maximumOffset_ - offset < static_cast<int>(fragmentLength_)
+            ) continue;
+
+            if (survivingIntervals != nullptr)
+            {
+                (*survivingIntervals)[occurrence.fragment].insert(offset);
+            }
+            occurrence.extend(output, fragments[occurrence.fragment]);
             extendedAny = true;
         }
         return extendedAny;
@@ -650,8 +648,7 @@ class Search
                 {
                     auto [entry, inserted] = sets.try_emplace(
                         id,
-                        previousLength + 1,
-                        state.intervals.size()
+                        previousLength + 1
                     );
                     static_cast<void>(inserted);
                     entry->second.insert(candidate);
@@ -930,12 +927,11 @@ class Search
             for (const auto &[id, duplicateSet] : sets)
             {
                 static_cast<void>(id);
-                std::vector<ValidMatching> matchings =
-                    duplicateSet.matchings();
-                for (size_t matchingIndex = matchings.size(); matchingIndex-- > 0;)
+                auto matchings = duplicateSet.matchingCursor();
+                ValidMatching matching;
+                while (matchings.next(matching))
                 {
                     if (shouldStop()) return;
-                    const ValidMatching &matching = matchings[matchingIndex];
                     AssemblyState next = fragment(
                         matching,
                         enumeration.remnantIntervals
@@ -978,34 +974,63 @@ class Search
         const Enumeration enumeration = enumerate(root, true);
         if (shouldStop()) return;
 
-        std::vector<ValidMatching> jobs;
+        // Keep the serial root order and shard ordinals without storing every
+        // pair. Only cursor advancement is shared; descendants remain local.
+        size_t levelIndex = enumeration.duplicateSetsByLength.size();
+        const std::map<int, DuplicateSet> *sets = nullptr;
+        std::map<int, DuplicateSet>::const_iterator nextSet;
+        DuplicateSet::MatchingCursor matchingCursor;
         size_t ordinal = 0;
-        for (
-            size_t levelIndex = enumeration.duplicateSetsByLength.size();
-            levelIndex-- > 0;
-        )
+        const auto nextMatching = [&](Search &search, ValidMatching &matching)
         {
-            for (const auto &[id, duplicateSet] : enumeration.duplicateSetsByLength[levelIndex])
+            for (;;)
             {
-                static_cast<void>(id);
-                const std::vector<ValidMatching> matchings = duplicateSet.matchings();
-                for (size_t matchingIndex = matchings.size(); matchingIndex-- > 0;)
+                if (search.shouldStop()) return false;
+                if (matchingCursor.next(matching))
                 {
-                    if (shouldStop()) return;
-                    if (ordinal % options_.shardCount == options_.shardIndex)
-                        jobs.push_back(matchings[matchingIndex]);
+                    const bool selected =
+                        ordinal % options_.shardCount == options_.shardIndex;
                     ordinal++;
+                    if (selected) return true;
+                    continue;
                 }
+
+                while (sets == nullptr || nextSet == sets->end())
+                {
+                    if (levelIndex == 0) return false;
+                    sets = &enumeration.duplicateSetsByLength[--levelIndex];
+                    nextSet = sets->begin();
+                }
+                matchingCursor = (nextSet++)->second.matchingCursor();
             }
+        };
+
+        // Prefetch at most one job per requested worker so a small search does
+        // not start unnecessary threads. All workers share these jobs because
+        // the OpenMP runtime may supply fewer threads than requested.
+        std::vector<ValidMatching> initialJobs;
+        for (int workerIndex = 0; workerIndex < options_.threadCount; workerIndex++)
+        {
+            ValidMatching matching;
+            if (!nextMatching(*this, matching)) break;
+            initialJobs.push_back(matching);
         }
-        if (jobs.empty()) return;
+        if (initialJobs.empty() || shouldStop()) return;
 
         ParallelControl control(bestAssemblyIndex_);
-        std::atomic<size_t> nextJob{0};
-        const int threadCount = static_cast<int>(std::min(
-            static_cast<size_t>(options_.threadCount),
-            jobs.size()
-        ));
+        std::mutex jobsMutex;
+        size_t nextInitialJob = 0;
+        const int threadCount = static_cast<int>(initialJobs.size());
+        const auto acquireJob = [&](Search &worker, ValidMatching &matching)
+        {
+            std::lock_guard<std::mutex> lock(jobsMutex);
+            if (nextInitialJob < initialJobs.size())
+            {
+                matching = initialJobs[nextInitialJob++];
+                return true;
+            }
+            return nextMatching(worker, matching);
+        };
         std::vector<Result> results(static_cast<size_t>(threadCount));
         const auto work = [&](int workerIndex)
         {
@@ -1016,9 +1041,8 @@ class Search
                 for (;;)
                 {
                     if (worker.shouldStop()) break;
-                    const size_t jobIndex = nextJob.fetch_add(1, std::memory_order_relaxed);
-                    if (jobIndex >= jobs.size()) break;
-                    const ValidMatching &matching = jobs[jobIndex];
+                    ValidMatching matching;
+                    if (!acquireJob(worker, matching)) break;
                     AssemblyState next = worker.fragment(matching, enumeration.remnantIntervals);
                     next.duplicatedSymbols = matching.fragmentLength - 1;
                     const int lowerBound = static_cast<int>(original_.size()) -
