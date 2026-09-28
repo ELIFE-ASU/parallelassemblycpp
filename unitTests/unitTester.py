@@ -423,6 +423,87 @@ def make_mask_capacity_graph(component_sizes: Sequence[int]) -> str:
     )
 
 
+def run_string_record_checks(executable: Path) -> int:
+    """Preserve record symbols while recognizing only LF and CRLF separators."""
+    cases = (
+        (b"", []),
+        (b"\n", [("", -1)]),
+        (b"a\n", [("a", 0)]),
+        (b" \t\n", [(" \t", 1)]),
+        (b'quote"\\\t\x00\n', [('quote"\\\t\x00', 8)]),
+        (b"abab\r", [("abab\r", 3)]),
+        (b"\r", [("\r", 0)]),
+        (b"abab\n", [("abab", 2)]),
+        (b"abab\r\n", [("abab", 2)]),
+        (b"abab\r\r\n", [("abab\r", 3)]),
+        (b"ab\rab\n", [("ab\rab", 3)]),
+        (
+            b"abab\nabab\r\nabab\r\r\n\r\n\r\r\nabab\r",
+            [
+                ("abab", 2),
+                ("abab", 2),
+                ("abab\r", 3),
+                ("", -1),
+                ("\r", 0),
+                ("abab\r", 3),
+            ],
+        ),
+    )
+    scenarios = 0
+    with tempfile.TemporaryDirectory(prefix="parallelassemblycpp-records-") as name:
+        root = Path(name)
+        for contents, expected in cases:
+            for pathway_enabled in (False, True):
+                case_directory = root / f"records-{scenarios}"
+                case_directory.mkdir()
+                (case_directory / "input").write_bytes(contents)
+                completed = run_cli_command(
+                    executable,
+                    ["input", "--run-strings=1", f"--pathway={int(pathway_enabled)}"],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 0,
+                    f"string mode should preserve record bytes {contents!r}",
+                    completed,
+                )
+                # Reading bytes avoids Python's universal newline conversion,
+                # which would change literal CR symbols in the reported records.
+                output_text = (case_directory / "inputOut").read_bytes().decode()
+                actual = [
+                    (record, int(index))
+                    for record, index in re.findall(
+                        r"^(.*) has assembly index: (-?\d+)\r?$",
+                        output_text,
+                        re.MULTILINE,
+                    )
+                ]
+                require_cli(
+                    actual == expected,
+                    f"string records {contents!r} changed: {actual!r}, "
+                    f"expected {expected!r}",
+                    completed,
+                )
+                pathway_files = list(case_directory.glob("input_*_Pathway"))
+                require_cli(
+                    len(pathway_files) == (len(expected) if pathway_enabled else 0),
+                    f"string records {contents!r} produced unexpected pathway files",
+                    completed,
+                )
+                if pathway_enabled:
+                    for index, (record, _) in enumerate(expected):
+                        pathway = json.loads(
+                            (case_directory / f"input_{index}_Pathway").read_text()
+                        )
+                        require_cli(
+                            pathway["file_graph"][0]["Fragments"] == [record],
+                            f"string pathway changed record {contents!r}",
+                            completed,
+                        )
+                scenarios += 1
+    return scenarios
+
+
 def run_string_output_alias_checks(executable: Path) -> int:
     """Reject enabled output aliases without changing the source records."""
     scenarios = 0
@@ -946,38 +1027,6 @@ def run_input_output_matrix_checks(executable: Path, telemetry_supported: bool) 
                     completed,
                 )
                 scenarios += 1
-
-        for contents in (b"", b"\n", b"a\n", b" \t\n", b'quote"\\\t\x00\n'):
-            case_directory = root / f"string-records-{scenarios}"
-            case_directory.mkdir()
-            (case_directory / "input").write_bytes(contents)
-            completed = run_cli_command(
-                executable,
-                ["input", "--run-strings=1", "--pathway=1"],
-                case_directory,
-            )
-            require_cli(
-                completed.returncode == 0,
-                f"string mode should preserve record bytes {contents!r}",
-                completed,
-            )
-            records = contents.splitlines()
-            output_text = (case_directory / "inputOut").read_text()
-            require_cli(
-                len(ASSEMBLY_INDEX_PATTERN.findall(output_text)) == len(records),
-                f"string records {contents!r} produced the wrong number of results",
-                completed,
-            )
-            for index, record in enumerate(records):
-                pathway = json.loads(
-                    (case_directory / f"input_{index}_Pathway").read_text()
-                )
-                require_cli(
-                    pathway["file_graph"][0]["Fragments"] == [record.decode()],
-                    f"string pathway changed record {contents!r}",
-                    completed,
-                )
-            scenarios += 1
 
         for contents in (
             b"\x80",
@@ -2653,6 +2702,7 @@ def run_cli_checks(executable: Path) -> int:
                 )
             scenarios += 1
 
+    scenarios += run_string_record_checks(executable)
     scenarios += run_string_output_alias_checks(executable)
     scenarios += run_flag_matrix_checks(executable, bool(telemetry_supported))
     scenarios += run_input_output_matrix_checks(executable, bool(telemetry_supported))
