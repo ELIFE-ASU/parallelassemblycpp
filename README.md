@@ -315,9 +315,27 @@ opened exactly as supplied and every line is processed as a separate string:
 Results are written to `strings.txtOut`. With pathway output enabled, the
 zero-based line number is included in each pathway name, such as
 `strings.txt_0_Pathway`. `--accept-palindromes=1` treats a fragment and its
-reversal as equivalent. String search is serial; `--parallel=on`, telemetry,
-and intermediate-index output are unavailable in string mode. A finite
-`--runtime` budget applies separately to each line.
+reversal as equivalent. OpenMP, MPI, and hybrid executables can distribute
+the search branches within each string using the same `--parallel` and
+`--threads` options as molecular search:
+
+```bash
+./build/parallel/ParallelAssemblyCppOMP strings.txt \
+  --run-strings=1 --parallel=on --threads=4
+```
+
+Lines are still read and written in input order. Each worker has private search
+caches seeded from the same root enumeration; OpenMP workers share the best
+index, and MPI ranks search disjoint sets of root branches. Completed searches
+reconstruct the pathway in serial order, so indices and pathway JSON match
+serial execution. Use `--pathway=0` to skip reconstruction. Parallel overhead
+can outweigh the benefit for short strings or searches with few branches;
+OpenMP teams are capped by the number of local root branches.
+
+Telemetry and intermediate-index output remain unavailable in string mode.
+A finite `--runtime` budget applies separately to each line and requires serial
+search: `--parallel=auto` falls back, while `--parallel=on` reports an error.
+The serial executable rejects `--parallel=on`.
 
 The implementation is adapted from the standard-library string search in
 [AssemblyCPP Public](https://gitlab.com/croningroup/public/assemblycpp-public)
@@ -430,7 +448,8 @@ runs the Conda environment's own `mpirun` inside a single-task
   reconstructs a winning pathway, so `--pathway=1` still works. Add
   `--pathway=0` to skip reconstruction when only the index is wanted.
 - Finite `--runtime` budgets and `--write-intermediate-mas=1` require serial
-  search, and string mode (`--run-strings=1`) is serial throughout.
+  search. String mode supports parallel branch search but does not support
+  telemetry or intermediate-index output.
 - Speed-up depends on how much search a graph exposes, so measure rather than
   assume. [benchmarks/README.md](benchmarks/README.md#parallel-scaling) covers
   paired serial/parallel comparisons, thread sweeps, and parallel telemetry.

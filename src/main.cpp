@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -2257,139 +2258,395 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
 #endif
 }
 
-/**
- * @brief Calculate every line in a string input file.
- *
- * @param input Exact input path supplied on the command line.
- * @return true if every string and requested pathway was written.
- */
-bool stringAssemblyCalculator(const string &input)
+/** Keep every rank on the same string-input and error-handling phase. */
+bool stringPhaseSucceeded(bool localSuccess)
 {
-    searchCancellationFlag.store(false);
-    int succeeded = 1;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    const int local = localSuccess ? 1 : 0;
+    int all = 0;
+    MPI_Allreduce(&local, &all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    return all != 0;
+#else
+    return localSuccess;
+#endif
+}
 
-    if (parallelExecutionMode == parallelMode::on)
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+/** Keep MPI on the initializing thread while all ranks cooperate on stopping. */
+parallelassemblycpp::detail::stringAssembly::Result calculateDistributedString(
+    const string &value,
+    const parallelassemblycpp::detail::stringAssembly::Options &options,
+    bool primaryOnly = false
+)
+{
+    namespace strings = parallelassemblycpp::detail::stringAssembly;
+    strings::Result result;
+    std::exception_ptr failure;
+    std::atomic<bool> finished{primaryOnly && !isPrimaryProcess()};
+    std::atomic<bool> failed{false};
+    std::thread search;
+    try
     {
-        if (isPrimaryProcess())
-            cerr << "error: --parallel=on cannot be honored for string "
-                    "assembly\n";
-        succeeded = 0;
+        if (!primaryOnly || isPrimaryProcess())
+            search = std::thread([&]
+            {
+                try { result = strings::calculate(value, options); }
+                catch (...)
+                {
+                    failure = std::current_exception();
+                    failed.store(true, std::memory_order_release);
+                }
+                finished.store(true, std::memory_order_release);
+            });
     }
-    if (writeIntermediateAssemblyIndices)
+    catch (...)
     {
-        if (isPrimaryProcess())
-            cerr << "error: --write-intermediate-mas is unavailable for "
-                    "string assembly\n";
-        succeeded = 0;
+        failure = std::current_exception();
+        failed.store(true, std::memory_order_release);
+        finished.store(true, std::memory_order_release);
     }
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-    if (searchTelemetryEnabled)
+
+    array<int, 3> global{};
+    do
     {
-        if (isPrimaryProcess())
-            cerr << "error: --telemetry is unavailable for string assembly\n";
-        succeeded = 0;
+        const array<int, 3> local{
+            finished.load(std::memory_order_acquire) ? 0 : 1,
+            receivedUserInterrupt() ? 1 : 0,
+            failed.load(std::memory_order_acquire) ? 1 : 0
+        };
+        MPI_Allreduce(local.data(), global.data(), 3, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if (global[1] != 0 || global[2] != 0) searchCancellationFlag.store(true);
+        if (global[0] != 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (global[0] != 0);
+    if (search.joinable()) search.join();
+    if (failure != nullptr) std::rethrow_exception(failure);
+    if (global[2] != 0) throw std::runtime_error("string search failed on another MPI rank");
+    result.interrupted = result.interrupted || global[1] != 0;
+    return result;
+}
+
+/** Reduce the index and retain a witnessed pathway, including on interruption. */
+bool mergeDistributedStringResult(
+    parallelassemblycpp::detail::stringAssembly::Result &result
+)
+{
+    const array<int, 2> local{result.assemblyIndex, parallelAssemblyCppMpiRank};
+    array<int, 2> winner{};
+    MPI_Allreduce(local.data(), winner.data(), 1, MPI_2INT, MPI_MINLOC, MPI_COMM_WORLD);
+    const array<int, 2> localStatus{
+        result.runtimeLimitReached ? 1 : 0,
+        result.interrupted ? 1 : 0
+    };
+    array<int, 2> status{};
+    MPI_Allreduce(localStatus.data(), status.data(), 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    unsigned long long ticks = 0;
+    MPI_Allreduce(
+        &result.clockTicks, &ticks, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD
+    );
+
+    // A pathway has at most one step per saved symbol, so its length fits int
+    // whenever the input satisfies the string solver's indexing limit.
+    int stepCount = parallelAssemblyCppMpiRank == winner[1]
+        ? static_cast<int>(result.pathway.size()) : 0;
+    MPI_Bcast(&stepCount, 1, MPI_INT, winner[1], MPI_COMM_WORLD);
+    bool allocated = true;
+    try
+    {
+        if (isPrimaryProcess()) result.pathway.resize(static_cast<size_t>(stepCount));
     }
+    catch (const std::exception &)
+    {
+        allocated = false;
+    }
+    if (!stringPhaseSucceeded(allocated)) return false;
+    for (int index = 0; index < stepCount; index++)
+    {
+        array<int, 4> intervals{};
+        if (parallelAssemblyCppMpiRank == winner[1])
+        {
+            const auto &step = result.pathway[static_cast<size_t>(index)];
+            intervals = {
+                step.match.offset, step.match.length,
+                step.duplicate.offset, step.duplicate.length
+            };
+        }
+        MPI_Bcast(intervals.data(), 4, MPI_INT, winner[1], MPI_COMM_WORLD);
+        if (isPrimaryProcess())
+            result.pathway[static_cast<size_t>(index)] = {
+                {intervals[0], intervals[1]}, {intervals[2], intervals[3]}
+            };
+    }
+    result.assemblyIndex = winner[0];
+    result.clockTicks = ticks;
+    result.runtimeLimitReached = status[0] != 0;
+    result.interrupted = status[1] != 0;
+    return true;
+}
 #endif
 
-    if (isPrimaryProcess() && succeeded != 0)
+/** Calculate lines in input order, distributing each string's search branches. */
+bool stringAssemblyCalculator(const string &input)
+{
+    namespace strings = parallelassemblycpp::detail::stringAssembly;
+    searchCancellationFlag.store(false);
+    int localThreads = 1;
+    bool useParallel = false;
+    string reason;
+    if (writeIntermediateAssemblyIndices)
+        reason = "--write-intermediate-mas is unavailable for string assembly";
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    if (searchTelemetryEnabled)
+        reason = "--telemetry is unavailable for string assembly";
+#endif
+    if (!reason.empty())
     {
-        ifstream inputFile(input);
+        if (isPrimaryProcess()) cerr << "error: " << reason << '\n';
+        return false;
+    }
+
+    if (parallelExecutionMode != parallelMode::off)
+    {
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+        const bool configured = configuredLocalParallelThreadCount(localThreads, reason);
+        if (!stringPhaseSucceeded(configured))
+        {
+            if (isPrimaryProcess())
+                cerr << "error: " << (reason.empty()
+                    ? "could not configure string workers on another MPI rank"
+                    : reason) << '\n';
+            return false;
+        }
+        reason = parallelCompatibilityFallbackReason(localThreads);
+        useParallel = stringPhaseSucceeded(reason.empty());
+        if (!useParallel && reason.empty())
+            reason = "parallel string execution is unavailable on another MPI rank";
+#else
+        reason = "this executable was built without parallel support";
+#endif
+        if (!useParallel)
+        {
+            if (isPrimaryProcess())
+                cerr << (parallelExecutionMode == parallelMode::on
+                    ? "error: --parallel=on cannot be honored: "
+                    : "parallel: serial fallback: ") << reason << '\n';
+            if (parallelExecutionMode == parallelMode::on) return false;
+        }
+    }
+
+    ifstream inputFile;
+    ofstream outputFile;
+    bool ready = true;
+    if (isPrimaryProcess())
+    {
+        inputFile.open(input);
         if (!inputFile.is_open())
         {
             cerr << "error: could not open input file '" << input << "'\n";
-            succeeded = 0;
+            ready = false;
         }
         else
         {
-            const string outputName = input + "Out";
-            ofstream outputFile(outputName);
+            outputFile.open(input + "Out");
             if (!outputFile.is_open())
             {
-                cerr << "error: could not open output file '" << outputName
-                     << "'\n";
-                succeeded = 0;
-            }
-            else
-            {
-                string value;
-                size_t lineIndex = 0;
-                while (getline(inputFile, value))
-                {
-                    if (!value.empty() && value.back() == '\r') value.pop_back();
-
-                    try
-                    {
-                        const parallelassemblycpp::detail::stringAssembly::Options options{
-                            acceptReversedStrings,
-                            maximumRuntimeTicks,
-                            interruptionRequested
-                        };
-                        const parallelassemblycpp::detail::stringAssembly::Result result =
-                            parallelassemblycpp::detail::stringAssembly::calculate(
-                                value,
-                                options
-                            );
-                        outputFile << value << " has assembly index: "
-                                   << result.assemblyIndex << '\n';
-                        if (result.runtimeLimitReached)
-                            outputFile << "status: runtime limit reached\n";
-                        if (result.interrupted)
-                            outputFile << "status: interrupted by user\n";
-                        outputFile << "time elapsed: " << result.clockTicks << '\n';
-
-                        if (pathwayOutputEnabled)
-                        {
-                            const string pathwayName = input + "_" +
-                                to_string(lineIndex) + "_Pathway";
-                            string pathwayError;
-                            if (
-                                !parallelassemblycpp::detail::stringAssembly::writePathway(
-                                    pathwayName,
-                                    value,
-                                    result,
-                                    pathwayError
-                                )
-                            )
-                            {
-                                cerr << "error: " << pathwayError << '\n';
-                                succeeded = 0;
-                                break;
-                            }
-                        }
-                        lineIndex++;
-                        if (result.interrupted) break;
-                    }
-                    catch (const std::exception &exception)
-                    {
-                        cerr << "error: string calculation failed on line "
-                             << lineIndex + 1 << " of '" << input << "': "
-                             << exception.what() << '\n';
-                        succeeded = 0;
-                        break;
-                    }
-                }
-
-                if (inputFile.bad())
-                {
-                    cerr << "error: could not read input file '" << input
-                         << "'\n";
-                    succeeded = 0;
-                }
-                outputFile.close();
-                if (!outputFile)
-                {
-                    cerr << "error: could not write output file '" << outputName
-                         << "'\n";
-                    succeeded = 0;
-                }
+                cerr << "error: could not open output file '" << input << "Out'\n";
+                ready = false;
             }
         }
     }
+    if (!stringPhaseSucceeded(ready)) return false;
 
+    bool succeeded = true;
+    size_t lineIndex = 0;
+    for (;;)
+    {
+        string value;
+        int lineStatus = 0;
+        if (isPrimaryProcess())
+        {
+            try
+            {
+                if (getline(inputFile, value))
+                {
+                    if (!value.empty() && value.back() == '\r') value.pop_back();
+                    if (value.size() >= static_cast<size_t>(numeric_limits<int>::max()))
+                        throw std::invalid_argument("string is too long to index");
+                    lineStatus = 1;
+                }
+                else if (inputFile.bad())
+                    throw std::runtime_error("could not read input file");
+            }
+            catch (const std::exception &exception)
+            {
+                cerr << "error: could not read line " << lineIndex + 1
+                     << " of '" << input << "': " << exception.what() << '\n';
+                lineStatus = -1;
+            }
+        }
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    MPI_Bcast(&succeeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Bcast(&lineStatus, 1, MPI_INT, 0, MPI_COMM_WORLD);
 #endif
-    return succeeded != 0;
+        if (lineStatus <= 0)
+        {
+            succeeded = lineStatus == 0;
+            break;
+        }
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        if (useParallel)
+        {
+            int length = isPrimaryProcess() ? static_cast<int>(value.size()) : 0;
+            MPI_Bcast(&length, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            bool allocated = true;
+            try { value.resize(static_cast<size_t>(length)); }
+            catch (const std::exception &) { allocated = false; }
+            if (!stringPhaseSucceeded(allocated))
+            {
+                if (isPrimaryProcess()) cerr << "error: could not allocate string input\n";
+                succeeded = false;
+                break;
+            }
+            MPI_Bcast(value.data(), length, MPI_CHAR, 0, MPI_COMM_WORLD);
+        }
+#endif
+        strings::Options options;
+        options.acceptReversed = acceptReversedStrings;
+        options.runtimeTicks = maximumRuntimeTicks;
+        options.cancellationRequested = interruptionRequested;
+        options.threadCount = useParallel ? localThreads : 1;
+        options.reconstructPathway = pathwayOutputEnabled;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        if (useParallel)
+        {
+            options.shardIndex = static_cast<size_t>(parallelAssemblyCppMpiRank);
+            options.shardCount = static_cast<size_t>(parallelAssemblyCppMpiSize);
+            options.reconstructPathway = false;
+        }
+#endif
+        strings::Result result;
+        bool calculated = true;
+        string error;
+        try
+        {
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+            if (useParallel) result = calculateDistributedString(value, options);
+            else if (isPrimaryProcess()) result = strings::calculate(value, options);
+#else
+            if (useParallel || isPrimaryProcess()) result = strings::calculate(value, options);
+#endif
+        }
+        catch (const std::exception &exception)
+        {
+            error = exception.what();
+            calculated = false;
+        }
+        if (!stringPhaseSucceeded(calculated))
+        {
+            if (isPrimaryProcess())
+                cerr << "error: string calculation failed on line " << lineIndex + 1
+                     << " of '" << input << "': " << (error.empty()
+                        ? "search failed on another MPI rank" : error) << '\n';
+            succeeded = false;
+            break;
+        }
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        if (useParallel)
+        {
+            if (!mergeDistributedStringResult(result))
+            {
+                if (isPrimaryProcess()) cerr << "error: could not allocate string pathway\n";
+                succeeded = false;
+                break;
+            }
+            // Only rank zero reconstructs the global winner in serial order.
+            if (pathwayOutputEnabled &&
+                !result.interrupted && !result.runtimeLimitReached &&
+                result.assemblyIndex >= 0)
+            {
+                try
+                {
+                    options.threadCount = 1;
+                    options.shardIndex = 0;
+                    options.shardCount = 1;
+                    options.targetAssemblyIndex = result.assemblyIndex;
+                    options.reconstructPathway = true;
+                    strings::Result recovered = calculateDistributedString(value, options, true);
+                    if (isPrimaryProcess())
+                    {
+                        if (recovered.assemblyIndex == result.assemblyIndex)
+                            result.pathway = std::move(recovered.pathway);
+                        else if (!recovered.interrupted && !recovered.runtimeLimitReached)
+                            throw std::logic_error("could not reconstruct parallel string index");
+                        result.interrupted = recovered.interrupted;
+                        result.runtimeLimitReached = recovered.runtimeLimitReached;
+                        result.clockTicks += min(recovered.clockTicks,
+                            numeric_limits<unsigned long long>::max() - result.clockTicks);
+                    }
+                }
+                catch (const std::exception &exception)
+                {
+                    if (isPrimaryProcess())
+                        cerr << "error: string pathway reconstruction failed: "
+                             << exception.what() << '\n';
+                    calculated = false;
+                }
+            }
+            if (!stringPhaseSucceeded(calculated))
+            {
+                succeeded = false;
+                break;
+            }
+        }
+#endif
+        bool written = true;
+        if (isPrimaryProcess())
+        {
+            try
+            {
+                outputFile << value << " has assembly index: " << result.assemblyIndex << '\n';
+                if (result.runtimeLimitReached) outputFile << "status: runtime limit reached\n";
+                if (result.interrupted) outputFile << "status: interrupted by user\n";
+                outputFile << "time elapsed: " << result.clockTicks << '\n';
+                if (pathwayOutputEnabled)
+                {
+                    const string pathwayName = input + "_" + to_string(lineIndex) + "_Pathway";
+                    if (!strings::writePathway(pathwayName, value, result, error))
+                        throw std::runtime_error(error);
+                }
+                if (!outputFile) throw std::runtime_error("could not write output file");
+            }
+            catch (const std::exception &exception)
+            {
+                cerr << "error: " << exception.what() << '\n';
+                written = false;
+            }
+        }
+        if (!stringPhaseSucceeded(written))
+        {
+            succeeded = false;
+            break;
+        }
+        int interrupted = result.interrupted ? 1 : 0;
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        MPI_Bcast(&interrupted, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+        if (interrupted != 0)
+        {
+            interruptFlag.store(true);
+            userInterruptReceived.store(true);
+            break;
+        }
+        lineIndex++;
+    }
+    if (isPrimaryProcess())
+    {
+        outputFile.close();
+        if (!outputFile)
+        {
+            cerr << "error: could not write output file '" << input << "Out'\n";
+            succeeded = false;
+        }
+    }
+    return stringPhaseSucceeded(succeeded);
 }
 
 /**
@@ -2759,11 +3016,9 @@ public:
     ParallelAssemblyCppMpiSession(int &argc, char **&argv)
     {
         int provided = MPI_THREAD_SINGLE;
-#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+        // String MPI search uses a local worker while this thread coordinates
+        // cancellation, even in an executable without OpenMP.
         constexpr int required = MPI_THREAD_FUNNELED;
-#else
-        constexpr int required = MPI_THREAD_SINGLE;
-#endif
         if (MPI_Init_thread(&argc, &argv, required, &provided) != MPI_SUCCESS)
             return;
         initialized = true;

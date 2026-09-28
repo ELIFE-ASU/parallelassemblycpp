@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -390,6 +391,195 @@ void requireConsistentPathway(
         "assembly index is inconsistent with the returned pathway"
     );
 }
+
+void requireSamePathway(
+    const Result &actual,
+    const Result &expected,
+    const std::string &description
+)
+{
+    require(
+        actual.pathway.size() == expected.pathway.size(),
+        description + ": pathway length differs from serial search"
+    );
+    for (size_t index = 0; index < actual.pathway.size(); index++)
+    {
+        require(
+            actual.pathway[index].match == expected.pathway[index].match &&
+                actual.pathway[index].duplicate ==
+                    expected.pathway[index].duplicate,
+            description + ": pathway step " + std::to_string(index) +
+                " differs from serial search"
+        );
+    }
+}
+
+void testShardedSearch()
+{
+    const std::vector<std::string> inputs{
+        "", "x", "abcdef", "abab", "aaaa", "abcxcba",
+        "ababcdcd", "abcababc", "abcabzzxyyxabcab", numberedBlocks(10)
+    };
+    for (const bool acceptReversed : {false, true})
+    {
+        for (const std::string &input : inputs)
+        {
+            Options serialOptions;
+            serialOptions.acceptReversed = acceptReversed;
+            const Result serial = calculate(input, serialOptions);
+            for (const size_t shardCount : {size_t{2}, size_t{3}, size_t{16}})
+            {
+                int minimumIndex = static_cast<int>(input.size()) - 1;
+                for (size_t shard = 0; shard < shardCount; shard++)
+                {
+                    Options options = serialOptions;
+                    options.shardIndex = shard;
+                    options.shardCount = shardCount;
+                    options.reconstructPathway = false;
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+                    options.threadCount = 2;
+#endif
+                    const Result partial = calculate(input, options);
+                    require(
+                        !partial.interrupted && !partial.runtimeLimitReached,
+                        "unlimited shard unexpectedly stopped"
+                    );
+                    require(
+                        partial.assemblyIndex >= serial.assemblyIndex,
+                        "a shard reported an impossible assembly index"
+                    );
+                    if (!input.empty())
+                        requireConsistentPathway(input, partial, acceptReversed);
+                    minimumIndex = std::min(minimumIndex, partial.assemblyIndex);
+                }
+                require(
+                    minimumIndex == serial.assemblyIndex,
+                    "sharded minimum disagrees with serial for '" + input + "'"
+                );
+
+                Options reconstructionOptions = serialOptions;
+                reconstructionOptions.targetAssemblyIndex = minimumIndex;
+                const Result reconstructed = calculate(input, reconstructionOptions);
+                require(
+                    reconstructed.assemblyIndex == serial.assemblyIndex,
+                    "global minimum reconstruction changed the assembly index"
+                );
+                requireSamePathway(reconstructed, serial, "sharded reconstruction");
+                if (!input.empty())
+                    requireConsistentPathway(input, reconstructed, acceptReversed);
+            }
+        }
+    }
+}
+
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+void testParallelSearch()
+{
+    const auto check = [](const std::string &input, int threadCount,
+        bool acceptReversed, ReferenceSearch *reference)
+    {
+        Options serialOptions;
+        serialOptions.acceptReversed = acceptReversed;
+        const Result serial = calculate(input, serialOptions);
+        Options options = serialOptions;
+        options.threadCount = threadCount;
+        const Result parallel = calculate(input, options);
+        const int expected = reference == nullptr ? serial.assemblyIndex :
+            reference->assemblyIndex(input);
+        require(
+            parallel.assemblyIndex == expected,
+            "parallel search disagrees with reference for '" + input + "'"
+        );
+        require(
+            !parallel.interrupted && !parallel.runtimeLimitReached,
+            "unlimited parallel search unexpectedly stopped"
+        );
+        requireSamePathway(parallel, serial, "parallel input '" + input + "'");
+        if (!input.empty())
+            requireConsistentPathway(input, parallel, acceptReversed);
+    };
+
+    for (const bool acceptReversed : {false, true})
+    {
+        ReferenceSearch reference(acceptReversed);
+        const auto checkAlphabet = [&](const std::string &alphabet, size_t maximumLength)
+        {
+            size_t combinationCount = 1;
+            for (size_t length = 0; length <= maximumLength; length++)
+            {
+                if (length > 0) combinationCount *= alphabet.size();
+                for (size_t encoded = 0; encoded < combinationCount; encoded++)
+                {
+                    size_t remaining = encoded;
+                    std::string input(length, alphabet.front());
+                    for (char &symbol : input)
+                    {
+                        symbol = alphabet[remaining % alphabet.size()];
+                        remaining /= alphabet.size();
+                    }
+                    check(input, 2, acceptReversed, &reference);
+                }
+            }
+        };
+        checkAlphabet("ab", 7);
+        checkAlphabet("abc", 5);
+
+        const std::vector<std::string> inputs{
+            "abcdef", "abcxcba", "ababcdcd", "abcababc",
+            "abcabzzxyyxabcab", numberedBlocks(10), numberedBlocks(25)
+        };
+        for (const int threadCount : {2, 4})
+            for (const std::string &input : inputs)
+                for (int repetition = 0; repetition < 3; repetition++)
+                    check(input, threadCount, acceptReversed, nullptr);
+    }
+}
+
+std::atomic<int> parallelCancellationPolls{0};
+
+bool cancelParallelAfterSeveralPolls()
+{
+    if (omp_in_parallel() == 0) return false;
+    return parallelCancellationPolls.fetch_add(1, std::memory_order_relaxed) >= 8;
+}
+
+bool throwFromParallelCancellationCheck()
+{
+    if (omp_in_parallel() != 0)
+        throw std::runtime_error("worker cancellation check failed");
+    return false;
+}
+
+void testParallelCancellation()
+{
+    const std::string input = numberedBlocks(25);
+    Options options;
+    options.threadCount = 4;
+    options.cancellationRequested = &cancelParallelAfterSeveralPolls;
+    parallelCancellationPolls.store(0, std::memory_order_relaxed);
+    const Result cancelled = calculate(input, options);
+    require(cancelled.interrupted, "parallel cancellation callback was ignored");
+    require(!cancelled.runtimeLimitReached, "parallel cancellation reported timeout");
+    require(
+        cancelled.assemblyIndex >= 20 &&
+            cancelled.assemblyIndex < static_cast<int>(input.size()),
+        "parallel cancellation returned an invalid upper bound"
+    );
+    requireConsistentPathway(input, cancelled);
+
+    options.cancellationRequested = &throwFromParallelCancellationCheck;
+    bool propagated = false;
+    try
+    {
+        static_cast<void>(calculate(input, options));
+    }
+    catch (const std::runtime_error &error)
+    {
+        propagated = std::string(error.what()) == "worker cancellation check failed";
+    }
+    require(propagated, "a worker exception was not rethrown after joining the team");
+}
+#endif
 
 void testUpstreamRegressionCases()
 {
@@ -1137,6 +1327,11 @@ int main()
         testUpstreamRegressionCases();
         testTrivialStrings();
         testExhaustiveShortStrings();
+        testShardedSearch();
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+        testParallelSearch();
+        testParallelCancellation();
+#endif
         testIntervalUtilities();
         testMultiStepPathways();
         testReverseEquivalence();

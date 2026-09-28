@@ -8,13 +8,16 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <ctime>
+#include <exception>
 #include <fstream>
 #include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -23,6 +26,10 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+#include <omp.h>
+#endif
 
 #include "utf8.h"
 
@@ -79,6 +86,15 @@ struct Options
     unsigned long long runtimeTicks =
         std::numeric_limits<unsigned long long>::max();
     CancellationCheck cancellationRequested = nullptr;
+    // Local OpenMP workers; independent processes can partition root jobs
+    // through shardIndex/shardCount using the same input and options.
+    int threadCount = 1;
+    size_t shardIndex = 0;
+    size_t shardCount = 1;
+    // A nonnegative target stops serial reconstruction at its first witness.
+    int targetAssemblyIndex = -1;
+    // Replay the winning bound serially to preserve pathway ordering.
+    bool reconstructPathway = true;
 };
 
 struct Result
@@ -331,6 +347,20 @@ struct Enumeration
     std::vector<std::vector<Interval>> remnantIntervals;
 };
 
+/** Shared coordination only; canonical IDs and transposition tables are local. */
+struct ParallelControl
+{
+    explicit ParallelControl(int initialIndex): bestAssemblyIndex(initialIndex) {}
+
+    std::atomic<int> bestAssemblyIndex;
+    std::atomic<bool> runtimeLimitReached{false};
+    std::atomic<bool> interrupted{false};
+    std::atomic<bool> failed{false};
+    std::mutex cancellationMutex;
+    std::mutex failureMutex;
+    std::exception_ptr failure;
+};
+
 class Search
 {
     std::string original_;
@@ -345,6 +375,8 @@ class Search
     int bestAssemblyIndex_ = -1;
     bool runtimeLimitReached_ = false;
     bool interrupted_ = false;
+    bool targetReached_ = false;
+    ParallelControl *parallelControl_ = nullptr;
 
     [[nodiscard]] unsigned long long elapsedTicks() const noexcept
     {
@@ -370,6 +402,49 @@ class Search
 
     bool shouldStop()
     {
+        if (targetReached_) return true;
+        if (parallelControl_ != nullptr)
+        {
+            ParallelControl &control = *parallelControl_;
+            if (
+                control.failed.load(std::memory_order_relaxed) ||
+                control.interrupted.load(std::memory_order_relaxed) ||
+                control.runtimeLimitReached.load(std::memory_order_relaxed)
+            ) return true;
+            if (
+                options_.cancellationRequested == nullptr &&
+                options_.runtimeTicks ==
+                    std::numeric_limits<unsigned long long>::max()
+            ) return false;
+
+            // A cancellation callback need not itself be thread-safe. Only
+            // one worker polls it at a time, and cancellation takes priority
+            // over a runtime limit observed by the same poll.
+            std::lock_guard<std::mutex> lock(control.cancellationMutex);
+            if (
+                control.failed.load(std::memory_order_relaxed) ||
+                control.interrupted.load(std::memory_order_relaxed) ||
+                control.runtimeLimitReached.load(std::memory_order_relaxed)
+            ) return true;
+            if (
+                options_.cancellationRequested != nullptr &&
+                options_.cancellationRequested()
+            )
+            {
+                control.interrupted.store(true, std::memory_order_relaxed);
+                return true;
+            }
+            if (
+                options_.runtimeTicks !=
+                    std::numeric_limits<unsigned long long>::max() &&
+                elapsedTicks() >= options_.runtimeTicks
+            )
+            {
+                control.runtimeLimitReached.store(true, std::memory_order_relaxed);
+                return true;
+            }
+            return false;
+        }
         if (interrupted_ || runtimeLimitReached_) return true;
         if (
             options_.cancellationRequested != nullptr &&
@@ -389,6 +464,44 @@ class Search
             return true;
         }
         return false;
+    }
+
+    [[nodiscard]] int pruningIndex() const noexcept
+    {
+        int bound = parallelControl_ == nullptr
+            ? bestAssemblyIndex_
+            : parallelControl_->bestAssemblyIndex.load(std::memory_order_relaxed);
+        if (options_.targetAssemblyIndex >= 0 && options_.targetAssemblyIndex < bound)
+            bound = options_.targetAssemblyIndex + 1;
+        return bound;
+    }
+
+    void recordBest(int assemblyIndex)
+    {
+        if (assemblyIndex < bestAssemblyIndex_)
+        {
+            // Keep the witness before publishing its bound to other workers.
+            bestPath_ = currentPath_;
+            bestAssemblyIndex_ = assemblyIndex;
+            if (parallelControl_ != nullptr)
+            {
+                int previous = parallelControl_->bestAssemblyIndex.load(
+                    std::memory_order_relaxed
+                );
+                while (
+                    assemblyIndex < previous &&
+                    !parallelControl_->bestAssemblyIndex.compare_exchange_weak(
+                        previous,
+                        assemblyIndex,
+                        std::memory_order_relaxed
+                    )
+                ) {}
+            }
+        }
+        if (
+            options_.targetAssemblyIndex >= 0 &&
+            assemblyIndex <= options_.targetAssemblyIndex
+        ) targetReached_ = true;
     }
 
     [[nodiscard]] std::string canonicalText(const Interval &interval) const
@@ -499,6 +612,7 @@ class Search
         size_t previousLength = 1;
         while (active)
         {
+            if (shouldStop()) return {};
             result.duplicateSetsByLength.emplace_back();
             std::map<int, DuplicateSet> &sets =
                 result.duplicateSetsByLength.back();
@@ -507,6 +621,7 @@ class Search
 
             for (const PotentialDuplicate &candidate : previous)
             {
+                if (shouldStop()) return {};
                 const int id = canonise(candidate.interval, initial);
                 if (id <= maximumOrdinal)
                 {
@@ -523,6 +638,7 @@ class Search
 
             for (const auto &[id, duplicates] : sets)
             {
+                if (shouldStop()) return {};
                 static_cast<void>(id);
                 if (!duplicates.isValid()) continue;
                 active = true;
@@ -776,13 +892,11 @@ class Search
 
         const int assemblyIndex =
             static_cast<int>(original_.size()) - state.duplicatedSymbols - 1;
-        if (assemblyIndex < bestAssemblyIndex_)
-        {
-            bestAssemblyIndex_ = assemblyIndex;
-            bestPath_ = currentPath_;
-        }
+        recordBest(assemblyIndex);
+        if (targetReached_) return;
 
         Enumeration enumeration = enumerate(state, initial);
+        if (shouldStop()) return;
         for (
             size_t levelIndex = enumeration.duplicateSetsByLength.size();
             levelIndex-- > 0;
@@ -810,7 +924,7 @@ class Search
                         static_cast<int>(original_.size()) -
                         next.duplicatedSymbols - 1 -
                         lempelZivDuplicateBound(next);
-                    if (lowerBound >= bestAssemblyIndex_) continue;
+                    if (lowerBound >= pruningIndex()) continue;
 
                     std::vector<int> key = stateKey(next);
                     const PathwayStep step{matching.first, matching.second};
@@ -833,6 +947,130 @@ class Search
         }
     }
 
+    void runParallel(AssemblyState &root)
+    {
+        // Canonical ordinals constrain descendant enumeration. Establish them
+        // once in serial order, then give every worker the same seed. Sharing
+        // a mutable ID allocator would make pruning depend on scheduling.
+        const Enumeration enumeration = enumerate(root, true);
+        if (shouldStop()) return;
+
+        std::vector<ValidMatching> jobs;
+        size_t ordinal = 0;
+        for (
+            size_t levelIndex = enumeration.duplicateSetsByLength.size();
+            levelIndex-- > 0;
+        )
+        {
+            for (const auto &[id, duplicateSet] : enumeration.duplicateSetsByLength[levelIndex])
+            {
+                static_cast<void>(id);
+                const std::vector<ValidMatching> matchings = duplicateSet.matchings();
+                for (size_t matchingIndex = matchings.size(); matchingIndex-- > 0;)
+                {
+                    if (shouldStop()) return;
+                    if (ordinal % options_.shardCount == options_.shardIndex)
+                        jobs.push_back(matchings[matchingIndex]);
+                    ordinal++;
+                }
+            }
+        }
+        if (jobs.empty()) return;
+
+        ParallelControl control(bestAssemblyIndex_);
+        std::atomic<size_t> nextJob{0};
+        const int threadCount = static_cast<int>(std::min(
+            static_cast<size_t>(options_.threadCount),
+            jobs.size()
+        ));
+        std::vector<Result> results(static_cast<size_t>(threadCount));
+        const auto work = [&](int workerIndex)
+        {
+            try
+            {
+                Search worker = *this;
+                worker.parallelControl_ = &control;
+                for (;;)
+                {
+                    if (worker.shouldStop()) break;
+                    const size_t jobIndex = nextJob.fetch_add(1, std::memory_order_relaxed);
+                    if (jobIndex >= jobs.size()) break;
+                    const ValidMatching &matching = jobs[jobIndex];
+                    AssemblyState next = worker.fragment(matching, enumeration.remnantIntervals);
+                    next.duplicatedSymbols = matching.fragmentLength - 1;
+                    const int lowerBound = static_cast<int>(original_.size()) -
+                        next.duplicatedSymbols - 1 - worker.lempelZivDuplicateBound(next);
+                    if (lowerBound >= worker.pruningIndex()) continue;
+
+                    std::vector<int> key = worker.stateKey(next);
+                    const auto existing = worker.states_.find(key);
+                    if (
+                        existing != worker.states_.end() &&
+                        existing->second >= next.duplicatedSymbols
+                    ) continue;
+                    worker.states_.insert_or_assign(std::move(key), next.duplicatedSymbols);
+                    worker.currentPath_.push_back({matching.first, matching.second});
+                    worker.recurse(next, false);
+                    worker.currentPath_.pop_back();
+                }
+                Result &result = results[static_cast<size_t>(workerIndex)];
+                result.assemblyIndex = worker.bestAssemblyIndex_;
+                result.pathway = std::move(worker.bestPath_);
+            }
+            catch (...)
+            {
+                std::lock_guard<std::mutex> lock(control.failureMutex);
+                if (control.failure == nullptr) control.failure = std::current_exception();
+                control.failed.store(true, std::memory_order_relaxed);
+            }
+        };
+
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+        if (threadCount > 1)
+        {
+            #pragma omp parallel num_threads(threadCount)
+            {
+                work(omp_get_thread_num());
+            }
+        }
+        else
+#endif
+            work(0);
+
+        if (control.failure != nullptr) std::rethrow_exception(control.failure);
+        runtimeLimitReached_ = control.runtimeLimitReached.load(std::memory_order_relaxed);
+        interrupted_ = control.interrupted.load(std::memory_order_relaxed);
+        for (Result &result : results)
+        {
+            // A runtime may provide fewer threads than requested. Unused
+            // result slots have the default sentinel and no witness.
+            if (result.assemblyIndex < 0) continue;
+            if (result.assemblyIndex < bestAssemblyIndex_)
+            {
+                bestAssemblyIndex_ = result.assemblyIndex;
+                bestPath_ = std::move(result.pathway);
+            }
+        }
+    }
+
+    void runFromRoot()
+    {
+        AssemblyState root;
+        if (shouldStop()) return;
+        root.intervals = preprocess();
+        if (root.intervals.empty())
+        {
+            static_cast<void>(shouldStop());
+            return;
+        }
+        std::vector<int> rootKey(root.intervals.size(), -1);
+        states_.emplace(std::move(rootKey), 0);
+        if (options_.threadCount > 1 || options_.shardCount > 1)
+            runParallel(root);
+        else
+            recurse(root, true);
+    }
+
 public:
     Search(std::string original, const Options &options):
         original_(std::move(original)), options_(options) {}
@@ -843,21 +1081,42 @@ public:
             original_.size() >=
             static_cast<size_t>(std::numeric_limits<int>::max())
         ) throw std::invalid_argument("string is too long to index");
+        if (options_.threadCount < 1)
+            throw std::invalid_argument("string thread count must be positive");
+        if (options_.shardCount == 0 || options_.shardIndex >= options_.shardCount)
+            throw std::invalid_argument("invalid string search shard");
+#if !defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+        if (options_.threadCount > 1)
+            throw std::invalid_argument("parallel string threads require an OpenMP-enabled executable");
+#endif
 
         started_ = std::clock();
         bestAssemblyIndex_ = static_cast<int>(original_.size()) - 1;
+        runFromRoot();
 
-        AssemblyState root;
-        if (!shouldStop())
+        if (
+            (options_.threadCount > 1 || options_.shardCount > 1) &&
+            options_.reconstructPathway && !runtimeLimitReached_ && !interrupted_ &&
+            bestAssemblyIndex_ >= 0 && !bestPath_.empty()
+        )
         {
-            root.intervals = preprocess();
-            if (root.intervals.empty()) static_cast<void>(shouldStop());
-            else
+            Options replayOptions = options_;
+            replayOptions.threadCount = 1;
+            replayOptions.shardIndex = 0;
+            replayOptions.shardCount = 1;
+            replayOptions.targetAssemblyIndex = bestAssemblyIndex_;
+            replayOptions.reconstructPathway = false;
+            Search replay(original_, replayOptions);
+            replay.started_ = started_;
+            replay.bestAssemblyIndex_ = static_cast<int>(original_.size()) - 1;
+            replay.runFromRoot();
+            if (replay.bestAssemblyIndex_ <= bestAssemblyIndex_)
             {
-                std::vector<int> rootKey(root.intervals.size(), -1);
-                states_.emplace(std::move(rootKey), 0);
-                recurse(root, true);
+                bestAssemblyIndex_ = replay.bestAssemblyIndex_;
+                bestPath_ = std::move(replay.bestPath_);
             }
+            runtimeLimitReached_ = replay.runtimeLimitReached_;
+            interrupted_ = replay.interrupted_;
         }
 
         Result result;
