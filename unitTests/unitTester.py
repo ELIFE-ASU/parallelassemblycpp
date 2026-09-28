@@ -578,6 +578,112 @@ def run_string_output_alias_checks(executable: Path) -> int:
     return scenarios
 
 
+def run_graph_output_alias_checks(executable: Path, telemetry_supported: bool) -> int:
+    """Reject graph output aliases before opening any enabled output file."""
+    scenarios = 0
+    outputs = [
+        ("Out", None),
+        ("Pathway", "pathway"),
+        ("IntermediateMAs", "write-intermediate-mas"),
+    ]
+    if telemetry_supported:
+        outputs.append(("Telemetry.json", "telemetry"))
+    sentinel = b"existing output sentinel\n"
+    with tempfile.TemporaryDirectory(
+        prefix="parallelassemblycpp-graph-output-alias-"
+    ) as name:
+        root = Path(name)
+        for mode, input_name, argument in (
+            ("mol", "input.mol", "input.mol"),
+            ("sdf", "input.SDF", "input.SDF"),
+            ("mol-fallback", "input.mol", "input"),
+            ("native", "input", "input"),
+        ):
+            for suffix, flag in outputs:
+                for link_mode in ("symlink", "hardlink"):
+                    for enabled in (True,) if flag is None else (False, True):
+                        label = f"{mode}-{suffix}-{link_mode}-{int(enabled)}"
+                        case_directory = root / label
+                        case_directory.mkdir()
+                        input_path = case_directory / input_name
+                        if mode == "native":
+                            input_path.write_text(
+                                "butane\n4\n1 2 2 3 3 4\nC C C C\n1 1 1\n"
+                            )
+                        else:
+                            shutil.copy2(TEST_DIRECTORY / "butane.mol", input_path)
+                        before = input_path.read_bytes()
+                        target = f"input{suffix}"
+                        output_path = case_directory / target
+                        if link_mode == "symlink":
+                            try:
+                                output_path.symlink_to(input_path.name)
+                            except OSError as error:
+                                # Windows can require a privilege for symlinks.
+                                if os.name == "nt" and error.winerror in (5, 1314):
+                                    continue
+                                raise
+                        else:
+                            output_path.hardlink_to(input_path)
+
+                        # All other outputs are enabled so that rejection of a
+                        # later output must precede truncation of earlier ones.
+                        other_outputs = [
+                            case_directory / f"input{other_suffix}"
+                            for other_suffix, _ in outputs
+                            if other_suffix != suffix
+                        ]
+                        options = [
+                            f"--{other_flag}="
+                            f"{int(enabled if other_flag == flag else True)}"
+                            for _, other_flag in outputs
+                            if other_flag is not None
+                        ]
+                        if sys.platform.startswith("linux"):
+                            options.append("--memory-report=1")
+                            other_outputs.append(case_directory / "memUsage")
+                        for path in other_outputs:
+                            path.write_bytes(sentinel)
+                        completed = run_cli_command(
+                            executable, [argument, *options], case_directory
+                        )
+                        require_cli(
+                            input_path.read_bytes() == before
+                            and output_path.read_bytes() == before,
+                            f"graph output corrupted input through {label}",
+                            completed,
+                        )
+                        if enabled:
+                            require_cli(
+                                completed.returncode == 1
+                                and target in completed.stderr
+                                and "would overwrite input" in completed.stderr,
+                                f"graph output must reject {label} aliases",
+                                completed,
+                            )
+                            require_cli(
+                                all(
+                                    path.read_bytes() == sentinel
+                                    for path in other_outputs
+                                ),
+                                f"graph alias {label} changed another output "
+                                "before rejection",
+                                completed,
+                            )
+                        else:
+                            require_cli(
+                                completed.returncode == 0
+                                and read_first_line_assembly_index(
+                                    case_directory / "inputOut"
+                                )
+                                == 2,
+                                f"disabled graph output must allow {label} aliases",
+                                completed,
+                            )
+                        scenarios += 1
+    return scenarios
+
+
 def run_flag_matrix_checks(executable: Path, telemetry_supported: bool) -> int:
     """Exercise every flag spelling against actual molecular and string inputs."""
     spellings = {
@@ -2745,6 +2851,7 @@ def run_cli_checks(executable: Path) -> int:
 
     scenarios += run_string_record_checks(executable)
     scenarios += run_string_output_alias_checks(executable)
+    scenarios += run_graph_output_alias_checks(executable, bool(telemetry_supported))
     scenarios += run_flag_matrix_checks(executable, bool(telemetry_supported))
     scenarios += run_input_output_matrix_checks(executable, bool(telemetry_supported))
     return scenarios
