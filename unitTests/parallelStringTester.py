@@ -29,6 +29,7 @@ INPUTS = (
     "\U0001f600\U0001f601\U0001f602",
     "\U0001f600\U0001f601\U0001f600\U0001f601",
     "\u03b1\u03b2\u03b3x\u03b3\u03b2\u03b1",
+    "abab\r",
 )
 
 
@@ -61,7 +62,7 @@ def run_case(
         prefix="parallelassemblycpp-strings-"
     ) as temporary:
         directory = Path(temporary)
-        # Include empty lines, CRLF, and a final unterminated record in every run.
+        # The final record's CR is a symbol, not a CRLF separator.
         if input_exists:
             (directory / "input").write_bytes("\r\n".join(INPUTS).encode("utf-8"))
         if output_blocked:
@@ -128,6 +129,12 @@ def run_case(
                 )
                 for index in range(len(INPUTS))
             ]
+            for index, document in enumerate(pathways):
+                if document["file_graph"][0]["Fragments"] != [INPUTS[index]]:
+                    raise AssertionError(
+                        f"pathway changed input record {index}: {INPUTS[index]!r}\n"
+                        f"{details}"
+                    )
         elif list(directory.glob("input_*_Pathway")):
             raise AssertionError(f"--pathway=0 created a pathway file\n{details}")
         if (
@@ -166,11 +173,11 @@ def main() -> int:
             accept_reversed=accept_reversed,
             timeout=arguments.timeout,
         )
-    if baselines[False][0] != [-1, 0, 5, 2, 6, 5, 4, 10, 20, 0, 2, 2, 6]:
+    if baselines[False][0] != [-1, 0, 5, 2, 6, 5, 4, 10, 20, 0, 2, 2, 6, 3]:
         raise AssertionError(
             f"serial fixture indices are incorrect: {baselines[False][0]}"
         )
-    if baselines[True][0][4] != 4 or baselines[True][0][-1] != 4:
+    if baselines[True][0][4] != 4 or baselines[True][0][-2:] != [4, 3]:
         raise AssertionError("serial reversal fixture has an incorrect index")
 
     runs = 2

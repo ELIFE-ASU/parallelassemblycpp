@@ -2442,7 +2442,8 @@ bool stringAssemblyCalculator(const string &input)
     if (isPrimaryProcess())
     {
         error_code equivalentError;
-        inputFile.open(input);
+        // Preserve separators so CRLF handling is consistent across platforms.
+        inputFile.open(input, ios::binary);
         if (!inputFile.is_open())
         {
             cerr << "error: could not open input file '" << input << "'\n";
@@ -2479,7 +2480,9 @@ bool stringAssemblyCalculator(const string &input)
             {
                 if (getline(inputFile, value))
                 {
-                    if (!value.empty() && value.back() == '\r') value.pop_back();
+                    // Only an LF-delimited record can end in a CRLF separator.
+                    if (!inputFile.eof() && !value.empty() && value.back() == '\r')
+                        value.pop_back();
                     if (value.size() >= static_cast<size_t>(numeric_limits<int>::max()))
                         throw std::invalid_argument("string is too long to index");
                     lineStatus = 1;
