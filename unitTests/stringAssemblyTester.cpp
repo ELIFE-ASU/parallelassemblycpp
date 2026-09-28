@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -350,7 +351,7 @@ void requireConsistentPathway(
 {
     const std::u32string symbols = implementation::decodeInput(input);
     int duplicatedSymbols = 0;
-    std::vector<Interval> removed;
+    std::vector<Interval> fragments{{0, static_cast<int>(symbols.size())}};
     for (size_t index = 0; index < result.pathway.size(); index++)
     {
         const PathwayStep &step = result.pathway[index];
@@ -364,15 +365,17 @@ void requireConsistentPathway(
         );
         require(step.match.length >= 2, prefix + "does not save an operation");
         require(!overlap(step.match, step.duplicate), prefix + "overlaps itself");
-        for (const Interval &previous : removed)
+        for (const Interval &selected : {step.match, step.duplicate})
         {
             require(
-                !overlap(step.match, previous),
-                prefix + "match reuses an already removed region"
-            );
-            require(
-                !overlap(step.duplicate, previous),
-                prefix + "duplicate reuses an already removed region"
+                std::any_of(fragments.begin(), fragments.end(),
+                    [&](const Interval &fragment)
+                    {
+                        return fragment.offset <= selected.offset &&
+                            selected.offset + selected.length <=
+                                fragment.offset + fragment.length;
+                    }),
+                prefix + "reuses removed text or crosses a fragment boundary"
             );
         }
 
@@ -384,7 +387,31 @@ void requireConsistentPathway(
             prefix + "does not identify equivalent text"
         );
         duplicatedSymbols += step.match.length - 1;
-        removed.push_back(step.duplicate);
+
+        // Cut out both occurrences, retaining the match as its own reusable
+        // fragment. Later steps must fit inside one of the resulting pieces.
+        for (const Interval &selected : {step.match, step.duplicate})
+        {
+            std::vector<Interval> remaining;
+            for (const Interval &fragment : fragments)
+            {
+                if (!overlap(fragment, selected))
+                {
+                    remaining.push_back(fragment);
+                    continue;
+                }
+                const int end = fragment.offset + fragment.length;
+                const int selectedEnd = selected.offset + selected.length;
+                if (fragment.offset < selected.offset)
+                    remaining.push_back(
+                        {fragment.offset, selected.offset - fragment.offset}
+                    );
+                if (selectedEnd < end)
+                    remaining.push_back({selectedEnd, end - selectedEnd});
+            }
+            fragments = std::move(remaining);
+        }
+        fragments.push_back(step.match);
     }
 
     require(
@@ -1321,6 +1348,51 @@ void testOptionValidation()
 #endif
 }
 
+void testTargetedSearch()
+{
+    const std::string input = "ababcdcd";
+    for (const bool acceptReversed : {false, true})
+    {
+        Options options;
+        options.acceptReversed = acceptReversed;
+        const Result complete = calculate(input, options);
+        require(complete.assemblyIndex == 5, "target fixture optimum changed");
+        for (const int target : {-1, 0, 4, 5, 6, 7,
+                 std::numeric_limits<int>::max()})
+        {
+            options.targetAssemblyIndex = target;
+            const Result result = calculate(input, options);
+            require(
+                !result.interrupted && !result.runtimeLimitReached,
+                "reaching a target was reported as an interrupted search"
+            );
+            requireConsistentPathway(input, result, acceptReversed);
+            require(
+                result.assemblyIndex >= complete.assemblyIndex &&
+                    result.assemblyIndex <= 7,
+                "targeted search returned an invalid upper bound"
+            );
+            if (target == -1 || target == 5)
+            {
+                require(result.assemblyIndex == 5, "exact target was not reached");
+                requireSamePathway(result, complete, "exact target reconstruction");
+            }
+            else if (target >= 6)
+            {
+                const int expected = std::min(target, 7);
+                require(
+                    result.assemblyIndex == expected,
+                    "targeted search did not stop at its first qualifying witness"
+                );
+                require(
+                    result.pathway.size() == static_cast<size_t>(7 - expected),
+                    "targeted search retained steps beyond its first witness"
+                );
+            }
+        }
+    }
+}
+
 /**
  * Non-ASCII text used to reach the pathway file as raw bytes, which left the
  * file unreadable whenever those bytes were not valid UTF-8.
@@ -1355,10 +1427,20 @@ void testNonAsciiJsonOutput()
     const std::vector<std::string> malformed{
         "\x80",                  // lone continuation byte
         "\xc3",                  // truncated two-byte sequence
+        "\xe2\x82",              // truncated three-byte sequence
+        "\xf0\x90\x80",          // truncated four-byte sequence
         "\xc3\x28",              // invalid continuation byte
+        "\xe2\x82\x28",          // invalid third byte
+        "\xf0\x90\x80\x28",      // invalid fourth byte
         "\xc0\xaf",              // overlong encoding of '/'
+        "\xe0\x9f\xbf",          // overlong three-byte sequence
+        "\xf0\x8f\xbf\xbf",      // overlong four-byte sequence
         "\xed\xa0\x80",          // UTF-16 surrogate half
-        "\xf5\x80\x80\x80"       // above U+10FFFF
+        "\xed\xbf\xbf",          // final UTF-16 surrogate half
+        "\xf4\x90\x80\x80",      // immediately above U+10FFFF
+        "\xf5\x80\x80\x80",      // invalid four-byte leading value
+        "\xf8\x88\x80\x80\x80",  // obsolete five-byte sequence
+        "\xff"                   // invalid leading byte
     };
     for (const std::string &value : malformed)
     {
@@ -1373,18 +1455,24 @@ void testNonAsciiJsonOutput()
             rejected = true;
         }
         require(rejected, "malformed UTF-8 was written to JSON");
+        for (const std::string &prefix : {
+                 std::string(), std::string("\xc3\xa9\0", 3)})
         for (const bool reconstructPathway : {false, true})
         {
             Options options;
             options.reconstructPathway = reconstructPathway;
             bool searchRejected = false;
-            try { static_cast<void>(calculate(value, options)); }
+            try { static_cast<void>(calculate(prefix + value, options)); }
             catch (const std::invalid_argument &error)
             {
-                searchRejected = std::string(error.what()).find("not valid UTF-8") !=
-                    std::string::npos;
+                searchRejected = std::string(error.what()) ==
+                    "string input is not valid UTF-8 at byte " +
+                        std::to_string(prefix.size());
             }
-            require(searchRejected, "malformed UTF-8 was accepted by the search");
+            require(
+                searchRejected,
+                "malformed UTF-8 was accepted or reported at the wrong byte"
+            );
         }
     }
 
@@ -1421,6 +1509,70 @@ void testNonAsciiJsonOutput()
     require(
         !std::filesystem::exists(outputPath),
         "malformed UTF-8 created a partial pathway file"
+    );
+}
+
+void testUnicodeScalarBoundaries()
+{
+    struct TestCase
+    {
+        std::string utf8;
+        char32_t scalar;
+        std::string json;
+    };
+    const std::vector<TestCase> cases{
+        {std::string(1, '\0'), 0x0000, "\\u0000"},
+        {"\x7f", 0x007F, "\x7f"},
+        {"\xc2\x80", 0x0080, "\\u0080"},
+        {"\xdf\xbf", 0x07FF, "\\u07FF"},
+        {"\xe0\xa0\x80", 0x0800, "\\u0800"},
+        {"\xed\x9f\xbf", 0xD7FF, "\\uD7FF"},
+        {"\xee\x80\x80", 0xE000, "\\uE000"},
+        {"\xef\xbf\xbf", 0xFFFF, "\\uFFFF"},
+        {"\xf0\x90\x80\x80", 0x10000, "\\uD800\\uDC00"},
+        {"\xf4\x8f\xbf\xbf", 0x10FFFF, "\\uDBFF\\uDFFF"}
+    };
+    std::string combined;
+    std::u32string expectedSymbols;
+    std::vector<size_t> expectedOffsets;
+    for (const TestCase &testCase : cases)
+    {
+        expectedOffsets.push_back(combined.size());
+        combined += testCase.utf8;
+        expectedSymbols.push_back(testCase.scalar);
+        std::ostringstream encoded;
+        implementation::writeJsonString(testCase.utf8, encoded);
+        require(
+            encoded.str() == '"' + testCase.json + '"',
+            "incorrect JSON escape at Unicode boundary " + testCase.json
+        );
+
+        const std::string input = testCase.utf8 + testCase.utf8 +
+            testCase.utf8 + testCase.utf8;
+        for (const bool acceptReversed : {false, true})
+        {
+            Options options;
+            options.acceptReversed = acceptReversed;
+            const Result result = calculate(input, options);
+            require(
+                result.assemblyIndex == 2 && !result.interrupted &&
+                    !result.runtimeLimitReached,
+                "four repeated boundary scalars should have index 2: " +
+                    testCase.json
+            );
+            requireConsistentPathway(input, result, acceptReversed);
+        }
+    }
+    expectedOffsets.push_back(combined.size());
+    std::vector<size_t> offsets;
+    require(
+        implementation::decodeInput(combined, &offsets) == expectedSymbols,
+        "mixed-width UTF-8 did not decode to the expected boundary scalars"
+    );
+    require(offsets == expectedOffsets, "UTF-8 byte boundaries are incorrect");
+    require(
+        calculate(combined).assemblyIndex == static_cast<int>(cases.size()) - 1,
+        "distinct Unicode boundary scalars were conflated"
     );
 }
 
@@ -1732,8 +1884,10 @@ int main()
         testReverseEquivalence();
         testSearchStops();
         testOptionValidation();
+        testTargetedSearch();
         testJsonAndPathwayOutput();
         testNonAsciiJsonOutput();
+        testUnicodeScalarBoundaries();
         testUnicodeStrings();
     }
     catch (const std::exception &error)

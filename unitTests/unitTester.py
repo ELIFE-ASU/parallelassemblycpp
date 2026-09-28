@@ -428,7 +428,9 @@ def run_string_record_checks(executable: Path) -> int:
     cases = (
         (b"", []),
         (b"\n", [("", -1)]),
+        (b"\n\n", [("", -1), ("", -1)]),
         (b"a\n", [("a", 0)]),
+        (b"a\n\n", [("a", 0), ("", -1)]),
         (b" \t\n", [(" \t", 1)]),
         (b'quote"\\\t\x00\n', [('quote"\\\t\x00', 8)]),
         (b"abab\r", [("abab\r", 3)]),
@@ -437,6 +439,15 @@ def run_string_record_checks(executable: Path) -> int:
         (b"abab\r\n", [("abab", 2)]),
         (b"abab\r\r\n", [("abab\r", 3)]),
         (b"ab\rab\n", [("ab\rab", 3)]),
+        # BOM, combining marks, and Unicode line separators remain symbols;
+        # indexing counts Unicode scalars, including NUL, rather than bytes.
+        ("\ufeffabab\n".encode(), [("\ufeffabab", 3)]),
+        ("\u00e9e\u0301\n".encode(), [("\u00e9e\u0301", 2)]),
+        ("\u0085\u2028\u2029\n".encode(), [("\u0085\u2028\u2029", 2)]),
+        (
+            "\x00\U0001f600\x00\U0001f600\n".encode(),
+            [("\x00\U0001f600\x00\U0001f600", 2)],
+        ),
         (
             b"abab\nabab\r\nabab\r\r\n\r\n\r\r\nabab\r",
             [
@@ -507,7 +518,9 @@ def run_string_record_checks(executable: Path) -> int:
 def run_string_output_alias_checks(executable: Path) -> int:
     """Reject enabled output aliases without changing the source records."""
     scenarios = 0
-    with tempfile.TemporaryDirectory(prefix="parallelassemblycpp-output-alias-") as name:
+    with tempfile.TemporaryDirectory(
+        prefix="parallelassemblycpp-output-alias-"
+    ) as name:
         root = Path(name)
         for target in ("inputOut", "input_0_Pathway", "input_1_Pathway"):
             for link_mode in ("symlink", "hardlink"):
@@ -1028,18 +1041,34 @@ def run_input_output_matrix_checks(executable: Path, telemetry_supported: bool) 
                 )
                 scenarios += 1
 
-        for contents in (
-            b"\x80",
-            b"\xc3",
-            b"\xc3(",
-            b"\xc0\xaf",
-            b"\xed\xa0\x80",
-            b"\xf5\x80\x80\x80",
+        for contents, byte_offset in (
+            (b"\x80", 0),
+            (b"\xc3", 0),
+            (b"\xc3(", 0),
+            (b"\xc0\xaf", 0),
+            (b"\xe0\x9f\xbf", 0),
+            (b"\xe2\x82", 0),
+            (b"\xed\xa0\x80", 0),
+            (b"\xf0\x8f\xbf\xbf", 0),
+            (b"\xf0\x90\x80", 0),
+            (b"\xf4\x90\x80\x80", 0),
+            (b"\xf5\x80\x80\x80", 0),
+            (b"\xff", 0),
+            # Report the failing byte, after a valid multibyte scalar or NUL.
+            (b"a\xc3\xa9\xe2(", 3),
+            (b"\x00\x80", 1),
         ):
-            for pathway in (0, 1):
+            for pathway, prefix in (
+                (0, b""),
+                (1, b""),
+                (0, b"abab\n"),
+                (1, b"abab\n"),
+            ):
                 case_directory = root / f"invalid-utf8-{scenarios}"
                 case_directory.mkdir()
-                (case_directory / "input").write_bytes(contents + b"\n")
+                # A valid prefix record must survive, and processing must stop
+                # before either the malformed record or the following record.
+                (case_directory / "input").write_bytes(prefix + contents + b"\ncdcd\n")
                 completed = run_cli_command(
                     executable,
                     ["input", "--run-strings=1", f"--pathway={pathway}", "--verbose=1"],
@@ -1047,13 +1076,25 @@ def run_input_output_matrix_checks(executable: Path, telemetry_supported: bool) 
                 )
                 require_cli(
                     completed.returncode == 1
-                    and "string input is not valid UTF-8" in completed.stderr,
+                    and f"failed on line {2 if prefix else 1} of 'input'"
+                    in completed.stderr
+                    and f"string input is not valid UTF-8 at byte {byte_offset}"
+                    in completed.stderr,
                     f"string input {contents!r} should fail with pathway={pathway}",
                     completed,
                 )
                 require_cli(
-                    not (case_directory / "input_0_Pathway").exists(),
-                    "invalid UTF-8 must not create a malformed pathway",
+                    {path.name for path in case_directory.glob("input_*_Pathway")}
+                    == ({"input_0_Pathway"} if pathway and prefix else set()),
+                    "invalid UTF-8 must preserve only completed pathways",
+                    completed,
+                )
+                require_cli(
+                    ASSEMBLY_INDEX_PATTERN.findall(
+                        (case_directory / "inputOut").read_text()
+                    )
+                    == (["2"] if prefix else []),
+                    "invalid UTF-8 must stop output after completed records",
                     completed,
                 )
                 scenarios += 1
