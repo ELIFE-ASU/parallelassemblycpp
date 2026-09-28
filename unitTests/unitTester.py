@@ -741,14 +741,13 @@ def run_cli_checks(executable: Path) -> int:
         )
         scenarios += 1
 
-        # These features are intentionally unavailable in string mode. Keep
-        # the cases isolated so an earlier rejection cannot mask another
-        # validation branch.
+        # These features are unavailable in string mode on this serial target.
+        # Keep cases isolated so one rejection cannot mask another branch.
         incompatible_string_options = [
             (
                 "parallel",
                 "--parallel=on",
-                "--parallel=on cannot be honored for string assembly",
+                "this executable was built without parallel support",
             ),
             (
                 "intermediate-indices",

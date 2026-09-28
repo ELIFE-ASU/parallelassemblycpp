@@ -553,7 +553,7 @@ function(parallelassemblycpp_add_solver target)
   set(PARALLELASSEMBLYCPP_SOLVER_LIBRARIES)
   if(PARALLELASSEMBLYCPP_SOLVER_MPI)
     list(APPEND PARALLELASSEMBLYCPP_SOLVER_DEFINITIONS PARALLELASSEMBLYCPP_USE_MPI)
-    list(APPEND PARALLELASSEMBLYCPP_SOLVER_LIBRARIES MPI::MPI_CXX)
+    list(APPEND PARALLELASSEMBLYCPP_SOLVER_LIBRARIES MPI::MPI_CXX Threads::Threads)
   endif()
   if(PARALLELASSEMBLYCPP_SOLVER_OPENMP)
     list(APPEND PARALLELASSEMBLYCPP_SOLVER_DEFINITIONS PARALLELASSEMBLYCPP_USE_OPENMP)
@@ -604,6 +604,7 @@ if(PARALLELASSEMBLYCPP_BUILD_OPENMP OR PARALLELASSEMBLYCPP_BUILD_HYBRID)
 endif()
 if(PARALLELASSEMBLYCPP_BUILD_MPI OR PARALLELASSEMBLYCPP_BUILD_HYBRID)
   find_package(MPI REQUIRED COMPONENTS CXX)
+  find_package(Threads REQUIRED)
 endif()
 
 if(PARALLELASSEMBLYCPP_BUILD_OPENMP)
@@ -940,6 +941,28 @@ if(BUILD_TESTING)
     parallelassemblycpp_string_assembly_tests
     unitTests/stringAssemblyTester.cpp
   )
+  if(TARGET OpenMP::OpenMP_CXX)
+    parallelassemblycpp_add_unit_test(
+      string-assembly-openmp
+      parallelassemblycpp_string_assembly_openmp_tests
+      unitTests/stringAssemblyTester.cpp
+    )
+    target_compile_definitions(
+      parallelassemblycpp_string_assembly_openmp_tests
+      PRIVATE PARALLELASSEMBLYCPP_USE_OPENMP
+    )
+    target_link_libraries(
+      parallelassemblycpp_string_assembly_openmp_tests
+      PRIVATE OpenMP::OpenMP_CXX
+    )
+    set_tests_properties(
+      unit.string-assembly-openmp
+      PROPERTIES
+        LABELS "unit;parallel"
+        PROCESSORS 4
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=4"
+    )
+  endif()
   parallelassemblycpp_add_unit_test(
     library-batch
     parallelassemblycpp_library_batch_tests
@@ -1014,6 +1037,51 @@ if(BUILD_TESTING)
       regression.telemetry
       PROPERTIES
         LABELS "regression;telemetry"
+        TIMEOUT 300
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+  endif()
+
+  set(PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS)
+  if(TARGET ParallelAssemblyCppOMP)
+    list(
+      APPEND PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS
+      --openmp "$<TARGET_FILE:ParallelAssemblyCppOMP>"
+    )
+  endif()
+  if(TARGET ParallelAssemblyCppMPI)
+    list(
+      APPEND PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS
+      --mpi "$<TARGET_FILE:ParallelAssemblyCppMPI>"
+    )
+  endif()
+  if(TARGET ParallelAssemblyCppHybrid)
+    list(
+      APPEND PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS
+      --hybrid "$<TARGET_FILE:ParallelAssemblyCppHybrid>"
+    )
+  endif()
+  if(TARGET ParallelAssemblyCppMPI OR TARGET ParallelAssemblyCppHybrid)
+    list(
+      APPEND PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS
+      --mpiexec "${MPIEXEC_EXECUTABLE}"
+      "--mpiexec-numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+    )
+  endif()
+  if(PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS)
+    add_test(
+      NAME regression.parallel-strings
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/unitTests/parallelStringTester.py"
+        --serial "$<TARGET_FILE:ParallelAssemblyCpp>"
+        ${PARALLELASSEMBLYCPP_STRING_PARITY_OPTIONS}
+    )
+    set_tests_properties(
+      regression.parallel-strings
+      PROPERTIES
+        LABELS "regression;parallel"
+        PROCESSORS 4
         TIMEOUT 300
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     )

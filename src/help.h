@@ -50,10 +50,11 @@ Notes:
   must follow it. Nothing after -- is an option: a later --help or
   --name=value is read as INPUT instead.
   In a parallel-enabled executable, --parallel=auto uses a work estimate from
-  the prepared root jobs and DAG. If it selects serial execution, it reports
-  the reason. --parallel=on forces parallel search, but fails when parallel
-  execution cannot be honored. --parallel=off always runs serially.
-  --threads sets the local thread count for each process. Auto caps the OpenMP
+  the prepared root jobs and DAG for molecular search. If it selects serial
+  execution, it reports the reason. --parallel=on forces parallel search, but
+  fails when parallel execution cannot be honored. --parallel=off always runs
+  serially. --threads sets the local thread count for each process. In molecular
+  search, auto caps the OpenMP
   runtime default by estimated work per worker, shared across MPI ranks with
   at least one thread per rank (at least two total workers for --parallel=on).
   Explicit counts are never reduced by the workload cap.
@@ -67,8 +68,12 @@ Notes:
   --enum-max includes one-edge masks.
   A limited search records its best index and status in INPUTOut; the index may
   not be minimal.
-  String assembly is serial. --accept-palindromes affects string mode only and
-  identifies a fragment with its reversal.
+  String assembly distributes search branches within each line across OpenMP
+  threads and/or MPI ranks, preserving input order and deterministic pathways.
+  String threads are capped by available root jobs; short strings may not
+  benefit from parallel execution. Telemetry and intermediate-index output
+  are unavailable in string mode. --accept-palindromes affects string mode
+  only and identifies a fragment with its reversal.
 
 Outputs:
   INPUTOut              Assembly index, status, and std::clock ticks.
