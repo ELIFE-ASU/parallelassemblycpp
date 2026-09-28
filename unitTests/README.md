@@ -48,9 +48,13 @@ disabled-output preservation checked separately. Graph-only flags in string
 mode and enabled reversal matching in graph mode must produce diagnostics.
 The focused `stringAssemblyTester` compares short binary and ternary inputs with
 an independent exhaustive search and covers interval merging, remnants,
-multi-step pathways, reversal, cancellation, and JSON escaping. Unicode strings
-also check code-point indexing, malformed UTF-8 rejection, and parity with
-serial, OpenMP, MPI, and hybrid execution. `--build` also
+multi-step pathways, reversal, cancellation, target-index stopping, and JSON
+escaping. Pathway checks replay fragment boundaries to reject impossible reuse.
+Unicode strings also check scalar and encoding boundaries, embedded control
+characters, malformed UTF-8 byte offsets, and parity with serial, OpenMP, MPI,
+and hybrid execution. CLI checks preserve BOMs, combining marks, and Unicode
+line separators as symbols and verify that malformed records stop processing
+after preserving completed results. `--build` also
 compiles and runs the focused C++ tests, using an x86-64-v3 executable with
 telemetry as a test shortcut. Use a CMake portable build on older x86-64 or
 non-x86 systems.

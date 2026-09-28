@@ -15,6 +15,26 @@ from parallelSolverTester import run_command
 
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 FINITE_RUNTIME = "--runtime=1000000000"
+# These indices follow from distinct symbols, non-overlapping copies, or
+# repeated doubling, and are unchanged when reversed copies are allowed.
+EDGE_CASES = (
+    ("aa", 1),
+    ("aaa", 2),
+    ("aaaaaaaa", 3),
+    ("ababa", 3),
+    (" \t \t", 2),
+    ("\x00\b\f\t\r", 4),
+    ('"\\"\\', 2),
+    ("\x00\U0001f600\x00\U0001f600", 2),
+    ("\u0080\u0800\U00010000" * 2, 3),
+    ("\u007f\u0080\u07ff\u0800\ud7ff\ue000\uffff\U00010000\U0010ffff", 8),
+    ("\u00e9e\u0301", 2),
+    ("\u0085\u2028\u2029", 2),
+    ("\ufeffabab", 3),
+    ("", -1),
+    ("", -1),
+    ("abab\r", 3),
+)
 INPUTS = (
     "",
     "x",
@@ -30,6 +50,7 @@ INPUTS = (
     "\U0001f600\U0001f601\U0001f600\U0001f601",
     "\u03b1\u03b2\u03b3x\u03b3\u03b2\u03b1",
     "abab\r",
+    *(value for value, _ in EDGE_CASES),
 )
 
 
@@ -123,6 +144,11 @@ def run_case(
             )
         pathways = []
         if pathway:
+            expected_files = {f"input_{index}_Pathway" for index in range(len(INPUTS))}
+            if {
+                path.name for path in directory.glob("input_*_Pathway")
+            } != expected_files:
+                raise AssertionError(f"unexpected string pathway files\n{details}")
             pathways = [
                 json.loads(
                     (directory / f"input_{index}_Pathway").read_text(encoding="utf-8")
@@ -173,11 +199,32 @@ def main() -> int:
             accept_reversed=accept_reversed,
             timeout=arguments.timeout,
         )
-    if baselines[False][0] != [-1, 0, 5, 2, 6, 5, 4, 10, 20, 0, 2, 2, 6, 3]:
+    edge_indices = [expected for _, expected in EDGE_CASES]
+    if baselines[False][0] != [
+        -1,
+        0,
+        5,
+        2,
+        6,
+        5,
+        4,
+        10,
+        20,
+        0,
+        2,
+        2,
+        6,
+        3,
+        *edge_indices,
+    ]:
         raise AssertionError(
             f"serial fixture indices are incorrect: {baselines[False][0]}"
         )
-    if baselines[True][0][4] != 4 or baselines[True][0][-2:] != [4, 3]:
+    if (
+        baselines[True][0][4] != 4
+        or baselines[True][0][12:14] != [4, 3]
+        or baselines[True][0][14:] != edge_indices
+    ):
         raise AssertionError("serial reversal fixture has an incorrect index")
 
     runs = 2
