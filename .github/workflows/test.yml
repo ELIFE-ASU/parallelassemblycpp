@@ -270,3 +270,22 @@ jobs:
           python "$source_root/unitTests/unitTester.py" --audit
           CXX=/usr/bin/g++ CXXFLAGS=-mneeded LDFLAGS= cmake -E chdir "$source_root" cmake --preset release
           cmake -E chdir "$source_root" cmake --build --preset release
+
+      - name: Verify archives with custom binary install directories
+        run: |
+          case_index=0
+          for bindir in libexec 'libexec/tools.v1 [cli]'; do
+            case_index=$((case_index + 1))
+            cmake --preset release "-DCMAKE_INSTALL_BINDIR=$bindir"
+            package_dir="build/custom-packages-$case_index"
+            extract_dir="build/custom-package-smoke-$case_index"
+            cpack --config build/release/CPackConfig.cmake -B "$package_dir"
+            archive=$(find "$package_dir" -maxdepth 1 -name '*-portable.tar.gz' -print -quit)
+            test -n "$archive"
+            cmake -E make_directory "$extract_dir"
+            cmake -E chdir "$extract_dir" cmake -E tar xzf "$GITHUB_WORKSPACE/$archive"
+            archive_name=$(basename "$archive" .tar.gz)
+            packaged_executable="$extract_dir/$archive_name/$bindir/ParallelAssemblyCpp"
+            test "$(stat -c '%a' "$packaged_executable")" = 755
+            "$packaged_executable" --help
+          done
