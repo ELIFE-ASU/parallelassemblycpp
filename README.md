@@ -250,6 +250,7 @@ Nothing after `--` is treated as an option, so a later `--help` or
 | --- | --- | --- |
 | `-h`, `--help` | — | Show command help. |
 | `--` | — | Stop parsing options; read every later argument as `INPUT`. |
+| `--algorithm=<full\|re-pair>` | `full` | Select full exact search or the molecular Re-Pair upper bound. |
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial graph DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
@@ -260,6 +261,7 @@ Nothing after `--` is treated as an option, so a later `--help` or
 | `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from MOL/SDF and native graph inputs. |
 | `--verbose=<0\|1>` | `0` | Print the parsed graph or each input string. |
 | `--compensate-disjoint=<0\|1>` | `0` | For graphs, subtract one per processed component after the first. |
+| `--upper-bound=graph-repair` | Disabled | Compatibility selector for `--algorithm=re-pair`; cannot be combined with `--algorithm`. |
 | `--memory-report=<0\|1>` | `0` | Write Linux peak virtual memory to `memUsage`. |
 | `--telemetry=<0\|1>` | `0` | Write search telemetry. |
 | `--write-intermediate-mas=<0\|1>` | `0` | Write each improved index and its clock tick. |
@@ -309,6 +311,41 @@ For a MOL/SDF file, `INPUT` below excludes its recognised suffix.
 The pathway JSON is written as ASCII. Atom labels and string fragments outside
 the ASCII range appear as `\uXXXX` escapes, so the file decodes the same way
 whatever encoding the reader assumes.
+
+### GraphRePair-inspired molecular upper bound
+
+Select full exact search or the optional greedy bound with `--algorithm`.
+Full search is the default; Re-Pair obtains a constructive assembly pathway
+without enumerating every connected subgraph:
+
+```bash
+./build/release/ParallelAssemblyCpp molecule.mol --algorithm=full
+./build/release/ParallelAssemblyCpp molecule.mol --algorithm=re-pair
+```
+
+The earlier `--upper-bound=graph-repair` option is still supported. Use one
+selector per command; combining it with `--algorithm` is an error.
+
+The algorithm repeatedly combines adjacent fragments whose labelled graph occurs
+more than once, sharing the construction across edge-disjoint occurrences.
+Its bound counts the binary joins needed to build the reusable fragments and
+assemble the remaining graph. Atom labels, bond orders, and all attachment
+vertices are retained. Explicit hydrogen removal follows the usual
+`--remove-hydrogens` setting.
+
+`INPUTOut` reports the heuristic bound, the trivial bound, and the status
+`heuristic upper bound (minimum not proven)`. `INPUTPathway` contains a
+`graph-repair-assembly-v1` JSON certificate with reusable construction rules and
+the residual assembly; this format differs from the exact solver's pathway
+format. `--pathway=0` skips that file. A smaller bound means a shorter known
+construction, and does not establish that the minimum has been found.
+
+The default remains exact search. The heuristic is serial: `--parallel=auto`
+falls back and `--parallel=on` is rejected. String mode, explicit `--runtime`
+and `--enum-max`, and enabled telemetry or intermediate-index output are
+unavailable in this mode. For disconnected graphs, `--compensate-disjoint=1`
+subtracts the joins between components that contain bonds. Isolated atoms cost
+no joins, and an input with no bonds has bound zero.
 
 ### String assembly
 
@@ -520,6 +557,13 @@ accepts a ParallelAssemblyCpp native graph stream. `calculateBatch` processes
 several inputs sequentially without process startup between items. Library calls
 do not create output files. Search state is process-global, so the API is
 reusable but not thread-safe; use separate processes for concurrent work.
+
+Set `CalculationOptions::graphRepairUpperBound = true` to select the experimental
+GraphRePair-inspired bound through any library entry point. A successful result
+then has `CalculationResult::upperBoundOnly == true`, and `assemblyIndex` holds
+the upper bound. The runtime budget must remain unlimited; the enumeration limit
+does not apply to this mode. Exact calls retain the default `upperBoundOnly ==
+false` (runtime or enumeration limits can still prevent an exact proof).
 
 </details>
 

@@ -9,6 +9,7 @@
 
 enum class InputFlag
 {
+    algorithm,
     runtime,
     enumMax,
     pathway,
@@ -19,6 +20,7 @@ enum class InputFlag
     removeHydrogensFlag,
     verboseFlag,
     compensateDisjoint,
+    upperBound,
     memoryReport,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     telemetry,
@@ -48,6 +50,14 @@ struct CommandLineArguments
 const vector<InputFlagDefinition>& inputFlagDefinitions()
 {
     static const vector<InputFlagDefinition> definitions = {
+        {
+            InputFlag::algorithm,
+            "algorithm",
+            "full|re-pair",
+            "full",
+            "Select full exact search or the molecular Re-Pair upper bound.",
+            {}
+        },
         {
             InputFlag::runtime,
             "runtime",
@@ -127,6 +137,14 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "0",
             "Subtract one for each processed component after the first (graph inputs only).",
             {"compensateDisjoint", "disjointCompensation"}
+        },
+        {
+            InputFlag::upperBound,
+            "upper-bound",
+            "graph-repair",
+            "disabled",
+            "Compatibility selector for --algorithm=re-pair; do not combine with --algorithm.",
+            {}
         },
         {
             InputFlag::memoryReport,
@@ -246,6 +264,14 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 {
     switch (definition.flag)
     {
+        case InputFlag::algorithm:
+            if (value != "full" && value != "re-pair")
+                throw std::invalid_argument(
+                    "--algorithm: expected full or re-pair; got '" + value + "'"
+                );
+            graphRepairUpperBound = value == "re-pair";
+            break;
+
         case InputFlag::runtime:
             maximumRuntimeTicks = parseUnsignedFlag(definition, value);
             break;
@@ -298,6 +324,14 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
 
         case InputFlag::compensateDisjoint:
             disjointCompensation = parseBooleanFlag(definition, value);
+            break;
+
+        case InputFlag::upperBound:
+            if (value != "graph-repair")
+                throw std::invalid_argument(
+                    "--upper-bound: expected graph-repair; got '" + value + "'"
+                );
+            graphRepairUpperBound = true;
             break;
 
         case InputFlag::memoryReport:
@@ -378,6 +412,13 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
                     inputFlagLabel(*definition) + " may be specified only once"
                 );
             }
+            if (seenFlags.count(static_cast<int>(InputFlag::algorithm)) != 0 &&
+                seenFlags.count(static_cast<int>(InputFlag::upperBound)) != 0)
+            {
+                throw std::invalid_argument(
+                    "--algorithm and --upper-bound cannot be combined; use --algorithm=full or --algorithm=re-pair"
+                );
+            }
             applyInputFlag(*definition, option.substr(equals + 1));
             continue;
         }
@@ -401,6 +442,35 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
     }
     if (!parsed.showHelp)
     {
+        if (graphRepairUpperBound)
+        {
+            const string boundOption =
+                seenFlags.count(static_cast<int>(InputFlag::algorithm)) != 0
+                    ? "--algorithm=re-pair" : "--upper-bound=graph-repair";
+            if (stringAssemblyMode)
+                throw std::invalid_argument(
+                    boundOption + " is unavailable for string assembly"
+                );
+            if (parallelExecutionMode == parallelMode::on)
+                throw std::invalid_argument(
+                    "--parallel=on is unavailable with " + boundOption
+                );
+            if (seenFlags.count(static_cast<int>(InputFlag::runtime)) != 0 ||
+                seenFlags.count(static_cast<int>(InputFlag::enumMax)) != 0)
+                throw std::invalid_argument(
+                    "--runtime and --enum-max are unavailable with " + boundOption
+                );
+            if (writeIntermediateAssemblyIndices)
+                throw std::invalid_argument(
+                    "--write-intermediate-mas=1 is unavailable with " + boundOption
+                );
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+            if (searchTelemetryEnabled)
+                throw std::invalid_argument(
+                    "--telemetry=1 is unavailable with " + boundOption
+                );
+#endif
+        }
 #ifndef __linux__
         if (memoryReportEnabled)
         {

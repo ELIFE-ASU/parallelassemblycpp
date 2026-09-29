@@ -165,6 +165,7 @@ bool memoryReportEnabled = false;
 bool writeIntermediateAssemblyIndices = false;
 bool stringAssemblyMode = false;
 bool acceptReversedStrings = false;
+bool graphRepairUpperBound = false;
 
 /** User policy for selecting the parallel search implementation. */
 enum class parallelMode

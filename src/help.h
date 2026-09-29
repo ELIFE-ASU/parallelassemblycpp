@@ -48,6 +48,11 @@ Options:
 Notes:
   Options may appear before or after INPUT. Use --name=value.
   Boolean values are 0 or 1.
+  --algorithm=full runs exact search (the default). --algorithm=re-pair returns
+  a molecular upper bound and does not prove the minimum. Re-Pair uses serial
+  execution and is unavailable for strings, explicit --runtime or --enum-max,
+  and enabled telemetry or intermediate-index output.
+  --upper-bound=graph-repair remains supported; do not combine it with --algorithm.
   A lone -- ends option parsing, so an INPUT whose name begins with a dash
   must follow it. Nothing after -- is an option: a later --help or
   --name=value is read as INPUT instead.
@@ -111,6 +116,8 @@ Legacy options:
     cout << R"(
 Examples:
   ParallelAssemblyCpp molecule.mol
+  ParallelAssemblyCpp molecule.mol --algorithm=full
+  ParallelAssemblyCpp molecule.mol --algorithm=re-pair
   ParallelAssemblyCpp molecule --pathway=0 --enum-max=1000000
   ParallelAssemblyCpp strings.txt --run-strings=1
   ParallelAssemblyCpp --pathway=0 -- -dashed-name.mol
