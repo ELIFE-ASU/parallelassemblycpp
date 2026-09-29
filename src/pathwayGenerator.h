@@ -3,7 +3,7 @@
 /**
  * @brief One immutable duplication retained in the best pathway witness.
  *
- * Path steps live only on the active DFS stack and in the winning witness;
+ * Owning steps are captured from the active DFS decisions on improvement;
  * they are deliberately independent of assembly states and cache entries.
  */
 struct assemblyPathStep

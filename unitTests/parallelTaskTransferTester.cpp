@@ -23,6 +23,59 @@ SearchContext makeTransferContext(size_t edgeCount)
     return context;
 }
 
+void testPreparedRootOccurrenceViews()
+{
+    assemblyPathWitness witness;
+    {
+        SearchContext context = makeTransferContext(130);
+        context.occurrenceWords = {1, 2, 1, 2, 4, 2};
+        context.rootOccurrences = {{0, 0}, {3, 0}};
+        configureParallelWorker(context, 0);
+
+        // Prepared roots borrow the context's ordinary words, so resetting a
+        // worker arena cannot invalidate the views or claim their ownership.
+        const EdgeMaskView first = rootOccurrenceView(context, 0);
+        const EdgeMaskView second = rootOccurrenceView(context, 1);
+        configureParallelWorker(context, 0);
+        assert(first.count() == 3 && first[0] && first[65] && first[128]);
+        assert(second.count() == 3 && second[1] && second[66] && second[129]);
+        witness.pushDecision(first, second);
+        witness.retainCurrent();
+        witness.clearDecisions();
+
+        for (const size_t offset : {context.occurrenceWords.size(),
+                                    context.occurrenceWords.size() + 1})
+        {
+            context.rootOccurrences.push_back({offset, 0});
+            bool rejected = false;
+            try
+            {
+                static_cast<void>(rootOccurrenceView(
+                    context, context.rootOccurrences.size() - 1
+                ));
+            }
+            catch (const logic_error &) {rejected = true;}
+            assert(rejected);
+        }
+        bool rejectedOutOfRange = false;
+        try
+        {
+            static_cast<void>(rootOccurrenceView(
+                context, context.rootOccurrences.size()
+            ));
+        }
+        catch (const logic_error &) {rejectedOutOfRange = true;}
+        assert(rejectedOutOfRange);
+
+        clearParallelWorkerMasks();
+    }
+    // Only the retained witness owns arena masks; it survives its prepared
+    // context and is destroyed on the thread that allocated those masks.
+    assert(witness.best.size() == 1);
+    assert(witness.best[0].match.count() == 3 && witness.best[0].match[128]);
+    assert(witness.best[0].duplicate.count() == 3 && witness.best[0].duplicate[129]);
+}
+
 assemblyState makeTransferState(size_t edgeCount, int canonicalId = 42)
 {
     EdgeMask mask;
@@ -401,6 +454,33 @@ void testSmallRootLeaseTailAndRankCoverage()
 }
 
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP
+void testPreparedRootViewsAcrossWorkerArenas()
+{
+    SearchContext context = makeTransferContext(130);
+    context.occurrenceWords = {1, 2, 1, 2, 4, 2};
+    context.rootOccurrences = {{0, 0}, {3, 0}};
+    #pragma omp parallel num_threads(2)
+    {
+        const size_t worker = static_cast<size_t>(omp_get_thread_num());
+        configureParallelWorker(context, worker);
+        {
+            assemblyPathWitness witness;
+            witness.pushDecision(
+                rootOccurrenceView(context, 0),
+                rootOccurrenceView(context, 1)
+            );
+            witness.retainCurrent();
+            witness.clearDecisions();
+            assert(witness.best[0].match.count() == 3);
+            assert(witness.best[0].match[128]);
+            assert(witness.best[0].duplicate.count() == 3);
+            assert(witness.best[0].duplicate[129]);
+        }
+        clearParallelWorkerMasks();
+    }
+    assert(context.occurrenceWords == vector<uint64_t>({1, 2, 1, 2, 4, 2}));
+}
+
 void testConcurrentSmallRootLeaseCoverage()
 {
     constexpr size_t workerCount = 4;
@@ -540,12 +620,14 @@ int main()
 {
     suppressSearchOutput = true;
     maximumRuntimeTicks = numeric_limits<unsigned long long>::max();
+    testPreparedRootOccurrenceViews();
     testCanonicalValidityAndWideMasks();
     testReusedBuffersAndBounds();
     testExecutionPruningCancellationAndException();
     testMeasuredMinimumTaskSize();
     testSmallRootLeaseTailAndRankCoverage();
 #ifdef PARALLELASSEMBLYCPP_USE_OPENMP
+    testPreparedRootViewsAcrossWorkerArenas();
     testConcurrentSmallRootLeaseCoverage();
     testWorkloadAwareThreadBudget();
     testWideMasksCrossWorkerArenas();

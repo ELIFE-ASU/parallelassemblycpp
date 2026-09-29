@@ -53,8 +53,8 @@ struct PreparedSearchWorkEstimate
  * Problem input shared immutably by every worker after construction.
  *
  * In particular, this type deliberately contains no EdgeMask, assemblyState,
- * or assemblyFragment. Wide masks belong to a thread-local arena and must be
- * reconstructed from occurrenceWords by the worker that will destroy them.
+ * or assemblyFragment. Workers borrow immutable occurrenceWords through views;
+ * any owning wide masks are created and destroyed in their thread-local arena.
  * The two process-local caches are the only mutable members workers touch;
  * both provide their own fine-grained synchronization.
  */
@@ -133,10 +133,66 @@ struct SearchContext
     return result;
 }
 
+/**
+ * One borrowed decision on the synchronous DFS stack. Recursive masks belong
+ * to the immutable DAG; root masks belong to the prepared context or initial
+ * enumeration frame. Neither owner changes before that decision is popped.
+ */
+struct assemblyPathDecision
+{
+    EdgeMaskView match;
+    EdgeMaskView duplicate;
+};
+
 struct assemblyPathWitness
 {
-    vector<assemblyPathStep> current;
     vector<assemblyPathStep> best;
+
+    void reserve(size_t capacity)
+    {
+        current.reserve(capacity);
+        best.reserve(capacity);
+    }
+
+    void pushDecision(EdgeMaskView match, EdgeMaskView duplicate)
+    {
+        current.push_back({match, duplicate});
+    }
+
+    void popDecision() noexcept
+    {
+        current.pop_back();
+        retainedPrefixLength = min(retainedPrefixLength, current.size());
+    }
+
+    void clearDecisions() noexcept
+    {
+        current.clear();
+        retainedPrefixLength = 0;
+    }
+
+    /** Retain a replayable witness before the borrowed DFS decisions unwind. */
+    void retainCurrent()
+    {
+        // An improvement deeper along the same branch can reuse its already
+        // owned prefix. Popping a decision invalidates only that suffix, so
+        // ordinary serial searches do not repeatedly copy their ancestors.
+        best.resize(retainedPrefixLength);
+        best.reserve(current.size());
+        for (size_t index = retainedPrefixLength; index < current.size(); ++index)
+        {
+            const assemblyPathDecision &decision = current[index];
+            best.push_back(assemblyPathStep{
+                decision.match.toMask(),
+                decision.duplicate.toMask()
+            });
+        }
+        retainedPrefixLength = current.size();
+    }
+
+private:
+    vector<assemblyPathDecision> current;
+    size_t retainedPrefixLength = 0;
 };
 
 /** Row-major aggregate masks whose backing allocations survive frame reuse. */
@@ -256,8 +312,7 @@ struct assemblySearchStorage
         candidateKey.reserve(searchUniverseEdgeList().size() + 1);
         if (pathway != nullptr)
         {
-            pathway->current.reserve(searchUniverseEdgeList().size());
-            pathway->best.reserve(searchUniverseEdgeList().size());
+            pathway->reserve(searchUniverseEdgeList().size());
         }
     }
 
