@@ -936,6 +936,38 @@ if(BUILD_TESTING)
     parallelassemblycpp_pathway_generator_tests
     unitTests/pathwayGeneratorTester.cpp
   )
+  add_executable(parallelassemblycpp_graph_repair_probe unitTests/graphRepairProbe.cpp)
+  parallelassemblycpp_configure_test_target(parallelassemblycpp_graph_repair_probe)
+  add_executable(
+    parallelassemblycpp_graph_repair_speed_probe
+    benchmarks/graphRepairSpeedProbe.cpp
+  )
+  # Measure both algorithms under production optimization/assertion settings.
+  parallelassemblycpp_configure_target(parallelassemblycpp_graph_repair_speed_probe)
+  set(graph_repair_test_options)
+  if(PARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS)
+    list(APPEND graph_repair_test_options --full)
+  endif()
+  add_test(
+    NAME unit.graph-repair
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/unitTests/graphRepairTester.py"
+      --probe "$<TARGET_FILE:parallelassemblycpp_graph_repair_probe>"
+      ${graph_repair_test_options}
+  )
+  set_tests_properties(unit.graph-repair PROPERTIES LABELS "unit" TIMEOUT 300)
+  set(graph_repair_cli_options)
+  if(TARGET ParallelAssemblyCppTelemetry)
+    list(APPEND graph_repair_cli_options
+      --telemetry-executable "$<TARGET_FILE:ParallelAssemblyCppTelemetry>")
+  endif()
+  add_test(
+    NAME unit.graph-repair-cli
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/unitTests/graphRepairCliTester.py"
+      "$<TARGET_FILE:ParallelAssemblyCpp>" ${graph_repair_cli_options}
+  )
+  set_tests_properties(unit.graph-repair-cli PROPERTIES LABELS "unit" TIMEOUT 120)
   parallelassemblycpp_add_unit_test(
     string-assembly
     parallelassemblycpp_string_assembly_tests

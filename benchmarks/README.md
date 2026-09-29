@@ -21,6 +21,62 @@ python benchmarks/benchmark.py \
 Use `--list-cases` to inspect the selected cases and
 `python benchmarks/benchmark.py --help` for all runner options.
 
+## Graph-pair upper-bound comparison
+
+Compare the opt-in graph-pair heuristic against the existing initial incumbent
+and a fixed simple-trail string RePair baseline:
+
+```bash
+cmake --preset dev
+cmake --build --preset dev --target parallelassemblycpp_graph_repair_probe
+python benchmarks/graph_repair_benchmark.py \
+  --executable build/dev/parallelassemblycpp_graph_repair_probe \
+  --corpus all --repeats 3 \
+  --json-output build/graph-repair-bounds.json \
+  --csv-output build/graph-repair-bounds.csv
+```
+
+The runner independently replays both heuristics' graph construction certificates
+and compares their join counts with the reviewed regression and provisional
+benchmark references. Use `--corpus benchmarks` for the 37-case benchmark manifest,
+or `--case NAME` to select individual inputs. It times the graph-pair calculation
+separately from parsing and validation. The Python trail baseline uses directed
+digram matching on deterministic simple paths with canonical whole-path
+orientation; it does not reproduce an optimized trail partition. This experiment
+measures bound quality and heuristic cost, not exact-search acceleration.
+
+The [recorded comparison](../audits/2026-09-29-graph-repair/REPORT.md) includes
+1,089 inputs, full CSV/JSON results, construction validation, and limitations.
+
+### Timing against exact search
+
+Build the timing probe in Release mode and compare both methods on the 37-case
+benchmark manifest:
+
+```bash
+cmake -S . -B build/graph-repair -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build/graph-repair --target parallelassemblycpp_graph_repair_speed_probe
+python benchmarks/graph_repair_speed.py \
+  --probe build/graph-repair/parallelassemblycpp_graph_repair_speed_probe \
+  --cpu 0 --runs 6 --warmup 1 --timeout 10 \
+  --json-output build/graph-repair-speed.json \
+  --csv-output build/graph-repair-speed.csv
+```
+
+Choose a CPU allowed by your process affinity, or omit `--cpu` to inherit it.
+Each sample uses a fresh process; adjacent exact/bound runs alternate order.
+The probe separately reports calculation time excluding parsing and end-to-end
+process time. Pathway output is disabled for both methods. A timed-out or
+enumeration-limited exact case is excluded from completed speedup statistics;
+timeout-derived ratios are reported only as lower bounds for process time.
+The returned indices are retained alongside timing because a heuristic upper
+bound has a different guarantee from a completed exact calculation. This measures
+the cost of obtaining each result, rather than acceleration of the exact search.
+
+See the [timing report](../audits/2026-09-29-graph-repair/SPEED.md) for measurements
+and all per-case comparisons.
+
 ## ASU Sol batch job
 
 After the [Sol environment setup](../README.md#quick-start) job succeeds,

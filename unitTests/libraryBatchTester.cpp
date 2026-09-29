@@ -135,6 +135,10 @@ int main(int argc, char **argv)
     std::filesystem::copy_file(argv[1], copiedInput);
     const parallelassemblycpp::CalculationResult noFileResult =
         parallelassemblycpp::calculate(copiedInput.string());
+    parallelassemblycpp::CalculationOptions boundOptions;
+    boundOptions.graphRepairUpperBound = true;
+    const parallelassemblycpp::CalculationResult boundFileResult =
+        parallelassemblycpp::calculate(copiedInput.string(), boundOptions);
     std::size_t fileCount = 0;
     for ([[maybe_unused]] const auto &entry :
          std::filesystem::directory_iterator(temporaryDirectory.path))
@@ -144,7 +148,107 @@ int main(int argc, char **argv)
     if (
         !require(noFileResult.succeeded, "no-file calculation failed") ||
         !require(noFileResult.assemblyIndex == 6, "no-file index mismatch") ||
+        !require(!noFileResult.upperBoundOnly, "exact result marked as heuristic") ||
+        !require(boundFileResult.succeeded, "bound file calculation failed") ||
+        !require(boundFileResult.upperBoundOnly, "bound result omitted heuristic status") ||
+        !require(
+            boundFileResult.assemblyIndex >= 6 && boundFileResult.assemblyIndex < 18,
+            "icosane bound is invalid or does not improve its trivial bound"
+        ) ||
         !require(fileCount == 1, "library calculation created an output file")
+    ) return 1;
+
+    std::ifstream boundMolfileStream(argv[1]);
+    const auto boundMolfile = parallelassemblycpp::calculateMolfile(
+        boundMolfileStream, boundOptions
+    );
+    const auto boundBatch = parallelassemblycpp::calculateBatch(inputs, boundOptions);
+    if (
+        !require(boundMolfile.succeeded, "bound molfile stream failed") ||
+        !require(boundMolfile.upperBoundOnly, "bound molfile omitted heuristic status") ||
+        !require(
+            boundMolfile.assemblyIndex == boundFileResult.assemblyIndex,
+            "bound molfile stream and file disagree"
+        ) ||
+        !require(boundBatch.size() == 2, "bound batch result count mismatch") ||
+        !require(
+            boundBatch[0].succeeded && boundBatch[1].succeeded &&
+            boundBatch[0].upperBoundOnly && boundBatch[1].upperBoundOnly,
+            "bound batch failed or omitted heuristic status"
+        ) ||
+        !require(
+            boundBatch[0].assemblyIndex == boundFileResult.assemblyIndex &&
+            boundBatch[1].assemblyIndex >= batch[1].assemblyIndex,
+            "bound batch produced an invalid bound"
+        )
+    ) return 1;
+
+    std::istringstream boundHydrogenStream(explicitHydrogenGraph);
+    const auto filteredBound = parallelassemblycpp::calculateGraph(
+        boundHydrogenStream, boundOptions
+    );
+    boundOptions.removeHydrogens = false;
+    std::istringstream boundRetainedStream(explicitHydrogenGraph);
+    const auto retainedBound = parallelassemblycpp::calculateGraph(
+        boundRetainedStream, boundOptions
+    );
+    if (
+        !require(
+            filteredBound.succeeded && filteredBound.upperBoundOnly &&
+                filteredBound.assemblyIndex == 0,
+            "bound mode failed to remove explicit hydrogen"
+        ) ||
+        !require(
+            retainedBound.succeeded && retainedBound.upperBoundOnly &&
+                retainedBound.assemblyIndex >= 3 && retainedBound.assemblyIndex <= 4,
+            "bound mode failed to retain explicit hydrogen"
+        )
+    ) return 1;
+
+    const std::string disconnectedGraph =
+        "disconnected and isolated\n5\n1 2 3 4\nC C C C N\n1 1\n";
+    std::istringstream disconnectedDefaultStream(disconnectedGraph);
+    const auto defaultBound = parallelassemblycpp::calculateGraph(
+        disconnectedDefaultStream, boundOptions
+    );
+    boundOptions.compensateDisjoint = true;
+    std::istringstream disconnectedCompensatedStream(disconnectedGraph);
+    const auto compensatedBound = parallelassemblycpp::calculateGraph(
+        disconnectedCompensatedStream, boundOptions
+    );
+    std::istringstream isolatedStream("isolated\n1\n\nN\n\n");
+    const auto isolatedBound = parallelassemblycpp::calculateGraph(
+        isolatedStream, boundOptions
+    );
+    if (
+        !require(
+            defaultBound.succeeded && defaultBound.assemblyIndex == 1,
+            "default disconnected bound mismatch"
+        ) ||
+        !require(
+            compensatedBound.succeeded && compensatedBound.assemblyIndex == 0,
+            "compensated disconnected bound counts isolated atoms"
+        ) ||
+        !require(
+            isolatedBound.succeeded && isolatedBound.upperBoundOnly &&
+                isolatedBound.assemblyIndex == 0,
+            "empty-bond bound must be zero"
+        )
+    ) return 1;
+
+    boundOptions.runtimeTicks = 0;
+    const auto invalidBoundBudget = parallelassemblycpp::calculate(argv[3], boundOptions);
+    const auto exactAfterBound = parallelassemblycpp::calculate(argv[3]);
+    if (
+        !require(
+            !invalidBoundBudget.succeeded && !invalidBoundBudget.error.empty(),
+            "bound mode accepted an unsupported runtime budget"
+        ) ||
+        !require(
+            exactAfterBound.succeeded && !exactAfterBound.upperBoundOnly &&
+                exactAfterBound.assemblyIndex == 2,
+            "bound options leaked into subsequent exact calculation"
+        )
     ) return 1;
 
     parallelassemblycpp::CalculationOptions limitedOptions;

@@ -17,7 +17,9 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -90,6 +92,7 @@ constexpr int ceilLog2(int value)
 #include "cyclicCanon.h"
 #include "assemblyState.h"
 #include "graphHashes.h"
+#include "graphRepair.h"
 #include "dagEnumeration.h"
 #include "duplicateMatching.h"
 #include "fragmentation.h"
@@ -460,7 +463,7 @@ string parallelCompatibilityFallbackReason(int localThreads)
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
 bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
 {
-    constexpr size_t optionCount = 14;
+    constexpr size_t optionCount = 15;
     const array<unsigned long long, optionCount> local = {
         arguments.showHelp ? 1ULL : 0ULL,
         static_cast<unsigned long long>(maximumEnumerationCount),
@@ -475,6 +478,7 @@ bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
         disjointCompensation ? 1ULL : 0ULL,
         memoryReportEnabled ? 1ULL : 0ULL,
         writeIntermediateAssemblyIndices ? 1ULL : 0ULL,
+        graphRepairUpperBound ? 1ULL : 0ULL,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         searchTelemetryEnabled ? 1ULL : 0ULL
 #else
@@ -2162,6 +2166,38 @@ ParallelSearchResult runParallelSearch(
 
 #endif
 
+/** Produce an explicitly labelled bound and its independently replayable certificate. */
+bool runGraphRepairUpperBound(const molGraph &graph, ofstream &output)
+{
+    startTime = clock();
+    runtimeLimitReached = false;
+    enumerationLimitReached = false;
+    const graphRepair::Result result = graphRepair::calculate(
+        graph, disjointCompensation
+    );
+    lastCalculatedAssemblyIndex = result.upperBound;
+    output << result.upperBound << '\n'
+        << "status: heuristic upper bound (minimum not proven)\n"
+        << "trivial upper bound: " << result.trivialUpperBound << '\n'
+        << "graph-repair rules: " << result.ruleCount << '\n'
+        << "remaining fragments: " << result.remainingFragments << '\n';
+    if (pathwayOutputEnabled)
+    {
+        ofstream pathway(moleculeName);
+        if (!pathway.is_open())
+            throw std::runtime_error(
+                "could not open pathway file '" + moleculeName + "'"
+            );
+        graphRepair::writeJson(result, graph, pathway);
+        pathway.close();
+        if (!pathway)
+            throw std::runtime_error(
+                "could not write pathway file '" + moleculeName + "'"
+            );
+    }
+    return true;
+}
+
 bool runConfiguredSearch(molGraph &graph, ofstream &output)
 {
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
@@ -2172,6 +2208,32 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
         return false;
     }
 #endif
+
+    if (graphRepairUpperBound)
+    {
+        if (parallelExecutionMode == parallelMode::automatic && isPrimaryProcess())
+            cerr << "parallel: serial fallback: graph-repair upper bound uses serial execution\n";
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+        int succeeded = 1;
+        if (isPrimaryProcess())
+        {
+            try
+            {
+                succeeded = runGraphRepairUpperBound(graph, output) ? 1 : 0;
+            }
+            catch (const std::exception &exception)
+            {
+                cerr << "error: graph-repair failed on the root MPI rank: "
+                     << exception.what() << '\n';
+                succeeded = 0;
+            }
+        }
+        MPI_Bcast(&succeeded, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        return succeeded != 0;
+#else
+        return runGraphRepairUpperBound(graph, output);
+#endif
+    }
 
     if (parallelExecutionMode != parallelMode::off)
     {
@@ -2836,6 +2898,7 @@ class LibraryOptionScope
     bool previousRemoveHydrogens = removeHydrogens;
     bool previousCompensateDisjoint = disjointCompensation;
     bool previousVerbose = verbose;
+    bool previousGraphRepairUpperBound = graphRepairUpperBound;
     bool previousMemoryReport = memoryReportEnabled;
     bool previousWriteIntermediateAssemblyIndices =
         writeIntermediateAssemblyIndices;
@@ -2849,6 +2912,7 @@ public:
         removeHydrogens = options.removeHydrogens;
         disjointCompensation = options.compensateDisjoint;
         verbose = options.verbose;
+        graphRepairUpperBound = options.graphRepairUpperBound;
         memoryReportEnabled = false;
         writeIntermediateAssemblyIndices = false;
     }
@@ -2861,6 +2925,7 @@ public:
         removeHydrogens = previousRemoveHydrogens;
         disjointCompensation = previousCompensateDisjoint;
         verbose = previousVerbose;
+        graphRepairUpperBound = previousGraphRepairUpperBound;
         memoryReportEnabled = previousMemoryReport;
         writeIntermediateAssemblyIndices =
             previousWriteIntermediateAssemblyIndices;
@@ -2886,6 +2951,18 @@ parallelassemblycpp::CalculationResult calculateLoadedMolecule(
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     resetSearchTelemetry();
 #endif
+    if (graphRepairUpperBound)
+    {
+        startTime = clock();
+        const graphRepair::Result bound = graphRepair::calculate(
+            graph, disjointCompensation
+        );
+        result.assemblyIndex = bound.upperBound;
+        result.clockTicks = elapsedClockTicks();
+        result.upperBoundOnly = true;
+        result.succeeded = true;
+        return result;
+    }
     // An unopened stream is a portable no-file sink for the legacy internal
     // search writer. The public API returns the same value directly below.
     ofstream discardedOutput;
@@ -2904,6 +2981,12 @@ bool validLibraryOptions(
     string &error
 )
 {
+    if (options.graphRepairUpperBound &&
+        options.runtimeTicks != std::numeric_limits<std::uint64_t>::max())
+    {
+        error = "runtimeTicks must be unlimited for graphRepairUpperBound";
+        return false;
+    }
     if (options.enumerationLimit >= 1) return true;
     error = "enumerationLimit must be at least 1";
     return false;

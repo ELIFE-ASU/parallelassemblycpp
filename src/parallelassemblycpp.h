@@ -35,6 +35,8 @@ struct CalculationOptions
     bool removeHydrogens = true;
     bool compensateDisjoint = false;
     bool verbose = false;
+    /** Return a GraphRePair-inspired heuristic upper bound instead of exact search. */
+    bool graphRepairUpperBound = false;
 };
 
 /** Result returned without requiring callers to parse an output file. */
@@ -46,6 +48,8 @@ struct CalculationResult
     bool succeeded = false;
     bool runtimeLimitReached = false;
     bool enumerationLimitReached = false;
+    /** The result is a heuristic upper bound; minimality was not checked. */
+    bool upperBoundOnly = false;
     std::string error;
 
     explicit operator bool() const noexcept { return succeeded; }
