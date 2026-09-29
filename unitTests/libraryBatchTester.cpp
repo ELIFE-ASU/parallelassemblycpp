@@ -268,6 +268,43 @@ int main(int argc, char **argv)
         !require(afterLimit.assemblyIndex == 2, "post-limit index mismatch")
     ) return 1;
 
+    // Upper-bound mode must not seed a subsequent exact calculation.
+    const std::string eightBondChain =
+        "eight-bond chain\n9\n"
+        "1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9\n"
+        "C C C C C C C C C\n1 1 1 1 1 1 1 1\n";
+    parallelassemblycpp::CalculationOptions chainBoundOptions;
+    chainBoundOptions.graphRepairUpperBound = true;
+    std::istringstream fastChainStream(eightBondChain);
+    const auto fastChain = parallelassemblycpp::calculateGraph(
+        fastChainStream, chainBoundOptions
+    );
+    parallelassemblycpp::CalculationOptions chainLimitedOptions;
+    chainLimitedOptions.runtimeTicks = 0;
+    std::istringstream limitedChainStream(eightBondChain);
+    const auto limitedChain = parallelassemblycpp::calculateGraph(
+        limitedChainStream, chainLimitedOptions
+    );
+    std::istringstream exactChainStream(eightBondChain);
+    const auto exactChain = parallelassemblycpp::calculateGraph(exactChainStream);
+    if (
+        !require(
+            fastChain.succeeded && fastChain.upperBoundOnly &&
+                fastChain.assemblyIndex == 3,
+            "chain upper-bound calculation failed"
+        ) ||
+        !require(
+            limitedChain.succeeded && !limitedChain.upperBoundOnly &&
+                limitedChain.runtimeLimitReached && limitedChain.assemblyIndex == 7,
+            "limited exact calculation inherited a Re-Pair seed"
+        ) ||
+        !require(
+            exactChain.succeeded && !exactChain.upperBoundOnly &&
+                !exactChain.runtimeLimitReached && exactChain.assemblyIndex == 3,
+            "chain exact calculation inherited upper-bound or runtime options"
+        )
+    ) return 1;
+
     parallelassemblycpp::CalculationOptions invalidOptions;
     invalidOptions.enumerationLimit = 0;
     const parallelassemblycpp::CalculationResult invalid =

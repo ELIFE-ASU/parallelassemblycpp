@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "full_corpus": true,
+  "probe": "/home/louie/skunkworks/parallelassemblycpp/build/graph-repair/parallelassemblycpp_graph_repair_probe",
+  "probe_sha256": "89e8c102a8b1ba755813c37d880058675916d91c7773937b70a3ebe28c2023d3",
+  "source_sha256": {
+    "src/graphRepair.h": "fd851bb253ea87097052472c434e1eb72e13740c80c02815e88ce73c3fac43f0",
+    "unitTests/graphRepairProbe.cpp": "c6ff7e19700d1b44eb0f5c2e378df9c901c97ec0390a82a3e51433dcbf0a16b8",
+    "unitTests/graphRepairTester.py": "d7f2d33552c7fe2e9d7a70305d39eaabcef8990281082b5fc4b558134e3c5ed2",
+    "audits/2026-09-28-branch-and-bound/molecular_oracle.py": "26f072bd7992c7fa11e8e0c9f76092d5855d6b457a466d5e54c4e91b7b4097ce"
+  },
+  "counts": {
+    "duplication_oracle_comparisons": 1895,
+    "duplication_exact_bounds": 1774,
+    "duplication_tighter_than_grammar": 0,
+    "exhaustive_graphs": 1074,
+    "strict_improvements": 1165,
+    "exact_bounds": 1774,
+    "random_labelled_graphs": 400,
+    "permuted_graphs": 400,
+    "path_graphs": 16,
+    "shared_vertex_graphs": 1,
+    "disconnected_graphs": 1,
+    "label_and_cycle_cases": 3,
+    "compensation_cases": 4,
+    "invalid_certificates_rejected": 6,
+    "invalid_duplication_paths_rejected": 6
+  },
+  "certificates_replayed": 1904,
+  "duplication_paths_replayed": 1904,
+  "largest_gap_to_exact": 2,
+  "largest_duplication_gap_to_exact": 2,
+  "oracle_states": 42084,
+  "elapsed_seconds": 3.36,
+  "scope": "Independent grammar and duplication-path replay with exact small-graph oracle comparison"
+}

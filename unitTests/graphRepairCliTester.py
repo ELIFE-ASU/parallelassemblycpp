@@ -22,6 +22,7 @@ def run_case(
     pathway: bool = True,
     fallback: bool = False,
     upper_bound: bool = True,
+    expected_index: int = 3,
     strings: bool = False,
     diagnostics: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, object] | None] | None:
@@ -64,13 +65,22 @@ def run_case(
         return None
     assert completed.returncode == 0, f"{name}: {completed.stderr}"
     output = pathlib.Path(f"{source}Out").read_text(encoding="utf-8")
-    assert "has assembly index: 3\n" in output, f"{name}: wrong index: {output}"
+    assert f"has assembly index: {expected_index}\n" in output, (
+        f"{name}: wrong index: {output}"
+    )
     if upper_bound:
         assert "status: heuristic upper bound (minimum not proven)\n" in output
         assert "trivial upper bound: 7\n" in output
     else:
         assert "heuristic upper bound" not in output, f"{name}: ran bound only"
         assert "trivial upper bound:" not in output, f"{name}: wrong output format"
+        assert "Initial Re-Pair" not in completed.stdout, (
+            f"{name}: full calculation ran the Re-Pair prepass"
+        )
+        if "--runtime=0" in flags:
+            assert "status: runtime limit reached\n" in output, (
+                f"{name}: full calculation omitted its runtime limit"
+            )
     assert "time elapsed: " in output
     certificate_path = pathlib.Path(f"{source}{'_0_' if strings else ''}Pathway")
     assert certificate_path.exists() == pathway, f"{name}: wrong pathway policy"
@@ -139,6 +149,17 @@ def main() -> None:
             )
             assert full_result == default_result, (
                 f"explicit full calculation differs from default for {input_mode}"
+            )
+        # A zero-budget full search retains the trivial bound. If Re-Pair
+        # seeding is accidentally restored, this chain instead returns 3.
+        for name, selector in (("default", []), ("full", ["--algorithm=full"])):
+            run_case(
+                executable,
+                root,
+                f"unseeded-{name}",
+                [*selector, "--runtime=0"],
+                upper_bound=False,
+                expected_index=7,
             )
         run_case(executable, root, "no-pathway", [*bound, "--pathway=0"], pathway=False)
         run_case(
