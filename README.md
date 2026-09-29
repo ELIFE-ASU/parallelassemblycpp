@@ -384,6 +384,17 @@ cmake --build --preset parallel
 Each parallel executable has a `...Telemetry` sibling that also accepts
 `--telemetry=1`.
 
+For molecule and graph runs, telemetry reports the serial search for a
+deterministic optimal pathway separately in `pathway_reconstruction`.
+`elapsed_seconds` includes worker setup, witness search, cleanup, and pathway
+file output; `cpu_seconds` uses the process CPU clock. Its search `counters`
+are separate from the parallel optimization totals. `attempted` and
+`completed` distinguish skipped reconstruction from a failed attempt.
+Serial searches build their witness during optimization, so their separate
+reconstruction timing is zero. Use the benchmark runner's `--pathways` option
+to include pathways in end-to-end measurements (see
+[benchmark instructions](benchmarks/README.md)).
+
 ### OpenMP
 
 Run the OpenMP executable directly and ask for a thread count:

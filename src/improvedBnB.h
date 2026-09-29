@@ -981,7 +981,7 @@ void recordImprovedAssemblyIndex(
     }
     if constexpr (trackPath)
     {
-        searchStorage.pathway->best = searchStorage.pathway->current;
+        searchStorage.pathway->retainCurrent();
         if (
             searchStorage.stopAtPathwayTarget &&
             candidate == searchStorage.pathwayTargetAssemblyIndex
@@ -1064,10 +1064,10 @@ bool continueCanonicalAssemblySearchWithWorkspace(
     {
         if (matching == nullptr)
             throw logic_error("path-tracking search is missing its matching");
-        // Pathway steps outlive the enumeration frame, so they own copies of
-        // the matched masks rather than views into it.
-        searchStorage.pathway->current.push_back(
-            assemblyPathStep{matching->first.toMask(), matching->second.toMask()}
+        // Only an improved witness needs owning masks. The root's immutable
+        // occurrence storage and DAG keep these views valid until unwind.
+        searchStorage.pathway->pushDecision(
+            matching->first, matching->second
         );
     }
     if constexpr (
@@ -1161,7 +1161,7 @@ bool continueCanonicalAssemblySearchWithWorkspace(
     }
     if constexpr (trackPath)
     {
-        searchStorage.pathway->current.pop_back();
+        searchStorage.pathway->popDecision();
         if (searchStorage.pathwayTargetReached) return false;
     }
     return !searchShouldStop();
@@ -2568,7 +2568,8 @@ void clearParallelWorkerMasks()
     sharedAssemblyWorkerIndex = 0;
 }
 
-EdgeMask reconstructRootOccurrence(
+/** Borrow immutable prepared words without allocating a worker-owned mask. */
+EdgeMaskView rootOccurrenceView(
     const SearchContext &context,
     size_t occurrenceIndex
 )
@@ -2585,7 +2586,7 @@ EdgeMask reconstructRootOccurrence(
     {
         throw logic_error("serialized root mask is incomplete");
     }
-    return EdgeMask::fromActiveWords(
+    return EdgeMaskView::fromWords(
         context.occurrenceWords.data() + occurrence.wordOffset
     );
 }
@@ -2608,8 +2609,8 @@ bool runParallelRootJobImpl(
         context.rootOccurrences[job.firstOccurrence];
     const rootOccurrenceDescriptor &secondOccurrence =
         context.rootOccurrences[job.secondOccurrence];
-    EdgeMask first = reconstructRootOccurrence(context, job.firstOccurrence);
-    EdgeMask second = reconstructRootOccurrence(context, job.secondOccurrence);
+    const EdgeMaskView first = rootOccurrenceView(context, job.firstOccurrence);
+    const EdgeMaskView second = rootOccurrenceView(context, job.secondOccurrence);
     validMatchings matching(
         first,
         second,
@@ -2702,8 +2703,8 @@ void warmStartParallelIncumbent(
         context.rootOccurrences[job.firstOccurrence];
     const rootOccurrenceDescriptor &secondOccurrence =
         context.rootOccurrences[job.secondOccurrence];
-    EdgeMask first = reconstructRootOccurrence(context, job.firstOccurrence);
-    EdgeMask second = reconstructRootOccurrence(context, job.secondOccurrence);
+    const EdgeMaskView first = rootOccurrenceView(context, job.firstOccurrence);
+    const EdgeMaskView second = rootOccurrenceView(context, job.secondOccurrence);
     validMatchings matching(
         first,
         second,

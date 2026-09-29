@@ -2094,8 +2094,7 @@ ParallelSearchResult runParallelSearch(
         if (isPrimaryProcess())
         {
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
-            const bool telemetryWasEnabled = searchTelemetryEnabled;
-            searchTelemetryEnabled = false;
+            PathwayReconstructionTelemetryScope reconstructionTelemetry;
 #endif
             try
             {
@@ -2118,7 +2117,7 @@ ParallelSearchResult runParallelSearch(
                 pathwaySucceeded = 0;
             }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
-            searchTelemetryEnabled = telemetryWasEnabled;
+            reconstructionTelemetry.complete(pathwaySucceeded != 0);
 #endif
         }
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)

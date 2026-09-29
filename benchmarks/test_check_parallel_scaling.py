@@ -166,6 +166,37 @@ class CheckParallelScalingTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(stderr, "")
 
+    def test_pathway_mode_must_match_across_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            paths = [
+                self.write_result(directory / "omp.json"),
+                self.write_result(directory / "mpi.json"),
+            ]
+            documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+            for first, second, expected in (
+                (None, False, 0),
+                (True, True, 0),
+                (None, True, 2),
+                (True, False, 2),
+                (False, "false", 2),
+                (False, 0, 2),
+            ):
+                for path, document, value in zip(
+                    paths, documents, (first, second), strict=True
+                ):
+                    document.pop("pathways_enabled", None)
+                    if value is not None:
+                        document["pathways_enabled"] = value
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                status, _, stderr = self.run_main(
+                    [f"omp:4:{paths[0]}", f"mpi:4:{paths[1]}"]
+                )
+                with self.subTest(first=first, second=second):
+                    self.assertEqual(status, expected)
+                    if expected:
+                        self.assertIn("pathways_enabled", stderr)
+
     def test_legacy_missing_arguments_normalize_to_empty_identity(self) -> None:
         missing = {
             "execution": {

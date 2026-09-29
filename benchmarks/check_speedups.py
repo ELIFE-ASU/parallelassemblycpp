@@ -282,9 +282,17 @@ def evaluate_results(
     baseline_sha256: str | None = None
     candidate_execution: ExecutionIdentity | None = None
     baseline_execution: ExecutionIdentity | None = None
+    pathways_enabled: bool | None = None
 
     for path in paths:
         document = load_result(path)
+        report_pathways_enabled = document.get("pathways_enabled", False)
+        if type(report_pathways_enabled) is not bool:
+            raise GateError(f"invalid pathways_enabled setting in {path}")
+        if pathways_enabled is None:
+            pathways_enabled = report_pathways_enabled
+        elif report_pathways_enabled != pathways_enabled:
+            raise GateError("all reports must use the same pathways_enabled setting")
         suite = string_at(document, ("suite",), f"suite in {path}")
         if suite not in expected_by_suite:
             raise GateError(f"unknown suite {suite!r} in {path}")
