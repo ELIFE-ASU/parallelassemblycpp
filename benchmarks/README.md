@@ -50,6 +50,11 @@ The [recorded comparison](../audits/2026-09-29-graph-repair/REPORT.md) includes
 
 ### Timing against exact search
 
+Full graph calculations run the exact solver directly. Re-Pair is an explicit
+bound-only mode. The [historical seed comparison](../audits/2026-09-29-graph-repair/SEED.md)
+records an experiment that was removed after showing no overall speedup.
+The timing report below compares bound-only calculation with exact search.
+
 Build the timing probe in Release mode and compare both methods on the 37-case
 benchmark manifest:
 

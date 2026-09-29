@@ -323,6 +323,11 @@ without enumerating every connected subgraph:
 ./build/release/ParallelAssemblyCpp molecule.mol --algorithm=re-pair
 ```
 
+Full mode runs the exact solver directly, without a Re-Pair prepass. The
+Re-Pair calculation is available only when explicitly selected as bound-only
+mode. The same distinction applies to the library's `graphRepairUpperBound`
+option.
+
 The earlier `--upper-bound=graph-repair` option is still supported. Use one
 selector per command; combining it with `--algorithm` is an error.
 

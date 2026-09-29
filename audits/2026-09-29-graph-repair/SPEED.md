@@ -1,5 +1,9 @@
 # Graph-pair upper bound versus exact search: timing comparison
 
+This experiment compares bound-only with exact search. See
+[the historical seed comparison](SEED.md) for an exact-search seeding experiment
+that was subsequently removed; full mode again uses the unseeded exact solver.
+
 On the 34 benchmark cases where exact search completed, computing the graph-pair
 upper bound was **47.4× faster for the median case in calculation time**, and
 **4.18× faster end to end**. All 37 graph-bound calculations completed; three
