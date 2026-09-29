@@ -275,6 +275,18 @@ inline bool searchTelemetryEnabled = false;
 inline PARALLELASSEMBLYCPP_SEARCH_LOCAL SearchTelemetryState searchTelemetry;
 inline ParallelSearchTelemetrySummary parallelSearchTelemetry;
 
+/** Serial witness search and output, excluded from the optimization totals. */
+struct PathwayReconstructionTelemetry
+{
+    bool attempted = false;
+    bool completed = false;
+    uint64_t elapsedNanoseconds = 0;
+    uint64_t clockTicks = 0;
+    SearchTelemetryCounters counters;
+};
+
+inline PathwayReconstructionTelemetry pathwayReconstructionTelemetry;
+
 inline const char* searchTelemetryPhaseName(SearchTelemetryPhase phase)
 {
     switch (phase)
@@ -556,6 +568,55 @@ inline void finaliseSearchTelemetry()
     searchTelemetry.active = false;
 }
 
+/** Keep reconstruction observable without changing the worker reductions. */
+class PathwayReconstructionTelemetryScope
+{
+    bool enabled = searchTelemetryEnabled;
+    SearchTelemetryState optimization;
+    uint64_t startedNanoseconds = 0;
+    clock_t startedClock = 0;
+
+public:
+    PathwayReconstructionTelemetryScope()
+    {
+        if (!enabled) return;
+        finaliseSearchTelemetry();
+        optimization = std::move(searchTelemetry);
+        pathwayReconstructionTelemetry = PathwayReconstructionTelemetry{};
+        pathwayReconstructionTelemetry.attempted = true;
+        startedNanoseconds = searchTelemetryWallNanoseconds();
+        startedClock = clock();
+        resetSearchTelemetry(false);
+        setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
+    }
+
+    PathwayReconstructionTelemetryScope(
+        const PathwayReconstructionTelemetryScope &
+    ) = delete;
+    PathwayReconstructionTelemetryScope &operator=(
+        const PathwayReconstructionTelemetryScope &
+    ) = delete;
+
+    void complete(bool succeeded) noexcept
+    {
+        if (enabled) pathwayReconstructionTelemetry.completed = succeeded;
+    }
+
+    ~PathwayReconstructionTelemetryScope()
+    {
+        if (!enabled) return;
+        finaliseSearchTelemetry();
+        pathwayReconstructionTelemetry.elapsedNanoseconds =
+            telemetryNanosecondDifference(
+                startedNanoseconds, searchTelemetryWallNanoseconds()
+            );
+        pathwayReconstructionTelemetry.clockTicks =
+            telemetryClockDifference(startedClock, clock());
+        pathwayReconstructionTelemetry.counters = searchTelemetry.counters;
+        searchTelemetry = std::move(optimization);
+    }
+};
+
 inline void addSearchTelemetryCounters(
     SearchTelemetryCounters &destination,
     const SearchTelemetryCounters &source
@@ -718,6 +779,7 @@ inline ParallelSearchWorkerTelemetry captureParallelSearchWorkerTelemetry(
 inline void resetParallelSearchTelemetry()
 {
     parallelSearchTelemetry = ParallelSearchTelemetrySummary{};
+    pathwayReconstructionTelemetry = PathwayReconstructionTelemetry{};
 }
 
 inline void configureParallelSearchTelemetry(
@@ -1528,6 +1590,19 @@ inline bool writeSearchTelemetry(const std::string &filename)
         output << ",\n";
         writeParallelSearchTelemetry(output);
     }
+    const auto &reconstruction = pathwayReconstructionTelemetry;
+    output << ",\n  \"pathway_reconstruction\": {\n"
+           << "    \"attempted\": "
+           << (reconstruction.attempted ? "true" : "false") << ",\n"
+           << "    \"completed\": "
+           << (reconstruction.completed ? "true" : "false") << ",\n"
+           << "    \"elapsed_seconds\": "
+           << static_cast<double>(reconstruction.elapsedNanoseconds) / 1.0e9
+           << ",\n    \"cpu_seconds\": "
+           << static_cast<double>(reconstruction.clockTicks) / CLOCKS_PER_SEC
+           << ",\n    \"counters\": ";
+    writeAllSearchTelemetryCounters(output, reconstruction.counters, "    ");
+    output << "\n  }";
     output << "\n}\n";
     output.close();
     if (!output)

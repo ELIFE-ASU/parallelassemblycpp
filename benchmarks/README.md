@@ -225,6 +225,43 @@ task depth and minimum useful task work are maxima across workers; the other
 scheduler event fields are sums. Legacy VF2 counters remain in the schema but
 are zero with the exact cyclic canonicaliser.
 
+### Pathway reconstruction
+
+Benchmarks disable pathways by default (`--pathway=0`). Add `--pathways` to
+include pathway generation in every timed baseline, candidate, and warm-up
+calculation. Add `--telemetry` with an instrumented candidate executable to
+measure the serial reconstruction that follows parallel optimization:
+
+```bash
+python benchmarks/benchmark.py \
+  --executable build/parallel/ParallelAssemblyCppOMP \
+  --telemetry-executable build/parallel/ParallelAssemblyCppOMPTelemetry \
+  --candidate-parallel on --candidate-env OMP_NUM_THREADS=4 \
+  --suite quick --runs 6 \
+  --pathways --telemetry \
+  --json-output build/pathways-omp-4.json
+```
+
+The extra instrumented run reports reconstruction wall seconds, process CPU
+seconds, matching visits, and completion separately from optimization. Its
+top-level `pathway_reconstruction` object contains `attempted`, `completed`,
+`elapsed_seconds`, `cpu_seconds`, and the full search `counters`. These counters
+are excluded from the parallel worker and aggregate counters. The parallel
+worker table's critical-region time measures optimization separately. An
+unattempted reconstruction has zero times and counters: this occurs when
+pathways are disabled and when the serial solver creates its pathway during
+the original search. It does not imply that integrated serial pathway
+generation is free.
+
+JSON reports record `pathways_enabled` and retain the complete reconstruction
+telemetry under each case's candidate. Timed wall and clock samples include
+pathways when enabled; the separate instrumented run is excluded from their
+aggregates. The promotion and topology comparison checkers reject reports with
+different pathway settings; historical reports without the setting count as
+pathways disabled. Historical telemetry
+remains readable, but `--pathways --telemetry` requires an executable with the
+separate reconstruction fields; rebuild older telemetry executables first.
+
 Matching scans refresh the shared best bound at class boundaries and
 periodically before matching bounds. Their untimed telemetry records:
 

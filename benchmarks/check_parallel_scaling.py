@@ -64,6 +64,7 @@ class ScalingResult:
     candidate_sha256: str
     cases: tuple[CaseScaling, ...]
     suite_speedup: float
+    pathways_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -388,6 +389,9 @@ def require_recorded_median(
 
 def evaluate_report(spec: TopologySpec) -> ScalingResult:
     document = load_result(spec.path)
+    pathways_enabled = document.get("pathways_enabled", False)
+    if type(pathways_enabled) is not bool:
+        raise ScalingError(f"invalid pathways_enabled setting in {spec.path}")
     suite = string_at(document, ("suite",), f"suite in {spec.path}")
     baseline_sha256 = string_at(
         document,
@@ -533,6 +537,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         candidate_sha256,
         tuple(case_speedups),
         suite_speedup,
+        pathways_enabled,
     )
 
 
@@ -558,6 +563,10 @@ def evaluate_specs(specs: Sequence[TopologySpec]) -> list[ScalingResult]:
     reference = results[0]
     candidates_by_label: dict[str, tuple[str, Path]] = {}
     for result in results[1:]:
+        if result.pathways_enabled != reference.pathways_enabled:
+            raise ScalingError(
+                f"incompatible pathways_enabled setting in {result.spec.path}"
+            )
         if result.suite != reference.suite:
             raise ScalingError(
                 f"incompatible suite in {result.spec.path}: expected "
