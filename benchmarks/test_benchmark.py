@@ -4,6 +4,7 @@ import contextlib
 import csv
 import io
 import json
+import math
 import os
 import shlex
 import signal
@@ -49,8 +50,13 @@ class BenchmarkTests(unittest.TestCase):
         name: str,
         assembly_index: int,
         clock_ticks: int,
+        pathway_telemetry: bool = False,
     ) -> Path:
         executable = directory / name
+        reconstruction_counter_names = sorted(
+            benchmark.PARALLEL_TELEMETRY_COUNTERS
+            | benchmark.MATCHING_BOUND_TELEMETRY_COUNTERS
+        )
         executable.write_text(
             textwrap.dedent(
                 f"""\
@@ -161,6 +167,22 @@ class BenchmarkTests(unittest.TestCase):
                             }},
                         }},
                     }}
+                    if {pathway_telemetry!r}:
+                        pathways = "--pathway=1" in sys.argv
+                        reconstruction_counters = dict.fromkeys(
+                            {reconstruction_counter_names!r},
+                            0,
+                        )
+                        reconstruction_counters["matching_visits"] = (
+                            9 if pathways else 0
+                        )
+                        telemetry["pathway_reconstruction"] = {{
+                            "attempted": pathways,
+                            "completed": pathways,
+                            "elapsed_seconds": 0.25 if pathways else 0.0,
+                            "cpu_seconds": 0.24 if pathways else 0.0,
+                            "counters": reconstruction_counters,
+                        }}
                     telemetry_name = output_base + "Telemetry.json"
                     pathlib.Path(telemetry_name).write_text(
                         json.dumps(telemetry), encoding="utf-8"
@@ -761,6 +783,90 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(results[0].telemetry, telemetry_document)
             telemetry_run.assert_called_once()
             self.assertEqual(telemetry_run.call_args.kwargs.get("execution"), execution)
+
+    def test_pathways_cli_includes_every_calculation_and_separate_telemetry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            candidate = self.create_fake_executable(directory, "candidate", 7, 100)
+            baseline = self.create_fake_executable(directory, "baseline", 7, 200)
+            telemetry_executable = self.create_fake_executable(
+                directory, "telemetry", 7, 100, pathway_telemetry=True
+            )
+            for executable in (candidate, baseline, telemetry_executable):
+                contents = executable.read_text(encoding="utf-8")
+                executable.write_text(
+                    contents.replace(
+                        "input_name = sys.argv[-1]",
+                        'if "--pathway=1" not in sys.argv:\n'
+                        '    raise SystemExit("pathways disabled")\n'
+                        "input_name = sys.argv[-1]",
+                    ),
+                    encoding="utf-8",
+                )
+            report_path = directory / "report.json"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = benchmark.main(
+                    [
+                        "--input",
+                        str(source),
+                        "--expected",
+                        "7",
+                        "--executable",
+                        str(candidate),
+                        "--baseline-executable",
+                        str(baseline),
+                        "--candidate-env",
+                        "OMP_NUM_THREADS=2",
+                        "--runs",
+                        "2",
+                        "--warmup",
+                        "1",
+                        "--pathways",
+                        "--telemetry",
+                        "--telemetry-executable",
+                        str(telemetry_executable),
+                        "--json-output",
+                        str(report_path),
+                    ]
+                )
+            self.assertEqual(status, 0)
+            self.assertIn("Pathway reconstruction telemetry", output.getvalue())
+            self.assertIn("0.250000", output.getvalue())
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertTrue(report["pathways_enabled"])
+            case = report["cases"][0]
+            self.assertEqual(len(case["candidate"]["measurements"]), 2)
+            self.assertEqual(len(case["baseline"]["measurements"]), 2)
+            telemetry = case["candidate"]["telemetry"]
+            self.assertEqual(telemetry["counters"]["matching_visits"], 4)
+            reconstruction = telemetry["pathway_reconstruction"]
+            self.assertTrue(reconstruction["completed"])
+            self.assertEqual(reconstruction["elapsed_seconds"], 0.25)
+            self.assertEqual(reconstruction["cpu_seconds"], 0.24)
+            self.assertEqual(reconstruction["counters"]["matching_visits"], 9)
+            self.assertTrue(report["telemetry"]["excluded_from_timing_aggregates"])
+
+    def test_pathways_telemetry_rejects_executable_without_separate_timing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            source = self.create_fixture(directory)
+            executable = self.create_fake_executable(directory, "telemetry", 7, 100)
+            case = benchmark.BenchmarkCase(
+                "sample", source, 7, "reviewed", (), "telemetry"
+            )
+            working = directory / "work"
+            working.mkdir()
+            prepared = benchmark.prepare_cases([case], working)[0]
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError, "reconstruction telemetry is missing"
+            ):
+                benchmark.run_telemetry_once(executable, prepared, 2.0, pathways=True)
 
     def test_configured_telemetry_command_applies_execution_configuration(
         self,
@@ -1670,6 +1776,7 @@ class BenchmarkTests(unittest.TestCase):
             )
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["schema_version"], 2)
+            self.assertFalse(report["pathways_enabled"])
             self.assertEqual(
                 report["corpus"]["manifest"]["sha256"],
                 benchmark.file_sha256(manifest),
@@ -2571,6 +2678,82 @@ class BenchmarkTests(unittest.TestCase):
                 ):
                     parse()
                 cache[name] = original
+
+    def test_pathway_reconstruction_telemetry_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            directory = Path(temp_directory)
+            fixture = self.create_fixture(directory)
+            executable = self.create_fake_executable(
+                directory, "telemetry", 7, 100, pathway_telemetry=True
+            )
+            subprocess.run(  # noqa: S603 - executable is generated by this test.
+                [str(executable), "--telemetry=1", "--pathway=1", str(fixture)],
+                check=True,
+            )
+            path = directory / "inputTelemetry.json"
+            original = benchmark.parse_search_telemetry(path)
+
+            def parse(value: dict[str, object]) -> dict[str, object]:
+                path.write_text(json.dumps(value), encoding="utf-8")
+                return benchmark.parse_search_telemetry(path)
+
+            legacy = json.loads(json.dumps(original))
+            del legacy["pathway_reconstruction"]
+            self.assertEqual(parse(legacy), legacy)
+            inactive = json.loads(json.dumps(original))
+            inactive["pathway_reconstruction"].update(
+                attempted=False,
+                completed=False,
+                elapsed_seconds=0.0,
+                cpu_seconds=0.0,
+                counters=dict.fromkeys(
+                    original["pathway_reconstruction"]["counters"], 0
+                ),
+            )
+            self.assertEqual(parse(inactive), inactive)
+            incomplete = json.loads(json.dumps(original))
+            incomplete["pathway_reconstruction"]["completed"] = False
+            self.assertEqual(parse(incomplete), incomplete)
+
+            for name in ("elapsed_seconds", "cpu_seconds"):
+                for invalid in (-1.0, True, None, "1", math.inf, math.nan, 10**400):
+                    malformed = json.loads(json.dumps(original))
+                    malformed["pathway_reconstruction"][name] = invalid
+                    with (
+                        self.subTest(field=name, invalid=invalid),
+                        self.assertRaisesRegex(
+                            benchmark.BenchmarkError, "pathway reconstruction"
+                        ),
+                    ):
+                        parse(malformed)
+            for name in ("attempted", "completed"):
+                malformed = json.loads(json.dumps(original))
+                malformed["pathway_reconstruction"][name] = 1
+                with (
+                    self.subTest(field=name),
+                    self.assertRaisesRegex(
+                        benchmark.BenchmarkError, "pathway reconstruction status"
+                    ),
+                ):
+                    parse(malformed)
+            for name in ("completed", "elapsed_seconds", "cpu_seconds", "counters"):
+                malformed = json.loads(json.dumps(inactive))
+                malformed["pathway_reconstruction"][name] = original[
+                    "pathway_reconstruction"
+                ][name]
+                with (
+                    self.subTest(inactive_field=name),
+                    self.assertRaisesRegex(
+                        benchmark.BenchmarkError, "inactive pathway reconstruction"
+                    ),
+                ):
+                    parse(malformed)
+            malformed = json.loads(json.dumps(original))
+            del malformed["pathway_reconstruction"]["counters"]["matching_visits"]
+            with self.assertRaisesRegex(
+                benchmark.BenchmarkError, "pathway reconstruction counters"
+            ):
+                parse(malformed)
 
     def test_search_telemetry_parser_rejects_malformed_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

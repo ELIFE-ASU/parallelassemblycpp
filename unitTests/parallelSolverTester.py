@@ -460,6 +460,7 @@ def run_solver(
             if not isinstance(parsed, dict):
                 raise TestFailureError(f"{case.name}: telemetry root must be an object")
             document = parsed
+            validate_pathway_reconstruction(document, case.name, attempted=False)
         return index, document
 
 
@@ -479,6 +480,69 @@ def require_nonnegative_integer(value: object, path: str) -> int:
 def require_mapping(value: object, path: str) -> Mapping[str, Any]:
     require(isinstance(value, dict), f"{path} must be an object")
     return value
+
+
+def validate_pathway_reconstruction(
+    document: Mapping[str, Any],
+    prefix: str,
+    *,
+    attempted: bool,
+    completed: bool | None = None,
+    expected_counter_keys: set[str] | None = None,
+) -> set[str]:
+    path = f"{prefix}: pathway_reconstruction"
+    reconstruction = require_mapping(document.get("pathway_reconstruction"), path)
+    require(
+        reconstruction.get("attempted") is attempted,
+        f"{path}.attempted must be {attempted!r}",
+    )
+    if completed is None:
+        completed = attempted
+    require(
+        reconstruction.get("completed") is completed,
+        f"{path}.completed must be {completed!r}",
+    )
+    for field in ("elapsed_seconds", "cpu_seconds"):
+        value = reconstruction.get(field)
+        require(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0,
+            f"{path}.{field} must be finite and non-negative, got {value!r}",
+        )
+        if not attempted:
+            require(value == 0, f"{path}.{field} must be zero when not attempted")
+        elif field == "elapsed_seconds":
+            require(value > 0, f"{path}.{field} must include reconstruction work")
+
+    counters = require_mapping(reconstruction.get("counters"), f"{path}.counters")
+    require(bool(counters), f"{path}.counters must not be empty")
+    if "parallel" in document:
+        parallel = require_mapping(document["parallel"], f"{prefix}: parallel")
+        aggregate = require_mapping(
+            parallel.get("aggregate"), f"{prefix}: parallel.aggregate"
+        )
+        expected_counter_keys = set(
+            require_mapping(
+                aggregate.get("counters"), f"{prefix}: parallel.aggregate.counters"
+            )
+        )
+    if expected_counter_keys is not None:
+        require(
+            set(counters) == expected_counter_keys,
+            f"{path}.counters keys differ from the full optimization counter schema",
+        )
+    for name, value in counters.items():
+        count = require_nonnegative_integer(value, f"{path}.counters.{name}")
+        if not attempted:
+            require(count == 0, f"{path}.counters.{name} must be zero")
+    if attempted:
+        require(
+            counters.get("matching_visits", 0) > 0,
+            f"{path}.counters.matching_visits must include reconstruction work",
+        )
+    return set(counters)
 
 
 def validate_counter_sum(
@@ -943,6 +1007,15 @@ def validate_parallel_telemetry(
         [worker.get("counters") for worker in workers],
         f"{prefix}: parallel.aggregate.counters",
     )
+    aggregate_counters = require_mapping(
+        aggregate.get("counters"), f"{prefix}: parallel.aggregate.counters"
+    )
+    process_counters = require_mapping(document.get("counters"), f"{prefix}: counters")
+    for name, count in process_counters.items():
+        require(
+            count == aggregate_counters.get(name),
+            f"{prefix}: counters.{name} differs from the optimization aggregate",
+        )
     shared_assembly_cache = validate_shared_assembly_cache(
         aggregate.get("shared_assembly_cache"),
         topology.rank_count,
@@ -1278,7 +1351,15 @@ def run_parity_suite(
     return runs
 
 
-def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
+def run_pathway_parity_case(
+    target: ParallelTarget,
+    timeout: float,
+    *,
+    telemetry: bool,
+    parallel_enabled: bool,
+    fail_pathway_output: bool = False,
+    expected_counter_keys: set[str] | None = None,
+) -> set[str] | None:
     topology = target.topology
     require(
         len(set(topology.threads_per_rank)) == 1,
@@ -1316,13 +1397,18 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
         working_directory = Path(temporary)
         input_name = "input.mol"
         shutil.copy2(PATHWAY_PARITY_SOURCE, working_directory / input_name)
+        if fail_pathway_output:
+            (working_directory / "inputPathway").mkdir()
         solver_arguments = [
             str(target.executable),
             input_name,
-            "--parallel=on",
-            f"--threads={threads}",
+            "--pathway=1",
+            "--parallel=on" if parallel_enabled else "--parallel=off",
+            f"--threads={threads}" if parallel_enabled else "--threads=1",
         ]
-        if topology.rank_count > 1:
+        if telemetry:
+            solver_arguments.append("--telemetry=1")
+        if parallel_enabled and topology.rank_count > 1:
             require(
                 target.mpiexec is not None,
                 f"{topology.mode}: mpiexec is required",
@@ -1342,43 +1428,131 @@ def run_pathway_parity_suite(target: ParallelTarget, timeout: float) -> int:
                 f"{PATHWAY_PARITY_NAME}: {target.label} pathway run exceeded "
                 f"{timeout:g}s"
             ) from error
-        if completed.returncode != 0:
+        if fail_pathway_output:
+            require(
+                completed.returncode != 0 and "inputPathway" in completed.stderr,
+                f"{PATHWAY_PARITY_NAME}: pathway write failure was not reported\n"
+                f"{format_completed(completed)}",
+            )
+        elif completed.returncode != 0:
             raise TestFailureError(
                 f"{PATHWAY_PARITY_NAME}: {target.executable.name} failed\n"
                 f"{format_completed(completed)}"
             )
 
-        output_path = working_directory / "inputOut"
-        pathway_path = working_directory / "inputPathway"
-        try:
-            output_text = output_path.read_text(encoding="utf-8")
-            actual_pathway = json.loads(pathway_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise TestFailureError(
-                f"{PATHWAY_PARITY_NAME}: cannot read parallel pathway output: "
-                f"{error}\n"
-                f"{format_completed(completed)}"
-            ) from error
+        if not fail_pathway_output:
+            output_path = working_directory / "inputOut"
+            pathway_path = working_directory / "inputPathway"
+            try:
+                output_text = output_path.read_text(encoding="utf-8")
+                actual_pathway = json.loads(pathway_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise TestFailureError(
+                    f"{PATHWAY_PARITY_NAME}: cannot read parallel pathway output: "
+                    f"{error}\n"
+                    f"{format_completed(completed)}"
+                ) from error
 
-        match = ASSEMBLY_INDEX_PATTERN.search(output_text)
-        require(
-            match is not None,
-            f"{PATHWAY_PARITY_NAME}: assembly index is absent from {output_path}",
-        )
-        index = int(match.group(1))
-        require(
-            index == PATHWAY_PARITY_EXPECTED_INDEX,
-            f"{PATHWAY_PARITY_NAME}: index {index}, expected "
-            f"{PATHWAY_PARITY_EXPECTED_INDEX}",
-        )
-        require(
-            actual_pathway == expected_pathway,
-            f"{PATHWAY_PARITY_NAME}: parallel pathway JSON differs from "
-            f"{PATHWAY_PARITY_EXPECTED}",
-        )
+            match = ASSEMBLY_INDEX_PATTERN.search(output_text)
+            require(
+                match is not None,
+                f"{PATHWAY_PARITY_NAME}: assembly index is absent from {output_path}",
+            )
+            index = int(match.group(1))
+            require(
+                index == PATHWAY_PARITY_EXPECTED_INDEX,
+                f"{PATHWAY_PARITY_NAME}: index {index}, expected "
+                f"{PATHWAY_PARITY_EXPECTED_INDEX}",
+            )
+            require(
+                actual_pathway == expected_pathway,
+                f"{PATHWAY_PARITY_NAME}: {target.label} pathway JSON differs from "
+                f"{PATHWAY_PARITY_EXPECTED}",
+            )
+        if telemetry:
+            telemetry_path = working_directory / "inputTelemetry.json"
+            try:
+                document = json.loads(telemetry_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise TestFailureError(
+                    f"{PATHWAY_PARITY_NAME}: cannot read telemetry: {error}"
+                ) from error
+            document = require_mapping(document, f"{PATHWAY_PARITY_NAME}: telemetry")
+            expected_counter_keys = validate_pathway_reconstruction(
+                document,
+                PATHWAY_PARITY_NAME,
+                attempted=parallel_enabled,
+                completed=parallel_enabled and not fail_pathway_output,
+                expected_counter_keys=expected_counter_keys,
+            )
+            if parallel_enabled:
+                case = SolverCase(
+                    PATHWAY_PARITY_NAME,
+                    PATHWAY_PARITY_SOURCE,
+                    PATHWAY_PARITY_EXPECTED_INDEX,
+                    38,
+                    1,
+                )
+                validate_parallel_telemetry(
+                    document,
+                    case,
+                    topology,
+                    expected_lease_size=target.branch_lease_size,
+                )
+            else:
+                require(
+                    "parallel" not in document,
+                    f"{PATHWAY_PARITY_NAME}: serial pathway run used parallel search",
+                )
+    return expected_counter_keys
 
-    print(f"PASS pathway {PATHWAY_PARITY_NAME}: {target.label} index and JSON parity")
-    return 1
+
+def run_pathway_parity_suite(
+    target: ParallelTarget,
+    timeout: float,
+    *,
+    telemetry: bool = False,
+    repetitions: int = 1,
+) -> int:
+    expected_counter_keys = None
+    for _ in range(repetitions):
+        expected_counter_keys = run_pathway_parity_case(
+            target,
+            timeout,
+            telemetry=telemetry,
+            parallel_enabled=True,
+            expected_counter_keys=expected_counter_keys,
+        )
+    runs = repetitions
+    if telemetry:
+        # Serial pathway generation is integrated into optimization. It must
+        # match the same golden document without reporting a second search.
+        run_pathway_parity_case(
+            target,
+            timeout,
+            telemetry=True,
+            parallel_enabled=False,
+            expected_counter_keys=expected_counter_keys,
+        )
+        run_pathway_parity_case(
+            target,
+            timeout,
+            telemetry=True,
+            parallel_enabled=True,
+            fail_pathway_output=True,
+            expected_counter_keys=expected_counter_keys,
+        )
+        runs += 2
+    print(
+        f"PASS pathway {PATHWAY_PARITY_NAME}: {target.label} "
+        f"{repetitions} repeated index/JSON parity run(s)"
+        + (
+            ", isolated success/failure reconstruction telemetry and serial parity"
+            if telemetry
+            else ""
+        )
+    )
+    return runs
 
 
 def run_openmp_execution_policy_suite(openmp: Path, timeout: float) -> int:
@@ -2191,12 +2365,24 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.repetitions,
                 options.timeout,
             )
-            runs += run_pathway_parity_suite(openmp_target, options.timeout)
+            runs += run_pathway_parity_suite(
+                openmp_target, options.timeout, repetitions=options.repetitions
+            )
             runs += run_openmp_execution_policy_suite(
                 options.openmp,
                 options.timeout,
             )
         if options.openmp_telemetry is not None:
+            runs += run_pathway_parity_suite(
+                ParallelTarget(
+                    "openmp-2-telemetry",
+                    options.openmp_telemetry,
+                    ParallelTopology("openmp", (2,)),
+                ),
+                options.timeout,
+                telemetry=True,
+                repetitions=options.telemetry_repetitions,
+            )
             runs += run_automatic_thread_selection_suite(
                 ParallelTarget(
                     "openmp-auto",
@@ -2236,17 +2422,26 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 cases,
                 options.timeout,
             )
-            runs += run_pathway_parity_suite(mpi_target, options.timeout)
+            runs += run_pathway_parity_suite(
+                mpi_target, options.timeout, repetitions=options.repetitions
+            )
         if options.mpi_telemetry is not None:
+            mpi_telemetry_target = ParallelTarget(
+                "mpi-2-telemetry",
+                options.mpi_telemetry,
+                MPI_TOPOLOGY,
+                options.mpiexec,
+                options.mpiexec_numproc_flag,
+            )
+            runs += run_pathway_parity_suite(
+                mpi_telemetry_target,
+                options.timeout,
+                telemetry=True,
+                repetitions=options.telemetry_repetitions,
+            )
             runs += run_distributed_telemetry_suite(
                 options.serial,
-                ParallelTarget(
-                    "mpi-2",
-                    options.mpi_telemetry,
-                    MPI_TOPOLOGY,
-                    options.mpiexec,
-                    options.mpiexec_numproc_flag,
-                ),
+                mpi_telemetry_target,
                 cases,
                 options.timeout,
             )
@@ -2264,8 +2459,23 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 cases,
                 options.timeout,
             )
-            runs += run_pathway_parity_suite(hybrid_target, options.timeout)
+            runs += run_pathway_parity_suite(
+                hybrid_target, options.timeout, repetitions=options.repetitions
+            )
         if options.hybrid_telemetry is not None:
+            hybrid_telemetry_target = ParallelTarget(
+                "hybrid-2x2-telemetry",
+                options.hybrid_telemetry,
+                HYBRID_TOPOLOGY,
+                options.mpiexec,
+                options.mpiexec_numproc_flag,
+            )
+            runs += run_pathway_parity_suite(
+                hybrid_telemetry_target,
+                options.timeout,
+                telemetry=True,
+                repetitions=options.telemetry_repetitions,
+            )
             runs += run_automatic_thread_selection_suite(
                 ParallelTarget(
                     "hybrid-auto",
@@ -2278,13 +2488,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
             runs += run_distributed_telemetry_suite(
                 options.serial,
-                ParallelTarget(
-                    "hybrid-2x2",
-                    options.hybrid_telemetry,
-                    HYBRID_TOPOLOGY,
-                    options.mpiexec,
-                    options.mpiexec_numproc_flag,
-                ),
+                hybrid_telemetry_target,
                 cases,
                 options.timeout,
             )

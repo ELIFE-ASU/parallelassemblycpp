@@ -786,12 +786,13 @@ def run_once(
     timeout: float,
     *,
     execution: ExecutionConfig | None = None,
+    pathways: bool = False,
 ) -> Measurement:
     command = [
         *(execution.launcher if execution is not None else ()),
         str(executable),
         *(execution.arguments if execution is not None else ()),
-        "--pathway=0",
+        f"--pathway={int(pathways)}",
         "--memory-report=0",
         "--write-intermediate-mas=0",
         "--",
@@ -1048,6 +1049,40 @@ def parse_search_telemetry(path: Path) -> dict[str, object]:
     parallel_counter_names = PARALLEL_TELEMETRY_COUNTERS | (
         MATCHING_BOUND_TELEMETRY_COUNTERS if has_matching_bound_counters else set()
     )
+    # This additive schema-v1 group is absent from historical telemetry.
+    if "pathway_reconstruction" in telemetry:
+        reconstruction = telemetry["pathway_reconstruction"]
+        if not isinstance(reconstruction, dict) or any(
+            type(reconstruction.get(name)) is not bool
+            for name in ("attempted", "completed")
+        ):
+            raise BenchmarkError(
+                f"invalid pathway reconstruction status in {path.name}"
+            )
+        for name in ("elapsed_seconds", "cpu_seconds"):
+            value = reconstruction.get(name)
+            duration = math.nan
+            if type(value) in (int, float):
+                try:
+                    duration = float(value)
+                except OverflowError:
+                    duration = math.nan
+            if not math.isfinite(duration) or duration < 0:
+                raise BenchmarkError(
+                    f"invalid pathway reconstruction {name} in {path.name}"
+                )
+        reconstruction_counters = parallel_counters(
+            reconstruction.get("counters"), "pathway reconstruction"
+        )
+        if not reconstruction["attempted"] and (
+            reconstruction["completed"]
+            or reconstruction["elapsed_seconds"] != 0
+            or reconstruction["cpu_seconds"] != 0
+            or any(reconstruction_counters[name] for name in parallel_counter_names)
+        ):
+            raise BenchmarkError(
+                f"inactive pathway reconstruction has activity in {path.name}"
+            )
     if counters["retained_mask_attempts"] != sum(
         counters[name]
         for name in (
@@ -1876,12 +1911,13 @@ def run_telemetry_once(
     timeout: float,
     *,
     execution: ExecutionConfig | None = None,
+    pathways: bool = False,
 ) -> dict[str, object]:
     command = [
         *(execution.launcher if execution is not None else ()),
         str(executable),
         *(execution.arguments if execution is not None else ()),
-        "--pathway=0",
+        f"--pathway={int(pathways)}",
         "--memory-report=0",
         "--write-intermediate-mas=0",
         "--telemetry=1",
@@ -1928,7 +1964,13 @@ def run_telemetry_once(
             0.0,
             prepared.case.expected_assembly_index,
         )
-        return parse_search_telemetry(prepared.telemetry_path)
+        telemetry = parse_search_telemetry(prepared.telemetry_path)
+        if pathways and "pathway_reconstruction" not in telemetry:
+            raise BenchmarkError(
+                "pathway reconstruction telemetry is missing; rebuild the "
+                "telemetry executable to measure pathways separately"
+            )
+        return telemetry
     except BenchmarkError as error:
         raise BenchmarkError(f"{prepared.case.name}: {error}") from error
 
@@ -1950,6 +1992,7 @@ def run_benchmarks(
     telemetry_executable: Path | None = None,
     candidate_execution: ExecutionConfig | None = None,
     baseline_execution: ExecutionConfig | None = None,
+    pathways: bool = False,
 ) -> list[CaseResult]:
     with tempfile.TemporaryDirectory(
         prefix="parallelassemblycpp-benchmark-"
@@ -1987,13 +2030,14 @@ def run_benchmarks(
             )
             # Preserve the historical three-argument call for default callers and
             # monkeypatched PGO/benchmark test doubles.
-            if execution is None:
+            if execution is None and not pathways:
                 return run_once(current_executable, prepared, timeout)
             return run_once(
                 current_executable,
                 prepared,
                 timeout,
                 execution=execution,
+                pathways=pathways,
             )
 
         def validate_unchecked_pair(
@@ -2073,7 +2117,7 @@ def run_benchmarks(
                     f"Telemetry [{index}/{case_count}] {prepared.case.name}...",
                     flush=True,
                 )
-                if candidate_execution is None:
+                if candidate_execution is None and not pathways:
                     telemetry[prepared.case.name] = run_telemetry_once(
                         telemetry_executable,
                         prepared,
@@ -2085,6 +2129,7 @@ def run_benchmarks(
                         prepared,
                         timeout,
                         execution=candidate_execution,
+                        pathways=pathways,
                     )
 
     return [
@@ -2358,6 +2403,34 @@ def print_telemetry_summary(results: Sequence[CaseResult]) -> None:
             f"{peak_text:>11}"
         )
 
+    reconstruction_results = [
+        result
+        for result in results
+        if result.telemetry is not None
+        and isinstance(result.telemetry.get("pathway_reconstruction"), dict)
+        and result.telemetry["pathway_reconstruction"]["attempted"]
+    ]
+    if reconstruction_results:
+        print("\nPathway reconstruction telemetry (separate from optimization)")
+        print(
+            f"  {'Case':<{name_width}} {'Wall seconds':>14} {'CPU seconds':>14} "
+            f"{'Matches':>12} {'Completed':>10}"
+        )
+        print("  " + "-" * (name_width + 54))
+        for result in reconstruction_results:
+            telemetry = cast("dict[str, object]", result.telemetry)
+            reconstruction = cast(
+                "dict[str, object]", telemetry["pathway_reconstruction"]
+            )
+            counters = cast("dict[str, object]", reconstruction["counters"])
+            print(
+                f"  {result.case.name:<{name_width}.{name_width}} "
+                f"{float(reconstruction['elapsed_seconds']):>14.6f} "
+                f"{float(reconstruction['cpu_seconds']):>14.6f} "
+                f"{int(counters['matching_visits']):>12,} "
+                f"{reconstruction['completed']!s:>10}"
+            )
+
     parallel_results = [
         result
         for result in results
@@ -2490,6 +2563,7 @@ def write_json_report(
     results: Sequence[CaseResult],
     candidate_execution: ExecutionConfig | None = None,
     baseline_execution: ExecutionConfig | None = None,
+    pathways: bool = False,
 ) -> None:
     def measurement_report(measurements: tuple[Measurement, ...]) -> dict[str, object]:
         wall = summarize([measurement.wall_seconds for measurement in measurements])
@@ -2610,6 +2684,7 @@ def write_json_report(
         "runs": runs,
         "warmup": warmup,
         "timeout_seconds": timeout,
+        "pathways_enabled": pathways,
         "telemetry": {
             "enabled": any(result.telemetry is not None for result in results),
             "collection": (
@@ -2792,6 +2867,14 @@ def create_argument_parser() -> argparse.ArgumentParser:
             "write a PNG plot and matching PDF; automatic for scaling cases, "
             "beside --json-output with .png/.pdf suffixes or at "
             "build/scaling.png and build/scaling.pdf when no JSON is requested"
+        ),
+    )
+    parser.add_argument(
+        "--pathways",
+        action="store_true",
+        help=(
+            "include pathway reconstruction in every calculation; use --telemetry "
+            "to report reconstruction timing separately"
         ),
     )
     parser.add_argument(
@@ -3082,6 +3165,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"Rounds: {runs} measured, {arguments.warmup} warm-up per case",
                 flush=True,
             )
+        if arguments.pathways:
+            print("Pathways: enabled in timed and telemetry calculations", flush=True)
         if arguments.telemetry:
             print(
                 "Telemetry: one separate, untimed run per case",
@@ -3098,6 +3183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runs=runs,
             warmup=arguments.warmup,
             timeout=arguments.timeout,
+            **({"pathways": True} if arguments.pathways else {}),
         )
         verify_executable_unchanged(executable, candidate_metadata, "candidate")
         if baseline_executable is not None:
@@ -3137,6 +3223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 results=results,
                 candidate_execution=candidate_execution,
                 baseline_execution=baseline_execution,
+                pathways=arguments.pathways,
             )
             print(f"JSON report: {arguments.json_output}")
         if plot_path is not None and figure is not None:

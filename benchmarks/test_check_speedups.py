@@ -128,6 +128,37 @@ class CheckSpeedupsTests(unittest.TestCase):
                 "exceed 1.000000\n",
             )
 
+    def test_pathway_mode_must_match_across_suites(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_directory:
+            paths = self.write_all_results(Path(temp_directory))
+            documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+            for first, others, expected in (
+                (None, False, 0),
+                (True, True, 0),
+                (None, True, 2),
+                (True, False, 2),
+                (False, "false", 2),
+                (False, 0, 2),
+            ):
+                for index, (path, document) in enumerate(
+                    zip(paths, documents, strict=True)
+                ):
+                    value = first if index == 0 else others
+                    document.pop("pathways_enabled", None)
+                    if value is not None:
+                        document["pathways_enabled"] = value
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                stderr = io.StringIO()
+                with (
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    status = check_speedups.main([str(path) for path in paths])
+                with self.subTest(first=first, others=others):
+                    self.assertEqual(status, expected)
+                    if expected:
+                        self.assertIn("pathways_enabled", stderr.getvalue())
+
     def test_rejects_case_clock_regression(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             directory = Path(temp_directory)
