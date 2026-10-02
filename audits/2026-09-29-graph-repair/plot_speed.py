@@ -1,4 +1,4 @@
-"""Plot measured calculation times; run after graph_repair_speed.py completes."""
+"""Plot the completed speed.json from this dated audit, preserving its labels."""
 
 from __future__ import annotations
 

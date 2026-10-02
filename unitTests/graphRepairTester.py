@@ -16,11 +16,12 @@ import importlib.util
 import itertools
 import json
 import random
-import selectors
 import subprocess
 import time
 from collections import Counter
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -264,6 +265,8 @@ def native_record(graph: Graph) -> str:
 
 
 class Probe:
+    """Exchange one-line UTF-8 records with a probe, bounding response waits."""
+
     def __init__(self, executable: Path, *, compensate: bool = False) -> None:
         command = [str(executable.resolve())]
         if compensate:
@@ -272,19 +275,34 @@ class Probe:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
             bufsize=1,
         )
-        self.ready = selectors.DefaultSelector()
-        self.ready.register(self.process.stdout, selectors.EVENT_READ)
+        # Windows selectors cannot wait on subprocess pipes. A reader thread
+        # also keeps the timeout effective if a response has no final newline.
+        self.responses: Queue[str | Exception | None] = Queue()
+        self.reader = Thread(target=self._read_responses, daemon=True)
+        self.reader.start()
         self.queries = 0
+
+    def _read_responses(self) -> None:
+        try:
+            for line in self.process.stdout:
+                self.responses.put(line)
+        except (OSError, UnicodeError) as error:
+            self.responses.put(error)
+        finally:
+            self.responses.put(None)
 
     def query(self, graph: Graph) -> dict[str, Any]:
         self.process.stdin.write(native_record(graph) + "\n")
         self.process.stdin.flush()
-        if not self.ready.select(30):
-            raise TimeoutError("graph repair probe exceeded 30 seconds")
-        line = self.process.stdout.readline()
+        try:
+            line = self.responses.get(timeout=30)
+        except Empty as error:
+            raise TimeoutError("graph repair probe exceeded 30 seconds") from error
+        if isinstance(line, Exception):
+            raise line
         require(bool(line), "probe exited without a certificate")
         certificate = json.loads(line)
         require(certificate["atoms"] == graph[0], "probe changed atom labels")
@@ -298,7 +316,6 @@ class Probe:
         return certificate
 
     def close(self) -> None:
-        self.ready.close()
         self.process.stdin.close()
         if self.process.poll() is None:
             try:
@@ -306,6 +323,9 @@ class Probe:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
+        self.reader.join(timeout=5)
+        require(not self.reader.is_alive(), "probe stdout did not close")
+        self.process.stdout.close()
         require(self.process.returncode == 0, "probe failed")
 
 

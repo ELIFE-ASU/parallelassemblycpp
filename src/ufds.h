@@ -25,8 +25,9 @@ unsigned long long bitsetLowWordBelow(const Bitset &mask, size_t limit)
 /**
  * @brief Visit set bit indices below a limit in ascending order
  *
- * Sparse implementations visit only set bits; dense masks and the portable
- * fallback use a bounded linear scan.
+ * Word-oriented masks visit set bits directly. Masks with findFirst/findNext
+ * use sparse iteration or a bounded linear scan according to density; the
+ * portable fallback scans the bounded index range.
  */
 template<typename Bitset, typename Visitor>
 void forEachSetBitWithWideLimit(
@@ -119,7 +120,7 @@ void forEachSetBitBelow(const Bitset &mask, size_t limit, Visitor &&visitor)
 }
 
 /**
- * @brief node of a disjoint set
+ * @brief Parent and rank for a conventional union-find node
  */
 struct disjointSetNode
 {
@@ -128,11 +129,11 @@ struct disjointSetNode
 };
 
 /**
- * @brief for UFDS split node - variant on textbook UFDS
+ * @brief Union-find node carrying fragment-edge and component metadata
  */
 struct ufdsSplitNode
 {
-    /// parent, rank, fragment this is part of
+    /// Union-find parent/rank, representative edge, output component, and epoch
     int16_t parent = -1, rank = 0;
     int32_t val = -1, component = -1;
     uint32_t generation = 0;
@@ -149,7 +150,7 @@ struct ufdsSplitNode
 static_assert(sizeof(ufdsSplitNode) == 16);
 
 /**
- * @brief for UFDS split node - variant on textbook UFDS
+ * @brief Reusable union-find workspace for edge-induced connected components
  */
 struct ufdsSplit
 {
@@ -243,8 +244,7 @@ struct ufdsSplit
     }
 
     /**
-     * @brief Used if one atom has not been seen before
-     *
+     * @brief Attach an unseen atom to an existing component through edge val
      */
     void insert(int target, int parent, int val)
     {
@@ -253,8 +253,7 @@ struct ufdsSplit
     }
 
     /**
-     * @brief Used if both atoms have not been seen before
-     *
+     * @brief Start a component from two unseen atoms joined by edge val
      */
     void doubleInsert(int target, int parent, int val)
     {
@@ -269,8 +268,7 @@ struct ufdsSplit
     }
 
     /**
-     * @brief Used if both atoms have been seen before
-     *
+     * @brief Record edge yval and unite the components of two known atoms
      */
     void merge(size_t x, size_t y, int yval)
     {
@@ -291,9 +289,9 @@ struct ufdsSplit
     }
 
     /**
-     * @brief The splitting function used during the fragmentation
+     * @brief Append connected components containing at least two edges
      *
-     * @param fragmentList Connected output fragments
+     * @param fragmentList Receives fragments from a one-word edge domain
      */
     PARALLELASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
         vector<assemblyFragment> &fragmentList

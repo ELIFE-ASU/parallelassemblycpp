@@ -49,9 +49,10 @@ namespace graphioDetail
         const char *description
     )
     {
-        // The legacy parser accepted an explicit positive sign, so preserve it
-        // when using from_chars.
-        if (!token.empty() && token.front() == '+') token.remove_prefix(1);
+        // from_chars accepts a minus but not a plus. Preserve a single leading
+        // plus for compatibility without accepting malformed signs like '+-0'.
+        if (token.size() > 1 && token.front() == '+' &&
+            token[1] >= '0' && token[1] <= '9') token.remove_prefix(1);
         long long value = 0;
         const char *begin = token.data();
         const char *end = begin + token.size();
@@ -190,8 +191,13 @@ namespace graphioDetail
 /**
  * @brief Parse ParallelAssemblyCpp's five-line native graph format transactionally.
  *
- * @param inputStream input stream
- * @param molecule output molGraph, replaced only after the complete input is valid
+ * Read a name, vertex count, one-based endpoint pairs, atom labels, and bond
+ * labels. Trailing lines are left unread. The removeHydrogens and verbose
+ * options control filtering and diagnostic output, respectively.
+ *
+ * @param inputStream Input stream positioned at the graph name
+ * @param molecule Output graph, replaced only after all five lines validate
+ * @throws std::runtime_error if the graph is truncated or invalid
  */
 inline void graphio(std::istream &inputStream, molGraph &molecule)
 {

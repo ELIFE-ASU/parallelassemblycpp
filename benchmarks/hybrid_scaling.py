@@ -113,7 +113,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
 def mpi_launcher(mpirun: Path, cpus: int, layout: Layout) -> tuple[str, ...]:
     """Launch locally without inheriting a one-task Slurm or parent MPI universe."""
     # Only the MPI child loses scheduler identity; the driver retains metadata
-    # and every child remains inside Slurm's physical CPU/memory cgroup.
+    # and every child remains inside the inherited CPU/memory cgroup.
     inherited_identity = sorted(
         name
         for name in os.environ

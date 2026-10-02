@@ -11,6 +11,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import math
 import platform
 import statistics
 import subprocess
@@ -115,7 +116,7 @@ def summarize(rows: list[dict]) -> dict:
 
 
 def trail_repair(atoms: list[str], edges: list[list[int]]) -> dict:
-    """String RePair over one deterministic partition into simple trails.
+    """String RePair over one deterministic partition into simple paths.
 
     Paths cannot revisit a vertex: repeated labelled strings then always mean
     isomorphic graph fragments, including when separate occurrences share
@@ -268,7 +269,10 @@ def trail_repair(atoms: list[str], edges: list[list[int]]) -> dict:
 def run_probe(
     executable: Path, cases: list[dict], repeats: int, timeout: float
 ) -> list[dict]:
-    """One process isolates algorithm time from repeated process startup costs."""
+    """Run the corpus once per process and validate every repetition's certificate.
+
+    The probe's per-case timer excludes parsing, startup, and validation.
+    """
     checker_spec = importlib.util.spec_from_file_location(
         "graph_repair_validation",
         REPOSITORY_ROOT / "unitTests" / "graphRepairTester.py",
@@ -299,14 +303,32 @@ def run_probe(
         if "error" in sample:
             raise ValueError(f"probe failed for {case['name']}: {sample['error']}")
         bound = sample["upper_bound"]
-        if checker.validate_certificate(sample) != bound:
-            raise ValueError(f"construction count differs for {case['name']}")
         trivial = sample["trivial_upper_bound"]
         timings = []
         for samples in all_samples:
-            if samples[index]["upper_bound"] != bound:
+            repeated = samples[index]
+            if "error" in repeated:
+                raise ValueError(
+                    f"probe failed for {case['name']}: {repeated['error']}"
+                )
+            try:
+                validated_bound = checker.validate_certificate(repeated)
+            except (AssertionError, KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    f"invalid construction for {case['name']}: {error}"
+                ) from error
+            if validated_bound != repeated["upper_bound"]:
+                raise ValueError(f"construction count differs for {case['name']}")
+            if repeated["upper_bound"] != bound:
                 raise ValueError(f"nondeterministic bound for {case['name']}")
-            timings.append(samples[index]["elapsed_seconds"])
+            seconds = repeated.get("elapsed_seconds")
+            if (
+                type(seconds) not in (int, float)
+                or not math.isfinite(seconds)
+                or seconds < 0
+            ):
+                raise ValueError(f"invalid algorithm timing for {case['name']}")
+            timings.append(seconds)
         started_at = time.perf_counter()
         trail = trail_repair(sample["atoms"], sample["edges"])
         trail_seconds = time.perf_counter() - started_at
@@ -374,8 +396,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--csv-output", type=Path)
     args = parser.parse_args(argv)
-    if args.repeats < 1 or args.timeout <= 0:
-        parser.error("--repeats and --timeout must be positive")
+    if args.repeats < 1 or not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error(
+            "--repeats must be positive; --timeout must be finite and positive"
+        )
     cases = load_cases(args.corpus)
     if args.case:
         selected = set(args.case)

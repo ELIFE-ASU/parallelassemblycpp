@@ -192,7 +192,7 @@ def oracle(
 
 @functools.cache
 def addition_chain_length(n: int) -> int:
-    """Exact IDDFS over all increasing addition chains, used only through 34."""
+    """Find the shortest increasing addition chain for a positive integer."""
 
     def visit(chain: list[int], depth: int) -> bool:
         if chain[-1] == n:

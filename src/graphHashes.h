@@ -16,7 +16,7 @@
 #include "compilerAttributes.h"
 
 /**
- * @brief Hashes a molecular graph
+ * @brief Exact canonical graph identity with a hash for table lookup
  */
 struct graphHash
 {
@@ -26,7 +26,7 @@ struct graphHash
     cyclicCanonForm cyclicHash;
 
     /**
-     * @brief Construct a new graph Hash object
+     * @brief Build an exact tree or cyclic canonical representation
      *
      * @param graph molGraph to be hashed
      * @param isCyclic Is the molecule cyclic
@@ -747,10 +747,11 @@ PARALLELASSEMBLYCPP_NOINLINE int canoniseCacheMiss(EdgeMask &mask)
 }
 
 /**
- * @brief Returns unique hash val for subgraph. See Seet et al. section 4.3 Enumeration
+ * @brief Intern a subgraph's exact canonical class, reusing the edge-mask cache
  *
- * @param mask Boolean edgelist to be canonised
- * @return int canonical value
+ * @param mask Edge-induced subgraph in the configured molecule's edge domain
+ * @return Canonical class ID in the current search's interner namespace;
+ * equivalent labelled graphs share an ID, independently of hash collisions
  */
 int canonise(EdgeMask &mask)
 {

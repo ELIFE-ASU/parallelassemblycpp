@@ -436,7 +436,7 @@ def executable_metadata(path: Path) -> dict[str, object]:
 
 
 def file_sha256(path: Path) -> str:
-    """Return the SHA-256 digest of a file used by the benchmark corpus."""
+    """Return the SHA-256 digest of an executable, manifest, or input file."""
     digest = hashlib.sha256()
     try:
         with path.open("rb") as stream:

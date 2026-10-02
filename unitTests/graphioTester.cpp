@@ -200,6 +200,13 @@ int main()
         "bad count\nnot-an-integer\n\n\n\n",
         "graph size must be an integer"
     );
+    for (const char *invalidCount : {"+", "++0", "+-0", "--0"})
+    {
+        expectRejected(
+            string("malformed sign\n") + invalidCount + "\n\n\n\n",
+            "graph size must be an integer"
+        );
+    }
     expectRejected(
         "bad count\n2 3\n\nC C\n\n",
         "must contain one integer"

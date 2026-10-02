@@ -50,8 +50,8 @@ struct flatCanonGraph
 /**
  * @brief Canonical identity of an unrooted, labelled tree.
  *
- * A tree has either one centroid, represented by first alone, or two
- * centroids, represented by the sorted first/second pair and their connecting
+ * A tree has either one centre, represented by first alone, or two
+ * centres, represented by the sorted first/second pair and their connecting
  * bond. Zero is reserved for graphs without a tree canonical form.
  */
 struct treeCanonForm
@@ -448,11 +448,13 @@ inline treeCanonNodeId internTreeCanonNode(
  * AHU leaf peeling processes a complete layer at a time. Each removed node is
  * represented by an exact interned ID built from its atom label and sorted
  * (bond-label, child-ID) multiset. The one or two unremoved nodes are the tree
- * centroids, so no recursive traversal or subtree-string concatenation is
+ * centres, so no recursive traversal or subtree-string concatenation is
  * required.
  *
- * @param graph Acyclic, connected molGraph
- * @param n Retained for API compatibility; centroid selection is root-free.
+ * @param graph Connected acyclic molGraph or flatCanonGraph
+ * @param n Retained for API compatibility; centre selection is root-free.
+ * @return Exact tree identity, or an empty form when whole-graph
+ * canonicalisation is needed (including legacy X labels)
  */
 template<typename Graph>
 treeCanonForm centroidTreeCanonImpl(const Graph &graph, int n)

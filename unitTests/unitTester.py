@@ -38,7 +38,7 @@ MOLFILE_SUFFIXES = (".mol", ".sdf")
 
 
 class TestConfigurationError(RuntimeError):
-    """Raised when the manifest, a fixture, or a build setting is invalid."""
+    """Raised for invalid test setup, failed builds, or failed CLI checks."""
 
 
 @dataclass(frozen=True)
@@ -524,7 +524,7 @@ def run_string_output_alias_checks(executable: Path) -> int:
         root = Path(name)
         for target in ("inputOut", "input_0_Pathway", "input_1_Pathway"):
             for link_mode in ("symlink", "hardlink"):
-                for pathway in ((True,) if target == "inputOut" else (False, True)):
+                for pathway in (True,) if target == "inputOut" else (False, True):
                     case_directory = root / f"{target}-{link_mode}-{int(pathway)}"
                     case_directory.mkdir()
                     input_path = case_directory / "input"

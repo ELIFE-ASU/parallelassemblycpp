@@ -102,7 +102,7 @@ void testWidth(std::size_t width)
         assert(selected.activeWord(wordIndex) == expectedWord);
     }
 
-    // Parallel root jobs cross workers as plain words and are reconstructed
+    // Descendant task masks cross workers as plain words and are reconstructed
     // only after the receiving worker configures its own mask domain.
     std::vector<std::uint64_t> serialized(Mask::activeWordCount());
     for (std::size_t word = 0; word < serialized.size(); ++word)

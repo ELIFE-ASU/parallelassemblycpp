@@ -1,8 +1,5 @@
 #pragma once
 
-/**
- * @brief Print command-line usage and option documentation.
- */
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
 #define ASSEMBLY_TELEMETRY_OUTPUT_HELP \
     "  INPUTTelemetry.json   Search telemetry (--telemetry=1).\n"
@@ -10,6 +7,7 @@
 #define ASSEMBLY_TELEMETRY_OUTPUT_HELP ""
 #endif
 
+/** Print command-line usage and option documentation for this build. */
 void help()
 {
     cout << R"(ParallelAssemblyCpp

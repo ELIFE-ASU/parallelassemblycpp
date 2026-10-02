@@ -124,7 +124,7 @@ struct molGraph
     }
 
     /**
-     * @brief Get atom type for index i
+     * @brief Get the label of the atom at atomIndex
      */
     const string &atomType(size_t atomIndex) const
     {
@@ -229,7 +229,10 @@ public:
     }
 
     /**
-     * @brief For preprocessing, writes edgeList as hash map to detect duplicated bonds
+     * @brief Group edges by unordered endpoint labels and bond label
+     *
+     * Each entry stores the occurrence count and the first physical edge.
+     * Existing entries in edgeClasses are extended rather than cleared.
      */
     void writeEdgeList(
         std::unordered_map<
@@ -266,7 +269,7 @@ public:
     }
 
     /**
-     * @brief Used in preprocessing, removes edges in edgelist
+     * @brief Remove edges identified by the source-oriented writeEdgeList output
      */
     void negativeEdgeCollapse(vector<MoleculeEdge> &edgeList)
     {
@@ -281,13 +284,9 @@ public:
     }
 
     /**
-     * @brief For compensating for disjoint fragments in the JAI
+     * @brief Count connected components for optional assembly-index compensation
      *
-     */
-    /**
-     * @brief For compensating for disjoint fragments in the JAI
-     *
-     * @return int number of disjoint fragments
+     * @return Number of components, including isolated atoms
      */
     int disjointFragments() const
     {
@@ -320,10 +319,10 @@ public:
 };
 
 /**
- * @brief Preprocesses the graph by removing all unique edges for the pathway algorithm
+ * @brief Remove bond classes occurring once, since they cannot be duplicated
  * @param graph The input molGraph
- * @param writeback Edges removed during preprocessing
- * @return molGraph (the final output)
+ * @param writeback Receives removed edges in the input graph's adjacency indices
+ * @return Graph retaining its atoms and only non-unique bond classes
  */
 molGraph preprocessWriteback(
     const molGraph &graph,

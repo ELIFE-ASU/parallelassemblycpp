@@ -66,10 +66,11 @@ inline PARALLELASSEMBLYCPP_SEARCH_LOCAL cyclicCanonPeelingWorkspace cyclicCanonP
 /**
  * @brief Cached coloured-core representation with lazy exact labelling.
  *
- * Construction peels pendant trees, materialises the core once, and stores a
- * deterministic integer-refinement hash used by unordered_map. Exact
- * individualisation/refinement is performed only when two candidates meet in
- * a hash bucket; its canonical code is then cached in the key.
+ * Cyclic construction peels pendant trees and retains the coloured core;
+ * whole-graph fallback retains every vertex. A deterministic refinement hash
+ * supports unordered_map lookup. The exact code uses a dihedral encoder for
+ * simple cycles and individualisation/refinement otherwise. It is cached on
+ * demand for equality and materialised before a key is shared across workers.
  */
 struct cyclicCanonForm
 {

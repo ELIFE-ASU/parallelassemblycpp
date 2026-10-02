@@ -36,9 +36,10 @@ python benchmarks/graph_repair_benchmark.py \
   --csv-output build/graph-repair-bounds.csv
 ```
 
-The runner independently replays both heuristics' graph construction certificates
-and compares their join counts with the reviewed regression and provisional
-benchmark references. Use `--corpus benchmarks` for the 37-case benchmark manifest,
+The runner independently replays every graph-pair repetition's construction
+certificate and the trail baseline's certificate, then compares their join counts
+with the reviewed regression and provisional benchmark references. Use
+`--corpus benchmarks` for the 37-case benchmark manifest,
 or `--case NAME` to select individual inputs. It times the graph-pair calculation
 separately from parsing and validation. The Python trail baseline uses directed
 digram matching on deterministic simple paths with canonical whole-path
@@ -71,10 +72,12 @@ python benchmarks/graph_repair_speed.py \
 
 Choose a CPU allowed by your process affinity, or omit `--cpu` to inherit it.
 Each sample uses a fresh process; adjacent exact/bound runs alternate order.
-The probe separately reports calculation time excluding parsing and end-to-end
-process time. Pathway output is disabled for both methods. A timed-out or
+The probe reports calculation time excluding parsing; the Python driver measures
+end-to-end process time. Pathway output is disabled for both methods. A timed-out or
 enumeration-limited exact case is excluded from completed speedup statistics;
 timeout-derived ratios are reported only as lower bounds for process time.
+After the first timeout or incomplete exact result, later exact repetitions for
+that case are skipped while bound measurements continue.
 The returned indices are retained alongside timing because a heuristic upper
 bound has a different guarantee from a completed exact calculation. This measures
 the cost of obtaining each result, rather than acceleration of the exact search.
@@ -223,8 +226,9 @@ values are rejected.
 | `profile` | Longer search-heavy inputs; most expectations are provisional. |
 | `scaling` | Cumulative amino-acid and 64-bit mask-boundary series. |
 
-The largest scaling case has 100 bonds and can take several minutes and over
-1 GiB of memory. For a smoke run, use `--runs 1 --warmup 0`.
+The largest amino-acid scaling case has 100 bonds and can take several minutes
+and over 1 GiB of memory. The mask-boundary series extends to 129 bonds.
+For a smoke run, use `--runs 1 --warmup 0`.
 
 ## Common runs
 
@@ -443,10 +447,12 @@ python benchmarks/check_speedups.py \
   build/scaling.json
 ```
 
-The gate requires every case clock median and every suite round-total wall and
-clock median to exceed `1.0`. It recalculates medians from raw paired samples
-and rejects stale corpus or executable fingerprints. Shared CI does not enforce
-timing thresholds because host contention makes them unreliable.
+The gate requires every case's paired clock speedup median and every suite's
+paired round-total wall and clock speedup medians to exceed `1.0`.
+It recalculates medians from raw paired samples
+and rejects stale corpus fingerprints, inconsistent executable fingerprints, or
+mismatched execution configurations. Shared CI does not enforce timing thresholds
+because host contention makes them unreliable.
 
 Promotion reports require 100 rounds for `quick` and `full`, 6 for `profile`,
 and 30 for `scaling`.
@@ -588,8 +594,9 @@ once, then shares an immutable processed graph, canonical seed, runtime DAG,
 and serialized root-job table. Workers own their post-seed canonical deltas,
 fragmentation scratch, and search caches. MPI and hybrid ranks request disjoint
 chunks from a rank-zero global queue, so work follows each rank's actual local
-capacity while every root job is executed exactly once. Wide masks are rebuilt
-inside the receiving worker from serialized words.
+capacity while every root job is executed exactly once. Root occurrences borrow
+immutable serialized words; transferred descendant masks are rebuilt inside
+the receiving worker.
 
 The adaptive MPI default uses one-root worker leases, with each rank-level
 broker refill bundling one lease per local worker. This bounds tail imbalance
@@ -598,8 +605,8 @@ simply issue more requests. A low watermark starts one asynchronous pending
 refill while local root work remains. Replies carry the latest incumbent
 bound, and completed work requests are drained before global termination.
 All MPI progress stays on the initializing thread, preserving
-`MPI_THREAD_FUNNELED`. Serial/OpenMP scheduling retains guided leases for
-larger frontiers. Root jobs take priority over transferred work.
+`MPI_THREAD_FUNNELED`. Non-distributed parallel scheduling retains guided leases
+for larger frontiers. Root jobs take priority over transferred work.
 Within hybrid ranks, observed idle pressure can make a root search expose
 immediate children as depth-two tasks. The idle trigger is at least half the
 workers on ranks with fewer than eight local workers, and roughly one quarter

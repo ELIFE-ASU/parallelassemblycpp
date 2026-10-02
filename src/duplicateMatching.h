@@ -252,12 +252,13 @@ struct initialPotentialDuplicate : potentialDuplicate
     EdgeMask frontier = 0;
 
     /**
-     * @brief Construct a new potential Duplicate object
+     * @brief Seed a one-edge occurrence and its eligible expansion frontier
      *
      * @param x edge to be set
      * @param fragmentMask Edge mask of the fragment containing the duplicate
      * @param incidentEdges Precomputed compact atom-to-edge incidence index
-     * @param fragmentIndex Index of the fragment in its assembly state
+     * @param sourceFragmentIndex Index of the fragment in its assembly state
+     * @param index Retained node index in the one-edge initial DAG level
      */
     initialPotentialDuplicate(
         int x,
@@ -297,11 +298,14 @@ struct initialPotentialDuplicate : potentialDuplicate
     {}
 
     /**
-     * @brief Generate potential matches originating from this fragment and update the DAG
+     * @brief Retain unseen one-edge extensions of this occurrence in the initial DAG
      *
-     * @param q Potential duplicates which are isomorphic to this.mask
+     * @param q Receives newly retained child occurrences, each one edge larger
      * @param retainedStateCount Number of unique masks currently held in tempDag
      * @param tempDag Temporary DAG populated with generated children
+     * @param fragmentMask Allowed edges of the occurrence's parent fragment
+     * @param incidentEdges Atom-to-edge index used to extend child frontiers
+     * @return false if cancellation or the enumeration budget stops expansion
      */
     bool generateDAG(
         vector<initialPotentialDuplicate> &q,
@@ -744,13 +748,16 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
 {
     using duplicateSet::duplicateSet;
     /**
-     * @brief Generate size + 1 matchings from the current set and populate the DAG during the initial enumeration
+     * @brief Expand pairable occurrences into the next initial DAG level
      *
      * @param q list of potential duplicates
      * @param retainedStateCount Number of unique masks currently held in tempDag
      * @param tempDag the temporary DAG
-     * @return true if any valid matchings exist
-     * @return false otherwise
+     * @param fragments Assembly fragments containing these occurrences
+     * @param incidentEdges Atom-to-edge index used to extend child frontiers
+     * @param aliveScratch Reused flags identifying occurrences with a disjoint partner
+     * @return true if at least one pairable occurrence completed expansion;
+     * cancellation and enumeration-limit flags must be checked separately
      */
     bool dagPopulator(vector<initialPotentialDuplicate> &q,
     size_t &retainedStateCount,
@@ -1410,11 +1417,12 @@ private:
  * @param dag Runtime DAG used to enumerate child masks
  * @param duplicate the duplicate from which children are generated
  * @param duplicateLevel canonical classes receiving potential duplicates
+ * @param classIndex Reused canonical-ID lookup for the receiving level
  * @param fragmentMask the mask of the duplicate's parent fragment
- * @param duplicateSize the maximum allowed size of a duplicate
- * @param ordinal the maximum allowed index of a duplicate
+ * @param duplicateSize Edge count of the parent occurrence
+ * @param ordinal Maximum allowed canonical class ID for child occurrences
  * @param fragmentCount the number of fragments in the assembly state
- * @return true if the canonical index of any duplicate is greater than the ordinal
+ * @return true if an otherwise eligible child's canonical ID exceeds ordinal
  * @return false otherwise
  */
 bool dagGenerate(
@@ -1488,13 +1496,15 @@ bool dagGenerate(
  * @param dag Runtime DAG used to enumerate child masks
  * @param duplicates the duplicate set from which the next set is generated
  * @param duplicateLevel canonical classes receiving potential duplicates
- * @param takenMasks bitsets of all edges which could be part of a duplicate
- * @param stateMasks the bitsets of the original assembly state
- * @param ordinal the maximum allowed index of a duplicate
- * @param overweight true if the generation function has reached states which are larger than the ordinal
- * @param last true if this is to be the final iteration (previous iteration was overweight)
- * @return true if any valid duplicatable subgraphs found and not the final iteration
- * @return false
+ * @param classIndex Reused canonical-ID lookup for the receiving level
+ * @param takenMasks Per-fragment unions receiving edges of pairable occurrences
+ * @param stateFragments Current assembly fragments defining allowed edges
+ * @param ordinal Maximum allowed canonical class ID for child occurrences
+ * @param overweight Set when an otherwise eligible child exceeds ordinal
+ * @param last Record pairable masks without expanding another level
+ * @param aliveScratch Reused flags identifying occurrences with a disjoint partner
+ * @return true if expansion was attempted for a pairable occurrence and last
+ * is false; the caller must check cancellation separately
  */
 bool dagDuplicateGenerator(
     const vector<dagLevel> &dag,

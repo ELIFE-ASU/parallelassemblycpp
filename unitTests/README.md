@@ -38,11 +38,11 @@ python unitTests/unitTester.py build/release/ParallelAssemblyCpp --limit 20
 python unitTests/unitTester.py --build --pathways-only --verbose
 ```
 
-The harness always runs command-line checks before the selected regression
-cases. These cover validation, legacy names, limits, inputs, outputs, and Linux
-memory reporting. They also run the five-case upstream string corpus, validate
+Outside `--audit` mode, the harness runs command-line checks before the selected
+regression cases. These cover validation, legacy names, limits, inputs, outputs,
+and Linux memory reporting. They also run the five-case upstream string corpus, validate
 line-ending and incompatible-option behavior, and check per-line pathway JSON.
-Every canonical and legacy flag spelling is exercised on actual inputs, with
+Canonical and legacy flag spellings are exercised on actual inputs, with
 invalid values, duplicate aliases, unusual filenames, output failures, and
 disabled-output preservation checked separately. Graph-only flags in string
 mode and enabled reversal matching in graph mode must produce diagnostics.
@@ -54,10 +54,21 @@ Unicode strings also check scalar and encoding boundaries, embedded control
 characters, malformed UTF-8 byte offsets, and parity with serial, OpenMP, MPI,
 and hybrid execution. CLI checks preserve BOMs, combining marks, and Unicode
 line separators as symbols and verify that malformed records stop processing
-after preserving completed results. `--build` also
-compiles and runs the focused C++ tests, using an x86-64-v3 executable with
-telemetry as a test shortcut. Use a CMake portable build on older x86-64 or
-non-x86 systems.
+after preserving completed results.
+
+The CMake suite also runs `graphRepairTester.py`, which independently replays
+Re-Pair certificates and compares their bounds with an exact small-graph oracle.
+The `ci` preset enables its full exhaustive and randomized corpus.
+`graphRepairCliTester.py` checks the `--algorithm=full` and `--algorithm=re-pair`
+selectors, the legacy `--upper-bound=graph-repair` selector, incompatible options,
+and the distinct exact-search and heuristic certificate formats. Zero-runtime
+checks ensure that full search retains its trivial initial bound without a
+Re-Pair prepass.
+
+`--build` compiles and runs four standalone C++ tests: masks, tree and cyclic
+canonicalization, and string assembly. It then builds an x86-64-v3 executable
+with telemetry as a test shortcut. Use CMake for the complete unit-test suite
+and for portable builds on older x86-64 or non-x86 systems.
 
 Audit manifests and fixture coverage without running calculations:
 
