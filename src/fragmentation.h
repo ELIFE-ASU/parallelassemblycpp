@@ -9,8 +9,9 @@
  * @param result The resulting assembly state
  * @param workspace Buffers reused by successive fragmentation calls
  *
- * The caller may evaluate bitset-only bounds on the raw result. Unknown IDs
- * must be resolved before the state is hashed or recursively enumerated.
+ * The caller clears result before this append operation and sets its savings
+ * score separately. It may evaluate bitset-only bounds on the raw result.
+ * Unknown IDs must be resolved before hashing or recursive enumeration.
  */
 void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
     assemblyState &target,
@@ -24,8 +25,8 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
     vector<assemblyFragment> &fragments = target.fragments;
     const bool same =
         matching.firstFragmentIndex == matching.secondFragmentIndex;
-    // The retained copy is the only owning mask this step materialises; the
-    // residual parents are toggled directly from the read-only views.
+    // Materialise the retained occurrence once. Residual parent masks are
+    // toggled directly from the duplicate views without owning duplicate copies.
     result.appendFragment(
         matching.first.toMask(),
         matching.maximumFragmentSize,
@@ -93,6 +94,7 @@ void fragmentAssemblyStateWithoutCanonisationWithWorkspace(
  *
  * @param target The raw fragmented state
  * @param key Canonical fragment indices, with the retained fragment first
+ * @param workspace Receives canonical IDs for cached residual decompositions
  * @return false when the search should stop, otherwise true
  */
 bool canoniseAssemblyStateAndBuildKey(

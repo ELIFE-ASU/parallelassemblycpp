@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -81,6 +84,47 @@ class GraphRepairSpeedTests(unittest.TestCase):
             graph["assembly_index"] = bound
             with self.subTest(bound=bound), self.assertRaisesRegex(ValueError, "bound"):
                 speed.summarize_case(self.case, [self.sample("exact"), graph], 1)
+
+    def test_bound_below_reviewed_index_is_rejected_without_exact_result(self) -> None:
+        graph = self.sample("graph")
+        graph["assembly_index"] = 2
+        with self.assertRaisesRegex(ValueError, "bound below reviewed index"):
+            speed.summarize_case(self.case, [graph], 1)
+
+    def test_invalid_probe_timings_are_rejected(self) -> None:
+        for field in ("algorithm_seconds", "cpu_seconds"):
+            for value in (float("nan"), float("inf"), -1, True, "1", None):
+                finished = self.sample("exact")
+                finished.update(event="finished", succeeded=True)
+                finished[field] = value
+                output = (
+                    '{"event":"started","method":"exact"}\n'
+                    + json.dumps(finished)
+                    + "\n"
+                )
+                process = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+                with (
+                    self.subTest(field=field, value=value),
+                    patch.object(speed.subprocess, "run", return_value=process),
+                    self.assertRaisesRegex(ValueError, f"invalid {field}"),
+                ):
+                    speed.run_sample(Path("probe"), self.case, "exact", 10)
+
+    def test_nonfinite_timeout_is_rejected_before_running(self) -> None:
+        for timeout in ("nan", "inf", "-inf"):
+            with (
+                self.subTest(timeout=timeout),
+                patch.object(
+                    speed.sys,
+                    "argv",
+                    ["probe", "--probe=p", "--json-output=o", f"--timeout={timeout}"],
+                ),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+                self.assertRaises(SystemExit) as error,
+            ):
+                speed.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn("timeout must be finite and positive", stderr.getvalue())
 
     def test_alternating_order_and_warmup(self) -> None:
         with patch.object(

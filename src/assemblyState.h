@@ -7,7 +7,7 @@ struct assemblyState
 {
     /// @brief Fragment masks and metadata kept valid as one unit
     vector<assemblyFragment> fragments;
-    /// @brief number of duplicated bonds
+    /// @brief Join savings accumulated by removing duplicate occurrences
     int sumDupBonds = 0;
 
     void appendFragment(
@@ -71,12 +71,13 @@ struct assemblyState
     }
 
     /**
-     * @brief Old branch and bound heuristic, used only during initial enumeration
+     * @brief Bound further join savings using the first fragment's size limit
      *
-     * @return int (maximum duplicatable bonds value). Lower bound MA is total
-     * bonds - 1 - this value.
+     * @pre The state contains a first fragment defining the duplicate-size limit.
+     * @return Upper bound on additional savings. Subtract this value from
+     * assemblyIndex() to obtain a lower bound on the assembly index.
      */
-    int maxDupBonds()
+    int maxDupBonds() const
     {
         return maxDupBonds(fragments[0].edgeCount);
     }
@@ -84,7 +85,8 @@ struct assemblyState
     /**
      * @brief Bound duplicatable bonds using eligible edges in each fragment
      *
-     * @param targetMasks The vector of bitsets used in place of sizeList
+     * @param maximumFragmentSize Duplicate size, at least two
+     * @param targetMasks Eligible-edge mask or count for each state fragment
      */
     template<typename MaskRange>
     int maxDupBonds(
@@ -109,10 +111,13 @@ struct assemblyState
     }
 
     /**
-     * @brief Like the function above but finds the maximum duplicate bonds for a vector of vector of bitsets
+     * @brief Build prefix bounds on further savings for increasing duplicate sizes
      *
-     * @param maximumByFragmentSize The result vector
-     * @param targetMasks The vector of vector of bitsets
+     * @param maximumByFragmentSize Output indexed by duplicate size minus two;
+     * each entry bounds savings for that size or any smaller size
+     * @param maximumFragmentSize Largest duplicate size to consider
+     * @param targetMasks Eligible-edge counts or masks indexed by duplicate
+     * size minus two, then by state fragment; size two uses the unrestricted bound
      */
     template<typename MaskTable>
     void maxDupBondsPrefix(
@@ -164,10 +169,10 @@ struct assemblyState
     }
 
     /**
-     * @brief The simple branch and bound from v4
+     * @brief Bound further join savings without restricting eligible edges
      *
      * @param maximumFragmentSize The maximum allowed fragment size
-     * @return int The maximum number of duplicatable bonds
+     * @return Upper bound on additional savings across permitted duplicate sizes
      */
     int maxDupBonds(int maximumFragmentSize) const
     {
@@ -223,21 +228,21 @@ private:
 public:
 
     /**
-     * @brief Old branch and bound. Only used during initial enumeration
+     * @brief Bound the assembly index using unrestricted duplicate eligibility
      *
-     * @return int The Lower bound
+     * @return Lower bound on the assembly index
      */
-    int lowerBoundAssemblyIndex()
+    int lowerBoundAssemblyIndex() const
     {
         return static_cast<int>(totalBonds) - sumDupBonds - 1 - maxDupBonds();
     }
 
     /**
-     * @brief Upper bound MA given the sum of duplicatable bonds
+     * @brief Upper bound on the assembly index from savings already realised
      *
      * @return int The upper bound
      */
-    int assemblyIndex()
+    int assemblyIndex() const
     {
         return static_cast<int>(totalBonds) - sumDupBonds - 1;
     }
@@ -245,9 +250,12 @@ public:
     /**
      * @brief Build the canonical fragment key used by the transposition table.
      *
+     * The retained fragment stays first; the remaining IDs are sorted. Every
+     * fragment must already have a resolved canonical ID.
+     *
      * @param sorted Reused storage populated with the canonical key
      */
-    void assemblyHashCalculator(IntegerVector &sorted)
+    void assemblyHashCalculator(IntegerVector &sorted) const
     {
         sorted.resize(fragments.size());
         for (

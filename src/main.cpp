@@ -1207,8 +1207,9 @@ void MpiDistributedSearchController::notifyScheduler() noexcept
  * Consume an already prepared root frontier on this thread.
  *
  * With a target, the traversal stops at the first deterministic witness for
- * the proven optimum. Without one it is the serial fallback used after the
- * automatic work decision, avoiding a second root/DAG enumeration.
+ * that index, which may be best-so-far when enumeration was limited. Without
+ * one it is the serial fallback used after the automatic work decision,
+ * avoiding a second root/DAG enumeration.
  */
 template<bool trackPath>
 bool runPreparedDeterministicSearch(
@@ -1692,8 +1693,8 @@ ParallelSearchResult runParallelSearch(
                 setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
 #endif
             {
-                // Construct and destroy every EdgeMask-owning object on this
-                // worker; only the primitive job index crosses the queue.
+                // Construct and destroy owning EdgeMasks on this worker.
+                // Queues transfer root ordinals or serialized descendant masks.
                 WorkerContext worker(
                     searchContext,
                     static_cast<size_t>(threadIndex)
@@ -2835,7 +2836,7 @@ bool assemblyCalculator(const string &input)
 
     if (isPrimaryProcess())
         outputFile << outputBase << " has assembly index: ";
-    // improvedBnB propagates recoverPathway2's requested-output status.
+    // Search success includes writing any requested pathway or certificate.
     bool calculationSucceeded = false;
     try
     {

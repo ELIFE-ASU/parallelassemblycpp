@@ -93,12 +93,14 @@ struct Options
     size_t shardCount = 1;
     // A nonnegative target stops serial reconstruction at its first witness.
     int targetAssemblyIndex = -1;
-    // Replay the winning bound serially to preserve pathway ordering.
+    // Replay a completed parallel/sharded search serially for deterministic
+    // pathway ordering. Witnesses are retained even when replay is disabled.
     bool reconstructPathway = true;
 };
 
 struct Result
 {
+    // The empty string has index -1; a single symbol has index zero.
     int assemblyIndex = -1;
     unsigned long long clockTicks = 0;
     bool runtimeLimitReached = false;
@@ -109,7 +111,7 @@ struct Result
 namespace implementation
 {
 
-/** Decode symbols once, retaining byte boundaries when writing UTF-8 text. */
+/** Decode UTF-8 symbols, optionally appending their byte offsets and the end. */
 inline std::u32string decodeInput(
     std::string_view input,
     std::vector<size_t> *byteOffsets = nullptr
@@ -1294,11 +1296,19 @@ inline std::vector<Interval> remnantIntervals(
 
 } // namespace implementation
 
+/**
+ * Search one UTF-8 string, counting Unicode scalar values without normalization.
+ * A stopped or sharded search returns its best witnessed index, which need not
+ * be the global minimum. clockTicks excludes UTF-8 decoding.
+ *
+ * @throws std::invalid_argument for invalid UTF-8 or unsupported search options
+ */
 inline Result calculate(const std::string &input, const Options &options = {})
 {
     return implementation::Search(implementation::decodeInput(input), options).run();
 }
 
+/** Write ASCII JSON for a witness belonging to input; report failures in error. */
 inline bool writePathway(
     const std::string &filename,
     const std::string &input,

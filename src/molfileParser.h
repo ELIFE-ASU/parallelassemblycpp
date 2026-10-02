@@ -91,7 +91,16 @@ namespace molfileParserDetail
     }
 }
 
-/** Parse a V2000 molfile into a molecular graph. */
+/**
+ * Parse the header, atom block, and bond block of one V2000 record.
+ *
+ * Coordinates, atom properties other than the symbol, and bond properties
+ * other than the order are ignored. Property and subsequent SDF records are
+ * left unread. The removeHydrogens and verbose options control filtering and
+ * diagnostic output. Replace molecule only after the graph validates.
+ *
+ * @throws std::runtime_error if a required field is missing or invalid
+ */
 void molfileParser(std::istream &molfile, molGraph &molecule)
 {
     std::string currLine;

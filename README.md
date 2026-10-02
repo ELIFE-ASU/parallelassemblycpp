@@ -233,6 +233,11 @@ the declared range, or has order zero, and an atom label is rejected when it is
 not valid UTF-8. A rejected input produces a diagnostic on standard error and a
 non-zero exit status, and writes no output files.
 
+V2000 parsing uses the atom symbols and bond orders. Coordinates, charges,
+isotopes, stereochemistry, and other property fields do not contribute to the
+graph labels. The atom and bond blocks are read; trailing property blocks and
+later SDF records are ignored.
+
 A lone `--` ends option parsing, and every later argument is read as `INPUT`.
 Use it to pass an input whose name begins with a dash, which is otherwise
 rejected as an unknown option:
@@ -277,17 +282,19 @@ Disabled boolean options such as `--compensate-disjoint=0` remain accepted.
 `--threads` is only used when `--parallel` is `auto` or `on`.
 `--memory-report=1` is rejected outside Linux, and fails if `memUsage` refers
 to the input file, preserving the input.
-`--threads=auto` treats the OpenMP runtime default (including `OMP_NUM_THREADS`)
-as an upper limit. Once the prepared root jobs and DAG indicate enough work
+For molecular graphs, `--threads=auto` treats the OpenMP runtime default
+(including `OMP_NUM_THREADS`) as an upper limit. Once the prepared root jobs
+and DAG indicate enough work
 for parallel search, it estimates one worker per 32,768 work units and rounds
 the budget up to teams of 8, 16, 32, and so on. The eight-worker starting budget
 leaves room for recursive work that this estimate can understate. The budget is
 divided across launched MPI ranks, retaining at least one thread per rank.
 Explicit thread counts apply to each process and are never reduced by this cap.
 
-In a parallel-enabled executable, `--parallel=auto` prepares the root jobs and
-DAG, then uses their estimated search work to choose parallel or serial
-execution. A serial fallback reports its reason. `--parallel=on` forces parallel
+For molecular graphs in a parallel-enabled executable, `--parallel=auto`
+prepares the root jobs and DAG, then uses their estimated search work to choose
+parallel or serial execution. A serial fallback reports its reason.
+`--parallel=on` forces parallel
 search; automatic threads still use the workload cap, with at least two workers
 in a single process. It fails if parallel execution cannot be honored, such as
 when only one worker is available. `--parallel=off` always uses serial search.
@@ -365,6 +372,7 @@ String files must contain valid UTF-8. Each Unicode code point is one symbol;
 no Unicode normalization is applied. LF and CRLF line endings are accepted,
 empty lines are separate strings, and the last line need not end in a newline.
 Pathway positions and lengths count code points rather than UTF-8 bytes.
+The empty string has assembly index `-1`; a one-symbol string has index `0`.
 
 Results are written to `strings.txtOut`. With pathway output enabled, the
 zero-based line number is included in each pathway name, such as
@@ -385,6 +393,8 @@ reconstruct the pathway in serial order, so indices and pathway JSON match
 serial execution. Use `--pathway=0` to skip reconstruction. Parallel overhead
 can outweigh the benefit for short strings or searches with few branches;
 OpenMP teams are capped by the number of local root branches.
+With compatible options and multiple workers, `--parallel=auto` uses parallel
+string search without applying the molecular DAG workload threshold.
 
 Telemetry and intermediate-index output remain unavailable in string mode.
 A finite `--runtime` budget applies separately to each line and requires serial
@@ -447,9 +457,10 @@ OMP_NUM_THREADS=8 OMP_PLACES=cores OMP_PROC_BIND=close \
     --parallel=on --threads=8
 ```
 
-Parallel search does not change the outputs: this writes
-`benchmarks/inputs/paclitaxelOut` and `benchmarks/inputs/paclitaxelPathway`
-exactly as a serial run would. An explicit `--threads` count applies to the
+This writes `benchmarks/inputs/paclitaxelOut` and
+`benchmarks/inputs/paclitaxelPathway`, using the same filenames as serial search.
+Completed searches return the same index and pathway; timings differ.
+An explicit `--threads` count applies to the
 process as given, while `OMP_PLACES` and `OMP_PROC_BIND` pin the threads to
 distinct cores so each worker keeps its caches local.
 
@@ -464,9 +475,9 @@ serial choice on standard error:
 parallel: serial fallback: estimated work 0 (0 root jobs x 3 retained DAG nodes) is below 32768
 ```
 
-Alanine is far too small to repay coordination. `--parallel=on` turns that same
-condition into an error, which is what a scaling script wants when a serial run
-would be measured by mistake.
+Alanine offers too little search work to benefit from parallel coordination.
+`--parallel=on` bypasses this workload threshold and runs the parallel search,
+provided at least two workers are available and the selected options permit it.
 
 ### MPI
 
@@ -563,12 +574,19 @@ several inputs sequentially without process startup between items. Library calls
 do not create output files. Search state is process-global, so the API is
 reusable but not thread-safe; use separate processes for concurrent work.
 
+A successful `CalculationResult` means a calculation produced an index; it does
+not by itself establish minimality. The result is a proven minimum only when
+`runtimeLimitReached`, `enumerationLimitReached`, and `upperBoundOnly` are all
+false. `clockTicks` measures search time, excluding input parsing. Batch results
+preserve input order, and a failed or limited item does not stop later items.
+
 Set `CalculationOptions::graphRepairUpperBound = true` to select the experimental
 GraphRePair-inspired bound through any library entry point. A successful result
 then has `CalculationResult::upperBoundOnly == true`, and `assemblyIndex` holds
 the upper bound. The runtime budget must remain unlimited; the enumeration limit
-does not apply to this mode. Exact calls retain the default `upperBoundOnly ==
-false` (runtime or enumeration limits can still prevent an exact proof).
+must still be positive but does not limit this mode. Exact calls retain the
+default `upperBoundOnly == false` (runtime or enumeration limits can still
+prevent an exact proof).
 
 </details>
 

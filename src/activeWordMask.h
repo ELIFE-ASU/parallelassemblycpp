@@ -19,6 +19,9 @@
     #define PARALLELASSEMBLYCPP_SEARCH_LOCAL
 #endif
 
+template<typename Domain>
+class ActiveWordMaskView;
+
 /**
  * @brief Runtime-width bit mask with an exact one-word small specialization.
  *
@@ -34,9 +37,6 @@
  * OpenMP worker a thread-local domain and arena, so the non-atomic reference
  * counts never cross a worker boundary.
  */
-template<typename Domain>
-class ActiveWordMaskView;
-
 template<typename Domain>
 class ActiveWordMask
 {
@@ -1225,7 +1225,10 @@ public:
     ActiveWordMaskView(const mask_type &mask) noexcept:
         ActiveWordMaskView(mask.view()) {}
 
-    /** View one inline word; the domain must not exceed one word. */
+    /**
+     * View one inline word; the domain must not exceed one word and bits
+     * outside its logical width must already be zero.
+     */
     [[nodiscard]] static ActiveWordMaskView fromWord(word_type word)
     {
         ActiveWordMaskView result;
@@ -1239,7 +1242,10 @@ public:
         return result;
     }
 
-    /** View activeWordCount() words owned elsewhere (null reads as empty). */
+    /**
+     * View activeWordCount() words owned elsewhere (null reads as empty).
+     * The words must have no set bits outside the configured logical width.
+     */
     [[nodiscard]] static ActiveWordMaskView fromWords(
         const word_type *words
     ) noexcept

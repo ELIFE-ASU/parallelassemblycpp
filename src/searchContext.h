@@ -762,8 +762,9 @@ public:
             std::memory_order_relaxed
         ));
         // On substantial frontiers, arm depth-two donation just before the
-        // last root tranche so its first child can be handed off. Compact
-        // frontiers wait for demonstrated idleness and avoid transfer cost.
+        // last root tranche so its first child can be handed off. Sparse
+        // frontiers are armed in the constructor; other compact frontiers
+        // wait for demonstrated idleness before enabling donation.
         if (
             proactiveTailRefillEnabled &&
             rankRootJobCount - end < lowWatermark &&

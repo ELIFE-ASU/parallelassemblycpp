@@ -13,12 +13,12 @@ struct assemblyPathStep
 };
 
 /**
- * @brief Subroutine of the pathway reconstruction function
+ * @brief Write selected search-target edges as a JSON array of endpoint pairs.
  *
  * @param mask Bitset representing edges to output
  * @param outputStream Output file stream
  */
-void printMaskAsEdgeList(EdgeMask mask, ofstream &outputStream)
+void printMaskAsEdgeList(const EdgeMask &mask, ofstream &outputStream)
 {
     const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
     outputStream << "[";
@@ -38,7 +38,7 @@ void printMaskAsEdgeList(EdgeMask mask, ofstream &outputStream)
 }
 
 /**
- * @brief Subroutine of the pathway reconstruction function
+ * @brief Write all input-graph edges before search preprocessing.
  *
  * @param outputStream Output file stream
  */
@@ -95,7 +95,7 @@ void printBondColour(short type, ostream &output)
 }
 
 /**
- * @brief Subroutine of the pathway reconstruction function
+ * @brief Write one retained/duplicated edge pair as a JSON pathway step.
  *
  * @param step Matching pair to output
  * @param outputStream Output file stream
@@ -110,7 +110,7 @@ void printMatching(const assemblyPathStep &step, ofstream &outputStream)
 }
 
 /**
- * @brief Subroutine of the pathway reconstruction function
+ * @brief Write the input graph after optional explicit-hydrogen removal.
  *
  * @param outputStream Output file stream
  */
@@ -123,9 +123,9 @@ void printOriginalGraph(ofstream &outputStream)
         atomIndex++
     )
     {
-            outputStream << atomIndex;
-            if (atomIndex < originalMolecule.atoms.size() - 1)
-                outputStream << ',';
+        outputStream << atomIndex;
+        if (atomIndex < originalMolecule.atoms.size() - 1)
+            outputStream << ',';
     }
     outputStream << "],\n";
     outputStream << "\"Edges\": ";
@@ -167,20 +167,20 @@ void printOriginalGraph(ofstream &outputStream)
 
 
 /**
- * @brief Subroutine of the pathway reconstruction function
+ * @brief Write search-target edges left after the witness's duplications.
  *
  * @param mask Bitset representing target-graph edges to remove
  * @param outputStream Output file stream
  */
-void printRemnantGraph(EdgeMask mask, ofstream &outputStream)
+void printRemnantGraph(const EdgeMask &mask, ofstream &outputStream)
 {
     const vector<MoleculeEdge> &edgeList = searchUniverseEdgeList();
     const molGraph &molecule = searchTargetMolecule();
-    EdgeMask dual = allEdges ^ mask;
+    const EdgeMask remnantEdges = allEdges ^ mask;
     AtomMask remnantAtoms = 0;
     for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
     {
-        if (dual[edgeIndex])
+        if (remnantEdges[edgeIndex])
         {
             remnantAtoms.set(edgeList[edgeIndex].sourceAtomIndex);
             remnantAtoms.set(edgeList[edgeIndex].targetAtomIndex);
@@ -199,7 +199,7 @@ void printRemnantGraph(EdgeMask mask, ofstream &outputStream)
     }
     outputStream << "],\n";
     outputStream << "\"Edges\": ";
-    printMaskAsEdgeList(dual, outputStream);
+    printMaskAsEdgeList(remnantEdges, outputStream);
     outputStream << ",\n";
     outputStream << "\"VertexColours\": [";
     first = true;
@@ -217,7 +217,7 @@ void printRemnantGraph(EdgeMask mask, ofstream &outputStream)
     first = true;
     for (size_t edgeIndex = 0; edgeIndex < edgeList.size(); edgeIndex++)
     {
-        if (dual[edgeIndex])
+        if (remnantEdges[edgeIndex])
         {
             if (!first) outputStream << ',';
             printBondColour(
@@ -234,7 +234,7 @@ void printRemnantGraph(EdgeMask mask, ofstream &outputStream)
 }
 
 /**
- * @brief Pathway reconstruction function, which outputs the original graph, remnants and duplicates to a file
+ * @brief Serialize the captured witness, input graph, and remnants as JSON.
  *
  * Outputs the pathway to the file named by moleculeName, normally INPUTPathway.
  *

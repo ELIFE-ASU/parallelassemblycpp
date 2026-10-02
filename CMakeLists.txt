@@ -1281,9 +1281,10 @@ else()
 endif()
 set(CPACK_SOURCE_GENERATOR TGZ)
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "parallelassemblycpp-${PROJECT_VERSION}-source")
+# A linked worktree has a .git file instead of a metadata directory.
 set(
   CPACK_SOURCE_IGNORE_FILES
-  "/\\.git/"
+  "/\\.git($|/)"
   "/\\.agents/"
   "/\\.codex/"
   "/build/"

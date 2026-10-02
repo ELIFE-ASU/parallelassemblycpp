@@ -1,5 +1,5 @@
-// One calculation per process: parsing and process startup are timed separately
-// by graph_repair_speed.py; this timer covers preparation plus calculation.
+// One calculation per process: graph_repair_speed.py times the whole process.
+// The timers below exclude parsing and cover preparation plus calculation.
 #define PARALLELASSEMBLYCPP_NO_MAIN
 #include "../src/main.cpp"
 #include <iomanip>

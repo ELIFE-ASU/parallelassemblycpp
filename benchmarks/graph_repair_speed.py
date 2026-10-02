@@ -13,6 +13,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import statistics
@@ -81,8 +82,9 @@ def run_sample(probe: Path, case: dict, method: str, timeout: float) -> dict:
         if not sample["succeeded"]:
             raise ValueError(f"{case['name']} {method}: calculation failed")
         for field in ("algorithm_seconds", "cpu_seconds"):
-            if sample[field] < 0:
-                raise ValueError(f"invalid {field}: {sample[field]}")
+            value = sample.get(field)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"invalid {field}: {value}")
         sample["end_to_end_seconds"] = elapsed
         return sample
     except subprocess.TimeoutExpired as error:
@@ -128,6 +130,8 @@ def summarize_case(case: dict, samples: list[dict], runs: int) -> dict:
                 raise ValueError(f"{case['name']}: bound outside the trivial range")
             if exact is not None and row["assembly_index"] < exact:
                 raise ValueError(f"{case['name']}: bound below completed exact result")
+            if case["expectation"] == "reviewed" and row["assembly_index"] < reference:
+                raise ValueError(f"{case['name']}: bound below reviewed index")
 
     stats = {}
     for method in ("exact", "graph"):
@@ -287,8 +291,16 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--csv-output", type=Path)
     arguments = parser.parse_args()
-    if arguments.runs < 1 or arguments.warmup < 0 or arguments.timeout <= 0:
-        parser.error("runs and timeout must be positive; warmup must be nonnegative")
+    if (
+        arguments.runs < 1
+        or arguments.warmup < 0
+        or not math.isfinite(arguments.timeout)
+        or arguments.timeout <= 0
+    ):
+        parser.error(
+            "runs must be positive; timeout must be finite and positive; "
+            "warmup must be nonnegative"
+        )
     try:
         probe = arguments.probe.resolve(strict=True)
         cases = load_cases(arguments.case)

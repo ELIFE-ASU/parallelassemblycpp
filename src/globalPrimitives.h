@@ -153,7 +153,7 @@ inline PARALLELASSEMBLYCPP_SEARCH_LOCAL const vector<MoleculeEdge>
         ? universeEdgeList : *sharedUniverseEdgeList;
 }
 
-/// Hash table for edgelists for pathway algorithm
+/// Edge-mask cache of canonical class IDs and reuse counts at insertion time
 PARALLELASSEMBLYCPP_SEARCH_LOCAL std::unordered_map<EdgeMask, IntegerPair>
     bitsetHashTable;
 
@@ -241,7 +241,7 @@ unsigned long long elapsedClockTicks()
 }
 
 /**
- * @brief Cooperatively stop the search once its std::clock budget is spent.
+ * @brief Cadence for runtime-budget checks and distributed progress polling.
  */
 constexpr size_t searchStopPollInterval = 128;
 static_assert(std::has_single_bit(searchStopPollInterval));

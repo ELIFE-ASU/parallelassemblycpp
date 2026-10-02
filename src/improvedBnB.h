@@ -3,12 +3,14 @@
 #include "compilerAttributes.h"
 
 /**
- * @brief Enumerate all subgraphs during the initial phase of the pathway algorithm. See Seet et al section 4.3 Duplicate Enumeration
+ * @brief Enumerate connected duplicate candidates and build the runtime DAG
  *
  * @param target The initial assembly state
- * @param duplicateLevels The matchings found
- * @return true if any matchings found
- * @return false if no matchings found
+ * @param duplicateLevels Receives canonical classes of candidate occurrences
+ * @param classIndex Reused canonical-ID lookup for each generated level
+ * @param dag Receives immutable levels for subsequent enumeration
+ * @return true if pairable occurrences were found; false if none were found
+ * or cancellation or the enumeration budget stopped construction
  */
 bool initialRecursiveEnumeration(
     assemblyState &target,
@@ -145,10 +147,14 @@ bool initialRecursiveEnumeration(
 }
 
 /**
- * @brief Enumerate all subgraphs during subsequent phases of the pathway algorithm using the DAG to speed things up.  See seet et al section 4.3 Duplicate Enumeration
+ * @brief Enumerate a state's duplicate candidates through the retained DAG
  *
- * @param target Target assembly state
- * @return Maximum duplicate size reached
+ * @param dag Immutable transitions and retained occurrence masks
+ * @param target State whose fragment masks are trimmed to pairable edges
+ * @param frame Receives duplicate levels and per-fragment eligible-edge unions
+ * @param classIndex Reused canonical-ID lookup for each generated level
+ * @param edgeCount Number of physical edges in the processed molecule
+ * @return Maximum duplicate size reached, or zero on cancellation
  */
 int dagRecursiveEnumeration(
     const vector<dagLevel> &dag,
@@ -348,8 +354,8 @@ void configureHomogeneousPathEdgePositions(vector<int> &edgePositions)
  * @brief Compute the targeted and unrestricted post-fragment bounds together
  * in one pass over the child fragments.
  * @param target The target assembly state
- * @param matchMask The bitset of all graphs isomorphic to the matching
- * @param maxFragMask The bitset of all duplicatable subgraphs with the same bitset count as the matching
+ * @param matchMask Union of edges in occurrences of the selected canonical class
+ * @param maxFragMask Union of edges in pairable occurrences of the selected size
  * @param boundTotals Reusable scratch for each unrestricted duplicate size
  * @return int the largest remaining duplicate-bond estimate
  */
@@ -1204,12 +1210,14 @@ bool continueAssemblySearchWithWorkspace(
 }
 
 /**
- * @brief The recursive function that enumerates duplicates and generates assembly states on all but the first pass
- * of the assembly algorithm
+ * @brief Search a non-root state by enumerating and removing duplicate pairs
  *
+ * @param dag Immutable DAG used to enumerate surviving occurrences
  * @param input The input assembly state
- * @param bestAssemblyIndex The global minimum assembly index found
+ * @param bestAssemblyIndex Worker's current incumbent, refreshed from shared
+ * state when parallel search is active
  * @param fragmentationWorkspace Buffers reused across the search
+ * @param searchStorage Reused frames, transposition tables, and optional witness
  */
 template<
     matchingEquivalenceMode equivalenceMode,
@@ -1259,7 +1267,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
 
     if (searchShouldStop()) return;
 
-    /// Find the fragment-size-specific assembly-index lower bounds
+    // Bound further duplicate savings for each permitted maximum size.
     IntegerVector &maximumByFragmentSize = frame.maximumByFragmentSize;
     input.maxDupBondsPrefix(
         maximumByFragmentSize,
@@ -1886,12 +1894,13 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
 }
 
 /**
- * @brief The recursive function that enumerates duplicates and generates assembly states on the first pass
- * of the assembly algorithm
+ * @brief Build the initial DAG and search duplicate removals from the root
  *
+ * @param dag Receives the immutable DAG used by recursive child searches
  * @param input The input assembly state
- * @param bestAssemblyIndex The global minimum assembly index found
+ * @param bestAssemblyIndex Current incumbent assembly index
  * @param fragmentationWorkspace Buffers reused across the search
+ * @param searchStorage Transposition tables and optional pathway witness
  */
 template<matchingEquivalenceMode equivalenceMode, bool trackPath>
 void initialRecursiveAssemblyWithWorkspaceImpl(
@@ -2895,7 +2904,7 @@ bool runAndRecycleParallelTask(
     return completed;
 }
 
-/** Dynamically lease roots and consume adaptively exposed depth-two work. */
+/** Dynamically lease roots and consume adaptively exposed descendant work. */
 template<bool useSharedStates>
 void runParallelRootJobs(
     const SearchContext &context,
@@ -2971,7 +2980,7 @@ void runParallelRootJobs(
             ownsDistributedSearchProgress
         ) activeDistributedSearch->progress();
 
-        // Root work remains the normal scheduling frontier. Depth-two tasks
+        // Root work remains the normal scheduling frontier. Descendant tasks
         // are consumed only after no root lease is immediately claimable. A
         // distributed wait is not completion: another local chunk may still
         // be in flight, even on an MPI-only rank with no descendant transfers.
@@ -3009,10 +3018,10 @@ void runParallelRootJobs(
 }
 
 /**
- * @brief Function that calls the recursive assembly function
+ * @brief Prepare molecular search state and run the selected assembly search
  *
  * @param molecule The target molGraph
- * @param outputStream The output file
+ * @param outputStream Destination for the assembly index and search-limit status
  * @return false only when a requested pathway could not be written.
  */
 bool improvedBnB(molGraph &molecule, ofstream &outputStream)
