@@ -330,10 +330,10 @@ without enumerating every connected subgraph:
 ./build/release/ParallelAssemblyCpp molecule.mol --algorithm=re-pair
 ```
 
-Full mode runs the exact solver directly, without a Re-Pair prepass. The
-Re-Pair calculation is available only when explicitly selected as bound-only
-mode. The same distinction applies to the library's `graphRepairUpperBound`
-option.
+Graph full mode runs the exact solver directly, without a Re-Pair prepass. The
+graph Re-Pair calculation is available only when explicitly selected as
+bound-only mode. The same distinction applies to the library's
+`graphRepairUpperBound` option.
 
 The earlier `--upper-bound=graph-repair` option is still supported. Use one
 selector per command; combining it with `--algorithm` is an error.
@@ -375,6 +375,13 @@ no Unicode normalization is applied. LF and CRLF line endings are accepted,
 empty lines are separate strings, and the last line need not end in a newline.
 Pathway positions and lengths count code points rather than UTF-8 bytes.
 The empty string has assembly index `-1`; a one-symbol string has index `0`.
+
+Exact string search starts with a Re-Pair construction and retains its pathway
+as the initial incumbent. LZ-style bounds then prune branches that cannot
+improve it, including ties; the retained witness remains valid when the seed
+is already optimal. Search can improve a suboptimal seed and proves the
+minimum on completion. The prepass shares the search's runtime and cancellation
+budget; a zero budget or immediate cancellation retains the trivial bound.
 
 Results are written to `strings.txtOut`. With pathway output enabled, the
 zero-based line number is included in each pathway name, such as
@@ -436,8 +443,8 @@ String Re-Pair is serial, including in OpenMP and MPI executables.
 `--parallel=auto` reports a serial fallback; `--parallel=on`, explicit runtime
 or enumeration limits, telemetry, and intermediate-index output are rejected.
 UTF-8 validation, line handling, reversal semantics, and output filenames match
-full string mode. `--algorithm=full` remains the default and runs exact search
-directly. A Re-Pair bound may exceed the minimum.
+full string mode. `--algorithm=full` remains the default and uses the construction
+to seed exact search. A Re-Pair bound alone may exceed the minimum.
 
 The implementation uses collision-free substring ranks and updates adjacent
 occurrences locally, with deterministic frequency selection. Time and space

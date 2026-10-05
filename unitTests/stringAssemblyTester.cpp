@@ -26,6 +26,7 @@ using parallelassemblycpp::detail::stringAssembly::writePathway;
 
 namespace implementation =
     parallelassemblycpp::detail::stringAssembly::implementation;
+namespace repair = parallelassemblycpp::detail::stringRepair;
 
 namespace
 {
@@ -440,6 +441,161 @@ void requireSamePathway(
             description + ": pathway step " + std::to_string(index) +
                 " differs from serial search"
         );
+    }
+}
+
+Result repairWitness(const std::string &input, bool acceptReversed)
+{
+    const repair::Result grammar = repair::calculate(input, acceptReversed);
+    Result result;
+    result.assemblyIndex = grammar.trivialUpperBound;
+    result.pathway = implementation::repairPathway(grammar);
+    for (const PathwayStep &step : result.pathway)
+        result.assemblyIndex -= step.match.length - 1;
+    require(result.assemblyIndex <= grammar.upperBound,
+        "translated Re-Pair witness lost a grammar saving");
+    return result;
+}
+
+void testRepairPathways()
+{
+    // Replay the translated grammar by cutting intervals from the original
+    // input. This catches removed occurrences, crossed fragment boundaries,
+    // reversed-child placement, and double-counted nested savings without
+    // depending on how the grammar translator chooses its representatives.
+    for (const bool acceptReversed : {false, true})
+    {
+        const auto check = [&](const std::string &input)
+        {
+            const Result result = repairWitness(input, acceptReversed);
+            requireConsistentPathway(input, result, acceptReversed);
+            requireSamePathway(
+                repairWitness(input, acceptReversed), result,
+                "deterministic Re-Pair witness"
+            );
+        };
+        for (size_t length = 0; length <= 8; ++length)
+        {
+            for (size_t bits = 0; bits < (size_t{1} << length); ++bits)
+            {
+                std::string input(length, 'a');
+                for (size_t index = 0; index < length; ++index)
+                    if (bits & (size_t{1} << index)) input[index] = 'b';
+                check(input);
+            }
+        }
+        for (const std::string &input : {
+            std::string("abababab"), std::string("abcxcba"),
+            std::string("aabbaa"),
+            std::string("cbcacaaccbcacbacbccbccbac"),
+            numberedBlocks(25), repeated('a', 4096),
+            std::string("\xc3\xa9\xf0\x9f\x98\x80\xe4\xb8\xad") +
+                "\xe4\xb8\xad\xf0\x9f\x98\x80\xc3\xa9",
+            std::string("a\0a\0a\0a\0", 8)})
+            check(input);
+
+        std::uint32_t randomState = 0x718f936U;
+        for (size_t trial = 0; trial < 100; ++trial)
+        {
+            std::string input;
+            for (size_t index = 0; index < 80; ++index)
+            {
+                randomState ^= randomState << 13;
+                randomState ^= randomState >> 17;
+                randomState ^= randomState << 5;
+                input.push_back(static_cast<char>('a' + randomState % 4));
+            }
+            check(input);
+        }
+    }
+
+    // Reversal-aware product reuse can leave a previously created production
+    // unreachable. Its join must not inflate the translated witness's cost.
+    const std::string deadRuleInput = "aaaabaabaaaabbaaaabaaaaaabbbaaaabaa";
+    const repair::Result grammar = repair::calculate(deadRuleInput, true);
+    const Result seed = repairWitness(deadRuleInput, true);
+    require(grammar.upperBound == 10 && seed.assemblyIndex == 9,
+        "unused Re-Pair production was charged to the pathway");
+    requireConsistentPathway(deadRuleInput, seed, true);
+    Options options;
+    options.acceptReversed = true;
+    options.targetAssemblyIndex = seed.assemblyIndex;
+    const Result targeted = calculate(deadRuleInput, options);
+    require(targeted.assemblyIndex == seed.assemblyIndex,
+        "search did not use the reachable Re-Pair construction cost");
+    requireSamePathway(targeted, seed, "Re-Pair seed without unused production");
+}
+
+void testRepairSeededSearch()
+{
+    struct Case
+    {
+        std::string input;
+        bool acceptReversed;
+        int seedIndex;
+        int exactIndex;
+    };
+    const std::vector<Case> cases{
+        {"abababab", false, 3, 3},
+        {"abcxcba", true, 4, 4},
+        {"bbbabba", false, 5, 4},
+        {"baabaa", true, 4, 3},
+        {"\xc3\xa9\xf0\x9f\x98\x80\xc3\xa9\xf0\x9f\x98\x80"
+             "\xc3\xa9\xf0\x9f\x98\x80\xc3\xa9\xf0\x9f\x98\x80",
+            false, 3, 3}
+    };
+    for (const Case &testCase : cases)
+    {
+        const Result seed = repairWitness(testCase.input, testCase.acceptReversed);
+        require(seed.assemblyIndex == testCase.seedIndex, "Re-Pair fixture changed");
+        requireConsistentPathway(testCase.input, seed, testCase.acceptReversed);
+        for (const bool reconstructPathway : {false, true})
+        {
+            Options options;
+            options.acceptReversed = testCase.acceptReversed;
+            options.reconstructPathway = reconstructPathway;
+            options.targetAssemblyIndex = seed.assemblyIndex;
+            const Result targeted = calculate(testCase.input, options);
+            require(
+                targeted.assemblyIndex == seed.assemblyIndex &&
+                    !targeted.interrupted && !targeted.runtimeLimitReached,
+                "a qualifying Re-Pair seed was not returned as the first witness"
+            );
+            requireSamePathway(targeted, seed, "targeted Re-Pair seed");
+            requireConsistentPathway(testCase.input, targeted, testCase.acceptReversed);
+
+            options.targetAssemblyIndex = -1;
+            const Result exact = calculate(testCase.input, options);
+            require(exact.assemblyIndex == testCase.exactIndex,
+                "exact search did not prove or improve the Re-Pair seed");
+            requireConsistentPathway(testCase.input, exact, testCase.acceptReversed);
+            if (testCase.seedIndex == testCase.exactIndex)
+            {
+                requireSamePathway(exact, seed, "equality-pruned Re-Pair witness");
+                for (size_t shard = 0; shard < 3; ++shard)
+                {
+                    options.shardCount = 3;
+                    options.shardIndex = shard;
+                    const Result partial = calculate(testCase.input, options);
+                    require(partial.assemblyIndex == seed.assemblyIndex,
+                        "a shard lost the shared Re-Pair incumbent");
+                    requireConsistentPathway(
+                        testCase.input, partial, testCase.acceptReversed
+                    );
+                }
+                options.shardIndex = 0;
+                options.shardCount = 1;
+            }
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+            options.threadCount = 4;
+            const Result parallel = calculate(testCase.input, options);
+            require(parallel.assemblyIndex == testCase.exactIndex,
+                "parallel search did not prove or improve the Re-Pair seed");
+            requireConsistentPathway(testCase.input, parallel, testCase.acceptReversed);
+            if (reconstructPathway)
+                requireSamePathway(parallel, exact, "seeded parallel reconstruction");
+#endif
+        }
     }
 }
 
@@ -1186,6 +1342,57 @@ bool cancelAfterConfiguredPolls()
     return cancellationPolls == cancellationPollLimit;
 }
 
+void testRepairSeedCancellation()
+{
+    // Arm cancellation after rank/token preprocessing. Requiring three polls
+    // ensures entry/exit checks alone cannot satisfy this cancellation request.
+    bool constructionFinished = false;
+    int compressionPolls = 0;
+    const std::u32string longInput(8192, U'a');
+    repair::implementation::Compressor compressor(longInput, false, [&] {
+        return constructionFinished && ++compressionPolls > 2;
+    });
+    constructionFinished = true;
+    bool compressionCancelled = false;
+    try { static_cast<void>(compressor.run()); }
+    catch (const repair::implementation::Cancelled &)
+    {
+        compressionCancelled = true;
+    }
+    require(compressionCancelled,
+        "Re-Pair ignored cancellation during a large compression pass");
+
+    const std::string input = "bbbabba";
+    const Result seed = repairWitness(input, false);
+    require(seed.assemblyIndex == 5 && calculate(input).assemblyIndex == 4,
+        "seed-cancellation fixture must still need exact improvement");
+    bool stoppedWithSeed = false;
+    // Sweep cancellation points instead of coupling this test to internal
+    // compressor or search poll counts. Every interrupted result must retain
+    // a complete witness, including the boundary after seeding and before
+    // exact search discovers the better construction.
+    for (int pollLimit = 1; pollLimit <= 200; ++pollLimit)
+    {
+        cancellationPolls = 0;
+        cancellationPollLimit = pollLimit;
+        Options options;
+        options.reconstructPathway = false;
+        options.cancellationRequested = &cancelAfterConfiguredPolls;
+        const Result stopped = calculate(input, options);
+        requireConsistentPathway(input, stopped);
+        require(!stopped.runtimeLimitReached,
+            "seed cancellation was reported as a runtime limit");
+        if (!stopped.interrupted) break;
+        if (stopped.assemblyIndex == seed.assemblyIndex)
+        {
+            requireSamePathway(stopped, seed, "cancelled Re-Pair witness");
+            stoppedWithSeed = true;
+        }
+    }
+    require(stoppedWithSeed,
+        "cancellation never retained a completed Re-Pair seed");
+}
+
 void testSearchStops()
 {
     const std::string input = numberedBlocks(25);
@@ -1379,7 +1586,9 @@ void testTargetedSearch()
             }
             else if (target >= 6)
             {
-                const int expected = std::min(target, 7);
+                // The trivial root qualifies before construction, otherwise
+                // the complete Re-Pair seed is the first available witness.
+                const int expected = target >= 7 ? 7 : 5;
                 require(
                     result.assemblyIndex == expected,
                     "targeted search did not stop at its first qualifying witness"
@@ -1872,6 +2081,8 @@ int main()
     {
         testUpstreamRegressionCases();
         testTrivialStrings();
+        testRepairPathways();
+        testRepairSeededSearch();
         testExhaustiveShortStrings();
         testShardedSearch();
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
@@ -1882,6 +2093,7 @@ int main()
         testDuplicateSets();
         testMultiStepPathways();
         testReverseEquivalence();
+        testRepairSeedCancellation();
         testSearchStops();
         testOptionValidation();
         testTargetedSearch();

@@ -31,7 +31,8 @@
 #include <omp.h>
 #endif
 
-#include "utf8.h"
+#include "stringEncoding.h"
+#include "stringRepair.h"
 
 namespace parallelassemblycpp::detail::stringAssembly
 {
@@ -111,28 +112,77 @@ struct Result
 namespace implementation
 {
 
-/** Decode UTF-8 symbols, optionally appending their byte offsets and the end. */
-inline std::u32string decodeInput(
-    std::string_view input,
-    std::vector<size_t> *byteOffsets = nullptr
+using stringEncoding::decodeInput;
+using stringEncoding::writeJsonString;
+
+/**
+ * Turn the Re-Pair grammar into the exact solver's duplicate-removal witness.
+ * Visit parents before children, retaining one occurrence of each product and
+ * expanding only that occurrence. Expanding discarded copies would reuse text
+ * that is no longer present. Unreachable productions need no construction.
+ */
+inline std::vector<PathwayStep> repairPathway(
+    const stringRepair::Result &grammar,
+    const std::function<bool()> &shouldStop = {}
 )
 {
-    std::u32string result;
-    for (size_t offset = 0; offset < input.size();)
+    std::size_t work = 0;
+    const auto poll = [&] {
+        if (shouldStop && (work++ % 1024 == 0) && shouldStop())
+            throw stringRepair::implementation::Cancelled{};
+    };
+    const std::size_t symbolCount = grammar.terminals.size() + grammar.rules.size();
+    std::vector<int> lengths(symbolCount, 1);
+    std::vector<std::vector<stringRepair::Fragment>> occurrences(symbolCount);
+    for (const auto &rule : grammar.rules)
     {
-        const utf8::DecodedCharacter decoded = utf8::decode(input, offset);
-        if (decoded.length == 0)
-            throw std::invalid_argument(
-                "string input is not valid UTF-8 at byte " + std::to_string(offset)
-            );
-        if (result.size() >= static_cast<size_t>(std::numeric_limits<int>::max()) - 1)
-            throw std::invalid_argument("string is too long to index");
-        if (byteOffsets != nullptr) byteOffsets->push_back(offset);
-        result.push_back(decoded.codePoint);
-        offset += decoded.length;
+        poll();
+        lengths[static_cast<std::size_t>(rule.id)] = rule.length;
     }
-    if (byteOffsets != nullptr) byteOffsets->push_back(input.size());
-    return result;
+    const auto append = [&](const stringRepair::Fragment &fragment) {
+        if (fragment.length > 1)
+            occurrences[static_cast<std::size_t>(fragment.symbol)].push_back(fragment);
+    };
+    for (const auto &fragment : grammar.residual)
+    {
+        poll();
+        append(fragment);
+    }
+
+    std::vector<PathwayStep> pathway;
+    for (auto rule = grammar.rules.rbegin(); rule != grammar.rules.rend(); ++rule)
+    {
+        poll();
+        const auto &copies = occurrences[static_cast<std::size_t>(rule->id)];
+        if (copies.empty()) continue;
+        std::size_t representative = 0;
+        for (std::size_t i = 1; i < copies.size(); ++i)
+        {
+            poll();
+            if (copies[i].offset < copies[representative].offset) representative = i;
+        }
+        const auto &kept = copies[representative];
+        for (std::size_t i = 0; i < copies.size(); ++i)
+        {
+            poll();
+            if (i != representative)
+                pathway.push_back({{kept.offset, kept.length},
+                    {copies[i].offset, copies[i].length}});
+        }
+
+        // Reversing a production swaps its children as well as their senses.
+        const int left = kept.reversed ? rule->right : rule->left;
+        const int right = kept.reversed ? rule->left : rule->right;
+        const bool leftReversed = kept.reversed !=
+            (kept.reversed ? rule->rightReversed : rule->leftReversed);
+        const bool rightReversed = kept.reversed !=
+            (kept.reversed ? rule->leftReversed : rule->rightReversed);
+        const int leftLength = lengths[static_cast<std::size_t>(left)];
+        append({left, leftReversed, kept.offset, leftLength});
+        append({right, rightReversed, kept.offset + leftLength,
+            lengths[static_cast<std::size_t>(right)]});
+    }
+    return pathway;
 }
 
 /** Sorted union of intervals having one fixed insertion length. */
@@ -500,12 +550,12 @@ class Search
         return bound;
     }
 
-    void recordBest(int assemblyIndex)
+    void recordBest(int assemblyIndex, const std::vector<PathwayStep> &pathway)
     {
         if (assemblyIndex < bestAssemblyIndex_)
         {
             // Keep the witness before publishing its bound to other workers.
-            bestPath_ = currentPath_;
+            bestPath_ = pathway;
             bestAssemblyIndex_ = assemblyIndex;
             if (parallelControl_ != nullptr)
             {
@@ -914,7 +964,7 @@ class Search
 
         const int assemblyIndex =
             static_cast<int>(original_.size()) - state.duplicatedSymbols - 1;
-        recordBest(assemblyIndex);
+        recordBest(assemblyIndex, currentPath_);
         if (targetReached_) return;
 
         Enumeration enumeration = enumerate(state, initial);
@@ -1106,12 +1156,28 @@ class Search
     {
         AssemblyState root;
         if (shouldStop()) return;
+        recordBest(bestAssemblyIndex_, bestPath_);
+        if (targetReached_) return;
         root.intervals = preprocess();
-        if (root.intervals.empty())
+        if (shouldStop() || root.intervals.empty()) return;
+        try
         {
-            static_cast<void>(shouldStop());
+            const auto stop = [this] { return shouldStop(); };
+            const auto grammar = stringRepair::implementation::Compressor(
+                original_, options_.acceptReversed, stop
+            ).run();
+            const auto pathway = repairPathway(grammar, stop);
+            int index = static_cast<int>(original_.size()) - 1;
+            for (const auto &step : pathway) index -= step.match.length - 1;
+            // The path must accompany the bound: >= pruning can discard every
+            // exact-search branch tying an already optimal Re-Pair incumbent.
+            recordBest(index, pathway);
+        }
+        catch (const stringRepair::implementation::Cancelled &)
+        {
             return;
         }
+        if (shouldStop()) return;
         std::vector<int> rootKey(root.intervals.size(), -1);
         states_.emplace(std::move(rootKey), 0);
         if (options_.threadCount > 1 || options_.shardCount > 1)
@@ -1177,74 +1243,6 @@ public:
         return result;
     }
 };
-
-/**
- * @brief Write one JSON string, escaping control bytes and all non-ASCII text.
- *
- * Non-ASCII text is decoded and re-emitted as \\uXXXX escapes rather than raw
- * bytes, so the pathway file is pure ASCII and stays readable whatever encoding
- * the consumer opens it with. Text that is not valid UTF-8 has no JSON
- * spelling at all, so it is reported instead of written.
- *
- * @throws std::runtime_error when @p value is not valid UTF-8
- */
-inline void writeJsonString(std::string_view value, std::ostream &output)
-{
-    static constexpr char hexDigits[] = "0123456789ABCDEF";
-    const auto writeUnitEscape = [&output](char32_t unit)
-    {
-        output << "\\u"
-               << hexDigits[(unit >> 12) & 0x0f]
-               << hexDigits[(unit >> 8) & 0x0f]
-               << hexDigits[(unit >> 4) & 0x0f]
-               << hexDigits[unit & 0x0f];
-    };
-
-    output.put('"');
-    std::size_t offset = 0;
-    while (offset < value.size())
-    {
-        const unsigned char character =
-            static_cast<unsigned char>(value[offset]);
-        if (character < 0x80)
-        {
-            offset++;
-            switch (character)
-            {
-                case '"': output << "\\\""; break;
-                case '\\': output << "\\\\"; break;
-                case '\b': output << "\\b"; break;
-                case '\f': output << "\\f"; break;
-                case '\n': output << "\\n"; break;
-                case '\r': output << "\\r"; break;
-                case '\t': output << "\\t"; break;
-                default:
-                    if (character < 0x20) writeUnitEscape(character);
-                    else output.put(static_cast<char>(character));
-                    break;
-            }
-            continue;
-        }
-
-        const utf8::DecodedCharacter decoded = utf8::decode(value, offset);
-        if (decoded.length == 0)
-        {
-            throw std::runtime_error(
-                "cannot write JSON: text is not valid UTF-8"
-            );
-        }
-        offset += decoded.length;
-
-        if (decoded.codePoint < 0x10000) writeUnitEscape(decoded.codePoint);
-        else
-        {
-            const char32_t remainder = decoded.codePoint - 0x10000;
-            writeUnitEscape(0xD800 + (remainder >> 10));
-            writeUnitEscape(0xDC00 + (remainder & 0x3FF));
-        }
-    }
-    output.put('"');
-}
 
 inline std::vector<Interval> remnantIntervals(
     size_t stringLength,

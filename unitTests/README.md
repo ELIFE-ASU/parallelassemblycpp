@@ -50,6 +50,10 @@ The focused `stringAssemblyTester` compares short binary and ternary inputs with
 an independent exhaustive search and covers interval merging, remnants,
 multi-step pathways, reversal, cancellation, target-index stopping, and JSON
 escaping. Pathway checks replay fragment boundaries to reject impossible reuse.
+Re-Pair seeds are replayed independently across nested, reversed, Unicode, and
+randomized constructions. Tests check that equality pruning retains an optimal
+seed's witness, exact search improves suboptimal seeds, and cancellation,
+shards, and OpenMP workers preserve a valid incumbent.
 Unicode strings also check scalar and encoding boundaries, embedded control
 characters, malformed UTF-8 byte offsets, and parity with serial, OpenMP, MPI,
 and hybrid execution. CLI checks preserve BOMs, combining marks, and Unicode

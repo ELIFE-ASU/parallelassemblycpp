@@ -3,10 +3,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
-#include <numeric>
 #include <ostream>
 #include <queue>
 #include <stdexcept>
@@ -16,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-#include "stringAssembly.h"
+#include "stringEncoding.h"
 
 /**
  * Constructive Re-Pair assembly bounds for ordered Unicode scalar strings.
@@ -80,6 +81,36 @@ struct Result
 
 namespace implementation
 {
+/** An interrupted construction has no complete certificate to publish. */
+struct Cancelled : std::exception
+{
+    const char *what() const noexcept override
+    {
+        return "string Re-Pair construction cancelled";
+    }
+};
+
+/** Amortize callback costs while bounding work between cooperative polls. */
+class Cancellation
+{
+    std::function<bool()> requested_;
+    mutable std::size_t operations_ = 0;
+
+public:
+    explicit Cancellation(std::function<bool()> requested):
+        requested_(std::move(requested)) {}
+
+    void poll() const
+    {
+        if (requested_ && requested_()) throw Cancelled{};
+    }
+
+    void tick() const
+    {
+        if (requested_ && (++operations_ & 1023U) == 0) poll();
+    }
+};
+
 /** Two overlapping power-of-two blocks exactly cover a substring. */
 struct Key
 {
@@ -112,12 +143,17 @@ class Substrings
     }
 
 public:
-    Substrings(const std::u32string &input, bool acceptReversed):
+    Substrings(const std::u32string &input, bool acceptReversed,
+               const Cancellation &cancellation):
         length_(input.size()), acceptReversed_(acceptReversed),
         logarithms_(length_ + 1, 0)
     {
+        cancellation.poll();
         for (std::size_t i = 2; i <= length_; ++i)
+        {
+            cancellation.tick();
             logarithms_[i] = static_cast<unsigned char>(logarithms_[i / 2] + 1);
+        }
         if (input.empty()) return;
 
         // The two halves need no separator: every queried interval remains
@@ -128,16 +164,23 @@ public:
                 input[count - position - 1];
         };
         std::vector<std::size_t> order(count), temporary(count);
-        std::iota(order.begin(), order.end(), std::size_t{0});
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            cancellation.tick();
+            order[i] = i;
+        }
         std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+            cancellation.tick();
             return scalar(a) < scalar(b);
         });
+        cancellation.poll();
         ranks_.emplace_back(count);
         auto &initial = ranks_.back();
         std::uint32_t classes = 0;
         char32_t previous = 0;
         for (std::size_t i = 0; i < count; ++i)
         {
+            cancellation.tick();
             const char32_t value = scalar(order[i]);
             if (i == 0 || value != previous) ++classes;
             initial[order[i]] = classes;
@@ -147,6 +190,7 @@ public:
         std::vector<std::size_t> buckets;
         for (std::size_t block = 1; block <= length_ / 2; block *= 2)
         {
+            cancellation.poll();
             const auto &old = ranks_.back();
             const auto second = [&](std::size_t i) -> std::uint32_t {
                 return i + block < count ? old[i + block] : 0;
@@ -154,31 +198,53 @@ public:
             // Stable counting sorts of the second and then first rank keep
             // each doubling level linear, without probabilistic hashing.
             buckets.assign(static_cast<std::size_t>(classes) + 1, 0);
-            for (std::size_t i = 0; i < count; ++i) ++buckets[second(i)];
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                cancellation.tick();
+                ++buckets[second(i)];
+            }
             std::size_t total = 0;
             for (auto &bucket : buckets)
             {
+                cancellation.tick();
                 const auto frequency = bucket;
                 bucket = total;
                 total += frequency;
             }
             for (std::size_t i = 0; i < count; ++i)
+            {
+                cancellation.tick();
                 temporary[buckets[second(i)]++] = i;
-            std::fill(buckets.begin(), buckets.end(), 0);
-            for (const auto i : temporary) ++buckets[old[i]];
+            }
+            for (auto &bucket : buckets)
+            {
+                cancellation.tick();
+                bucket = 0;
+            }
+            for (const auto i : temporary)
+            {
+                cancellation.tick();
+                ++buckets[old[i]];
+            }
             total = 0;
             for (auto &bucket : buckets)
             {
+                cancellation.tick();
                 const auto frequency = bucket;
                 bucket = total;
                 total += frequency;
             }
-            for (const auto i : temporary) order[buckets[old[i]]++] = i;
+            for (const auto i : temporary)
+            {
+                cancellation.tick();
+                order[buckets[old[i]]++] = i;
+            }
 
             std::vector<std::uint32_t> next(count);
             classes = 0;
             for (std::size_t i = 0; i < count; ++i)
             {
+                cancellation.tick();
                 if (i == 0 || old[order[i]] != old[order[i - 1]] ||
                     second(order[i]) != second(order[i - 1])) ++classes;
                 next[order[i]] = classes;
@@ -221,10 +287,14 @@ class ActivePositions
     }
 
 public:
-    explicit ActivePositions(std::size_t size): tree_(size + 1)
+    ActivePositions(std::size_t size, const Cancellation &cancellation):
+        tree_(size + 1)
     {
         for (std::size_t i = 1; i < tree_.size(); ++i)
+        {
+            cancellation.tick();
             tree_[i] = static_cast<int>(i & (~i + 1));
+        }
     }
 
     void erase(int position)
@@ -277,6 +347,7 @@ struct Candidate
 class Compressor
 {
     Result result_;
+    Cancellation cancellation_;
     Substrings substrings_;
     ActivePositions active_;
     std::vector<Token> tokens_;
@@ -374,6 +445,7 @@ class Compressor
             int current = first;
             for (int remaining = run.count; remaining > 0; remaining -= 2)
             {
+                cancellation_.tick();
                 result.push_back(current);
                 if (remaining > 2)
                     current = tokens_[static_cast<std::size_t>(
@@ -431,8 +503,11 @@ class Compressor
     }
 
 public:
-    Compressor(const std::u32string &input, bool acceptReversed):
-        substrings_(input, acceptReversed), active_(input.size())
+    Compressor(const std::u32string &input, bool acceptReversed,
+               std::function<bool()> cancellationRequested = {}):
+        cancellation_(std::move(cancellationRequested)),
+        substrings_(input, acceptReversed, cancellation_),
+        active_(input.size(), cancellation_)
     {
         result_.acceptReversed = acceptReversed;
         result_.trivialUpperBound = static_cast<int>(input.size()) - 1;
@@ -440,6 +515,7 @@ public:
         tokens_.reserve(input.size());
         for (std::size_t i = 0; i < input.size(); ++i)
         {
+            cancellation_.tick();
             const auto [entry, inserted] = terminals.emplace(input[i],
                 static_cast<int>(terminals.size()));
             if (inserted) result_.terminals.push_back({entry->second, input[i]});
@@ -448,13 +524,18 @@ public:
                 i + 1 < input.size() ? position + 1 : -1, -1});
         }
         for (std::size_t i = 0; i + 1 < input.size(); ++i)
+        {
+            cancellation_.tick();
             addPair(static_cast<int>(i));
+        }
     }
 
     Result run()
     {
+        cancellation_.poll();
         while (!candidates_.empty())
         {
+            cancellation_.tick();
             const auto candidate = candidates_.top();
             candidates_.pop();
             if (groups_[static_cast<std::size_t>(candidate.group)].version !=
@@ -462,11 +543,19 @@ public:
             const auto pairs = selectedPairs(candidate.group);
             defineRule(candidate.group, pairs.front());
             const int symbol = groups_[static_cast<std::size_t>(candidate.group)].symbol;
-            for (const int position : pairs) replacePair(position, symbol);
+            for (const int position : pairs)
+            {
+                cancellation_.tick();
+                replacePair(position, symbol);
+            }
         }
         for (int position = tokens_.empty() ? -1 : 0; position >= 0;
              position = tokens_[static_cast<std::size_t>(position)].next)
+        {
+            cancellation_.tick();
             result_.residual.push_back(tokens_[static_cast<std::size_t>(position)].fragment);
+        }
+        cancellation_.poll();
         result_.ruleCount = static_cast<int>(result_.rules.size());
         result_.remainingFragments = static_cast<int>(result_.residual.size());
         result_.upperBound = result_.ruleCount + result_.remainingFragments - 1;
@@ -481,7 +570,7 @@ public:
  */
 inline Result calculate(std::string_view input, bool acceptReversed = false)
 {
-    const auto decoded = stringAssembly::implementation::decodeInput(input);
+    const auto decoded = stringEncoding::decodeInput(input);
     return implementation::Compressor(decoded, acceptReversed).run();
 }
 
@@ -492,14 +581,14 @@ inline Result calculate(std::string_view input, bool acceptReversed = false)
  */
 inline void writeJson(const Result &result, std::string_view input, std::ostream &output)
 {
-    const auto decoded = stringAssembly::implementation::decodeInput(input);
+    const auto decoded = stringEncoding::decodeInput(input);
     output << "{\"schema\":\"string-repair-assembly-v1\",\"upper_bound\":" << result.upperBound
            << ",\"trivial_upper_bound\":" << result.trivialUpperBound
            << ",\"rule_count\":" << result.ruleCount
            << ",\"remaining_fragments\":" << result.remainingFragments
            << ",\"accept_reversed\":" << (result.acceptReversed ? "true" : "false")
            << ",\"length\":" << decoded.size() << ",\"input\":";
-    stringAssembly::implementation::writeJsonString(input, output);
+    stringEncoding::writeJsonString(input, output);
     output << ",\"terminals\":[";
     for (std::size_t i = 0; i < result.terminals.size(); ++i)
     {
