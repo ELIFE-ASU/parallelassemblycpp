@@ -60,8 +60,8 @@ measurement of its effect on incumbent discovery and total search work.
   `dagDuplicateGenerator` and `duplicateClassLevel::seal` in
   [duplicateMatching.h](../../../src/duplicateMatching.h), and
   `dagRecursiveEnumeration` in [improvedBnB.h](../../../src/improvedBnB.h).
-- [Historical profile report](../../../build/mask-results/README.md), a local
-  generated artifact that may be absent in a fresh checkout. Recollect evidence
+- Historical profile report at `build/mask-results/README.md`, a local
+  unpublished artifact not included in a fresh checkout. Recollect evidence
   using the [benchmark tooling](../../../benchmarks/README.md).
 - Helbecque et al., [Portable PGAS-Based GPU-Accelerated Branch-And-Bound
   Algorithms at Scale (2025)](https://doi.org/10.1002/cpe.70321): batching

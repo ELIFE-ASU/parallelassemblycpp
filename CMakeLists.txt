@@ -15,7 +15,7 @@ endif()
 project(
   ParallelAssemblyCpp
   VERSION 0.1.0
-  DESCRIPTION "Compute molecular assembly indices and pathways"
+  DESCRIPTION "Compute molecular and string assembly indices, pathways, and Re-Pair upper bounds"
   HOMEPAGE_URL "https://github.com/ELIFE-ASU/parallelassemblycpp"
   LANGUAGES CXX
 )
@@ -679,6 +679,20 @@ install(
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/parallelassemblycpp"
   PERMISSIONS ${PARALLELASSEMBLYCPP_FILE_PERMISSIONS}
 )
+install(
+  DIRECTORY docs/
+  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/parallelassemblycpp/docs"
+  FILE_PERMISSIONS ${PARALLELASSEMBLYCPP_FILE_PERMISSIONS}
+  DIRECTORY_PERMISSIONS ${PARALLELASSEMBLYCPP_EXECUTABLE_PERMISSIONS}
+  FILES_MATCHING PATTERN "*.md"
+)
+foreach(PARALLELASSEMBLYCPP_GUIDE_DIRECTORY benchmarks unitTests)
+  install(
+    FILES "${PARALLELASSEMBLYCPP_GUIDE_DIRECTORY}/README.md"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/parallelassemblycpp/${PARALLELASSEMBLYCPP_GUIDE_DIRECTORY}"
+    PERMISSIONS ${PARALLELASSEMBLYCPP_FILE_PERMISSIONS}
+  )
+endforeach()
 install(
   EXPORT ParallelAssemblyCppTargets
   FILE ParallelAssemblyCppTargets.cmake

@@ -19,9 +19,12 @@ Usage:
 
 Input:
   By default, a V2000 MOL/SDF file or a ParallelAssemblyCpp native graph file.
-  Existing .mol and .sdf suffixes are matched case-insensitively.
-  A missing suffix tries the lowercase .mol spelling.
+  Case-insensitive .mol and .sdf suffixes select V2000 parsing. Otherwise an
+  existing path is read as a native graph; a missing path is retried with .mol
+  appended.
   An SDF input reads only its first record, which must be V2000.
+  V2000 graph labels use atom symbols and bond orders; coordinates, charges,
+  isotopes, stereochemistry, and other property fields are ignored.
   Molfile output names omit a recognised suffix.
   With --run-strings=1, INPUT is read exactly as a text file containing one
   UTF-8 string per line. Each Unicode code point is one symbol, without
@@ -32,7 +35,7 @@ Options:
   -h, --help
       Show this help and exit.
   --
-      Stop parsing options. Every later argument is read as INPUT.
+      Stop parsing options. The next argument is INPUT; extra inputs are errors.
 )";
 
     for (const InputFlagDefinition& definition : inputFlagDefinitions())
@@ -45,7 +48,8 @@ Options:
     cout << R"(
 Notes:
   Options may appear before or after INPUT. Use --name=value.
-  Boolean values are 0 or 1.
+  Boolean values are 0 or 1. Each option may be specified only once, including
+  when using an alias.
   --algorithm=full runs exact search (the default). --algorithm=re-pair returns
   a graph or string upper bound and does not prove the minimum. Re-Pair uses
   serial execution: --parallel=auto reports a fallback and --parallel=on fails.
@@ -60,9 +64,9 @@ Notes:
   execution, it reports the reason. --parallel=on forces parallel search, but
   fails when parallel execution cannot be honored. --parallel=off always runs
   serially. --threads sets the local thread count for each process. In molecular
-  search, auto caps the OpenMP
-  runtime default by estimated work per worker, shared across MPI ranks with
-  at least one thread per rank (at least two total workers for --parallel=on).
+  search, auto caps the OpenMP runtime default by estimated work per worker,
+  shared across MPI ranks with at least one thread per rank (at least two
+  total workers for --parallel=on).
   Explicit counts are never reduced by the workload cap.
   --threads is unused when --parallel=off.
   Finite --runtime budgets and --write-intermediate-mas require serial search;
@@ -71,7 +75,7 @@ Notes:
   reconstruction of a winning pathway.
   --runtime is a cooperative std::clock budget and may overrun while an
   operation finishes. CLOCKS_PER_SEC converts ticks to seconds; the clock
-  source is platform-specific.
+  source is platform-specific. In string mode the budget applies to each line.
   --enum-max includes one-edge masks and applies only to graph inputs.
   A limited search records its best index and status in INPUTOut; the index may
   not be minimal.
@@ -88,11 +92,18 @@ Notes:
   would be overwritten by ./memUsage.
 
 Outputs:
-  INPUTOut              Assembly index, status, and std::clock ticks.
+  INPUTOut              Index or upper bound, status when needed, and clock ticks.
   INPUTPathway          Graph pathway JSON (--pathway=1).
-  INPUT_N_Pathway       String pathway JSON for zero-based line N.
-  INPUTIntermediateMAs  Improved indices and ticks when enabled.
+  INPUT_N_Pathway       String pathway JSON for zero-based line N (--pathway=1).
+  INPUTIntermediateMAs  Elapsed ticks then improved index, one pair per line.
 )" ASSEMBLY_TELEMETRY_OUTPUT_HELP R"(  ./memUsage            Linux VmPeak report (--memory-report=1).
+
+Exit status:
+  0    Help shown or requested outputs written, including limited searches.
+  1    Input, calculation, or output failure.
+  2    Invalid command line.
+  130  Interrupted by the user after available outputs were written.
+  Inspect INPUTOut for limits or a heuristic status before assuming minimality.
 
 Legacy options:
   Canonical and legacy names accept one or two leading dashes.

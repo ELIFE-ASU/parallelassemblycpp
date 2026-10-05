@@ -86,7 +86,7 @@
     {
       "name": "parallel",
       "displayName": "Parallel experiments",
-      "description": "OpenMP, MPI, and hybrid scaling builds",
+      "description": "x86-64-v3 OpenMP, MPI, and hybrid scaling builds with telemetry",
       "inherits": "performance",
       "cacheVariables": {
         "PARALLELASSEMBLYCPP_BUILD_OPENMP": true,

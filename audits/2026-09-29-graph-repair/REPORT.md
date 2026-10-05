@@ -1,5 +1,10 @@
 # Graph-pair assembly upper-bound benchmark
 
+> Historical measurements from 29 September 2026. Corpus and validation counts
+> describe the recorded run. The current CLI uses `--algorithm=re-pair`; the
+> `--upper-bound=graph-repair` spelling below remains a legacy alias. See the
+> [CLI reference](../../docs/cli.md) and [audit index](../README.md).
+
 The GraphRePair-inspired bound improves the solver's initial bound on **1,054
 of 1,067 reviewed molecular fixtures**, ties on 13, and never worsens it. It is
 also tighter than the fixed simple-trail string RePair baseline on **872

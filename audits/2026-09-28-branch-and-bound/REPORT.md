@@ -1,4 +1,11 @@
-**Branch-and-bound audit and literature assessment — 28 September 2026**
+# Branch-and-bound audit and literature assessment — 28 September 2026
+
+> Historical snapshot. Findings and recommendations below describe the audit
+> date, not the current feature list. Exact string search subsequently gained a
+> Re-Pair seed in commit `8d4585c`; the removed molecular seeding experiment is
+> a separate change. See the [audit index](../README.md) for current context.
+> Source links point to the corresponding files in the checked-out revision;
+> inspect revision `815e5e6` to reproduce the audited implementation.
 
 Audited algorithm revision: `815e5e6` on `main`. Scope: molecular enumeration,
 matching, bounds, canonical-state dominance, parallel task transfer, and the
@@ -39,17 +46,17 @@ The current implementation already has the following important properties:
 - The first canonical fragment ID is preserved in the state key; only the
   remaining IDs are sorted. This preserves the descendant enumeration cutoff
   encoded by the first fragment. Sorting the entire key would require a new
-  proof. See [state key](/home/louie/skunkworks/parallelassemblycpp/src/assemblyState.h:250)
-  and [ordinal restriction](/home/louie/skunkworks/parallelassemblycpp/src/improvedBnB.h:162).
+  proof. See [state key](../../src/assemblyState.h)
+  and [ordinal restriction](../../src/improvedBnB.h).
 - The transposition tables compare complete keys after hashing. Larger
   `sumDupBonds` scores dominate smaller scores, and a strict improvement reopens
   the state. Hash collisions alone do not prune. See
-  [local table](/home/louie/skunkworks/parallelassemblycpp/src/assemblyTranspositionTable.h:68).
+  [local table](../../src/assemblyTranspositionTable.h).
 - Class, pair and post-fragmentation bounds avoid expensive work before
   canonicalization. `maxDupBondsPrefix` retains a maximum across possible
   future duplicate sizes. See
-  [prefix bound](/home/louie/skunkworks/parallelassemblycpp/src/assemblyState.h:116)
-  and [child bound](/home/louie/skunkworks/parallelassemblycpp/src/improvedBnB.h:1543).
+  [prefix bound](../../src/assemblyState.h)
+  and [child bound](../../src/improvedBnB.h).
 - Shared incumbents decrease monotonically; observing an older value causes
   extra work rather than unsafe pruning. Matching loops already refresh the
   value at class boundaries and every 64 bound evaluations.
@@ -57,7 +64,7 @@ The current implementation already has the following important properties:
   transposition table. The receiver therefore does not discard a task because
   the producer prematurely recorded it as explored. Transfer storage also
   avoids moving masks owned by another thread's arena. See
-  [donation](/home/louie/skunkworks/parallelassemblycpp/src/improvedBnB.h:1562).
+  [donation](../../src/improvedBnB.h).
 - Adaptive root leases, local deques, stealing, deeper task donation and
   measured transfer amortization are already present. They are not missing
   features to introduce under a new name.
@@ -66,7 +73,7 @@ The main assurance gap is specific: the molecular bounds lack a permanent
 independent exhaustive reference solver and direct admissibility tests.
 Regression agreement and serial/parallel parity can preserve a shared pruning
 error. String mode already has an independent reference search in
-[stringAssemblyTester.cpp](/home/louie/skunkworks/parallelassemblycpp/unitTests/stringAssemblyTester.cpp:110).
+[stringAssemblyTester.cpp](../../unitTests/stringAssemblyTester.cpp).
 The standalone molecular oracle retained beside this report is a starting
 point. It checks the generic scalar and proposed vector bounds against exact
 remaining savings. Extend it to cover every production pruning route,
@@ -115,8 +122,8 @@ separate exact type ID scheme so collecting this bound cannot perturb canonical
 ordinals. Skip the extra calculation when an existing bound already prunes.
 Begin with state-level pruning, then consider class-level integration only
 after validating its `M`. The insertion points are
-[assembly state bounds](/home/louie/skunkworks/parallelassemblycpp/src/assemblyState.h:85)
-and [post-fragmentation bound](/home/louie/skunkworks/parallelassemblycpp/src/improvedBnB.h:357).
+[assembly state bounds](../../src/assemblyState.h)
+and [post-fragmentation bound](../../src/improvedBnB.h).
 The audit checked this formula against exact residual savings in **45,014
 oracle state instances** with legal duplicates, with no underestimates. It
 was strictly tighter than the generic scalar bound in **2,229 cases (4.95%)**,
@@ -134,7 +141,7 @@ assembly answer. See [Assembly Spaces](https://arxiv.org/abs/2606.15499)
 and [Assembly Theory and the Smallest Grammar Problem](https://arxiv.org/abs/2608.19228).
 
 This code already has an LZ-style residual bound at
-[stringAssembly.h:705](/home/louie/skunkworks/parallelassemblycpp/src/stringAssembly.h:705);
+[stringAssembly.h](../../src/stringAssembly.h);
 adding an undifferentiated “compression bound” would miss that fact. The new
 piece would be a feasible initial grammar and its assembly witness, replacing
 the initial `n - 1` incumbent when better. Translate rule lengths to binary
@@ -203,7 +210,7 @@ full state expansion/prune counts and a parallel incumbent trajectory. Its
 matching-refresh prune counters attribute only immediate extra savings caused
 by a refresh; they are not totals for all pruning. Moreover,
 `--write-intermediate-mas` forces serial execution at
-[main.cpp:449](/home/louie/skunkworks/parallelassemblycpp/src/main.cpp:449).
+[main.cpp](../../src/main.cpp).
 Add optional per-worker counters and strict-improvement events using a steady
 clock, keeping telemetry out of performance binaries. Separate time to a good
 incumbent from time to prove optimality, and distinguish state, class, pair
@@ -213,9 +220,10 @@ There is already local evidence against assuming generic greedy diving helps.
 Historical six-pair experiments on three long cases gave aggregate wall-time
 speedups of approximately **0.999× at 8 workers** and **1.002× at 28 workers**.
 These are historical, essentially neutral results, not current-branch
-benchmarks. See [methods](/home/louie/skunkworks/parallelassemblycpp/build/incumbent-results/report-methods.md),
-[8-worker results](/home/louie/skunkworks/parallelassemblycpp/build/incumbent-results/final-long-six-pairs-8.json)
-and [28-worker results](/home/louie/skunkworks/parallelassemblycpp/build/incumbent-results/final-long-six-pairs-28.json).
+benchmarks. The supporting methods and result files were retained locally under
+`build/incumbent-results/` as `report-methods.md`,
+`final-long-six-pairs-8.json`, and `final-long-six-pairs-28.json`. These
+unpublished build artifacts are not included in a repository checkout.
 The retained multi-start Paclitaxel experiment found a best greedy value of
 25 versus the benchmark target of 23. Better branch guidance should therefore
 target a demonstrated failure mode, with separate ablations for search order
@@ -227,8 +235,8 @@ evaluation, not evidence of a defect here. See
 Worker-local cache memory is another practical target. Every worker owns an
 unbounded local table with monotonic key storage, and L1 insertion precedes
 shared L2 lookup. The shared-cache byte budget does not bound total process
-memory. See [local storage](/home/louie/skunkworks/parallelassemblycpp/src/assemblyTranspositionTable.h:130)
-and [L1/L2 sequence](/home/louie/skunkworks/parallelassemblycpp/src/searchContext.h:280).
+memory. See [local storage](../../src/assemblyTranspositionTable.h)
+and [L1/L2 sequence](../../src/searchContext.h).
 Measure actual retained bytes before trying capped admission or generations.
 Forgetting a cache entry can preserve exactness by re-expanding it; rejecting
 an insertion or matching only a fingerprint must never imply domination.
@@ -272,9 +280,9 @@ Validation performed during this audit:
 
 No full MPI parity, sanitizer run, formal proof or new performance promotion
 study was performed. The standalone oracle and its machine-readable results
-are retained in this directory: [oracle](/home/louie/skunkworks/parallelassemblycpp/audits/2026-09-28-branch-and-bound/molecular_oracle.py),
-[library runner](/home/louie/skunkworks/parallelassemblycpp/audits/2026-09-28-branch-and-bound/oracle_runner.cpp),
-and [results](/home/louie/skunkworks/parallelassemblycpp/audits/2026-09-28-branch-and-bound/validation.json).
+are retained in this directory: [oracle](molecular_oracle.py),
+[library runner](oracle_runner.cpp),
+and [results](validation.json).
 From the repository root, reproduce the independent check after building the
 developer library:
 
@@ -291,5 +299,5 @@ compare the bond-type bound against a frozen baseline, record actual pruning
 and bound cost, and preserve both indices and pathway validity. Run correctness
 checks before isolated paired timings; a reduction in node count alone is not
 a speedup. The repository's existing
-[promotion protocol](/home/louie/skunkworks/parallelassemblycpp/benchmarks/README.md:338)
+[promotion protocol](../../benchmarks/README.md)
 requires 100 rounds for quick/full, 6 for profile and 30 for scaling.

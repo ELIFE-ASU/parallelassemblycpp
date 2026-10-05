@@ -1,13 +1,19 @@
-# Full exact calculation seeded by the Re-Pair upper bound
+# Historical molecular exact search seeded by the Re-Pair upper bound
 
-**Historical experiment, removed at the user's request.** Full calculations
-now run the original exact search without Re-Pair seeding. The explicit
-`--algorithm=re-pair` upper-bound-only mode remains available. The implementation
-description, measurements and validation below describe the removed experiment.
-Its binaries and tracked-source patch were preserved locally under
-`build/graph-repair-seeded-experiment/` before restoring the exact solver.
+**Historical molecular/graph experiment, subsequently removed.** Exact graph
+calculations run without a graph Re-Pair prepass. The explicit
+`--algorithm=re-pair` upper-bound-only mode remains available. Exact string
+search is separate: it uses a Re-Pair seed and retains its witness, introduced
+in commit `8d4585c`. See the [current CLI reference](../../docs/cli.md) and
+[audit index](../README.md).
 
-`--algorithm=re-pair` returns the fast constructive upper bound alone. `--algorithm=full` (the default) now computes that bound first, retains its construction, and uses the incumbent to prune exact molecular search. The same initialization is used by serial, OpenMP, MPI, hybrid and library calls.
+The implementation description, measurements, and validation below describe
+the removed graph experiment. Its binaries and source patch were preserved
+locally under `build/graph-repair-seeded-experiment/` before restoring the
+unseeded graph solver; these artifacts are unpublished and are not included
+in a repository checkout.
+
+In the experimental version, `--algorithm=re-pair` returned the fast constructive upper bound alone. `--algorithm=full` (the default) computed that bound first, retained its construction, and used the incumbent to prune exact molecular search. The same initialization applied to serial, OpenMP, MPI, hybrid and library calls.
 
 The initial incumbent is expressed in the exact solver’s original, uncompensated bond-count convention. Disconnected compensation is applied at output. The physical duplication witness is translated to the preprocessed edge universe after configuring each thread’s mask arena. Thus a seed-equal optimum or an early search limit still has a valid pathway in the existing exact JSON format. Seed preparation counts toward calculation time and the cooperative runtime budget.
 
@@ -113,6 +119,6 @@ python audits/2026-09-29-graph-repair/seed_speed.py \
   --cpu 0 --runs 6 --warmup 1 --timeout 10
 ```
 
-The old probe was preserved before integration; its executable hash matches [the previous timing data](speed.json), which records its source hashes. The candidate uses the removed seeded implementation, preserved at the path above. [seed_speed.json](seed_speed.json) retains all original samples, statuses, input and executable hashes, source provenance and summary calculations. Its original candidate path now holds the restored unseeded build; use the preserved candidate for reproduction. The complete pair counts, exact results, ratios and fingerprints were independently checked at the time of the experiment.
+The old probe was preserved locally before integration; its executable hash matches [the previous timing data](speed.json), which records its source hashes. The candidate used the removed seeded implementation, preserved at the local path above. [seed_speed.json](seed_speed.json) retains all original samples, statuses, input and executable hashes, source provenance and summary calculations. At the end of the experiment, its original candidate path was replaced by the restored unseeded build. Reproduction requires the preserved historical binaries or reconstruction of the corresponding sources; a build of the current checkout does not recreate this candidate. The complete pair counts, exact results, ratios and fingerprints were independently checked at the time of the experiment.
 
 The earlier **47× median speedup** compared obtaining a bound with solving exactly. It is not an exact-search acceleration claim. See [that separate experiment](SPEED.md).

@@ -1,5 +1,10 @@
 # Deterministic pathway reconstruction
 
+> Historical investigation from 29 September 2026. Implementation comparisons,
+> validation counts, and timings below describe that change and its measured
+> binaries. See the [audit index](../README.md) for scope and the
+> [benchmark guide](../../benchmarks/README.md) for current commands.
+
 ## Measurement
 
 The parallel solver proves an assembly index without recording a pathway,
@@ -126,8 +131,10 @@ Both binaries ran each input with
 [timing samples](timings.csv) include pathway SHA-256 digests. All 144 measured
 executions and their warm-ups produced byte-identical pathways and identical
 reconstruction counters for the same input across versions and repetitions.
-The comparison script and binary metadata are retained locally in
-`build/pathway-measurements/compare.py` and `final-comparison.json`.
+The comparison script and binary metadata were retained locally in
+`build/pathway-measurements/compare.py` and
+`build/pathway-measurements/final-comparison.json`. These unpublished build
+artifacts are not included in a repository checkout.
 
 Times below are milliseconds, reported as median +/- median absolute deviation
 (MAD); optimization is the candidate's median parallel elapsed time.

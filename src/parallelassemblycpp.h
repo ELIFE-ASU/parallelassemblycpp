@@ -27,14 +27,17 @@ namespace parallelassemblycpp
  * concurrent work.
  */
 
-/** Options for one or more in-process assembly-index calculations. */
+/** Options for serial in-process molecular or native graph calculations. */
 struct CalculationOptions
 {
-    /** Cooperative std::clock budget for search; the maximum value is unlimited. */
+    /**
+     * Cooperative std::clock budget for search; the maximum value is unlimited.
+     * Each batch item receives its own budget. An operation can overrun it.
+     */
     std::uint64_t runtimeTicks = std::numeric_limits<std::uint64_t>::max();
     /** Initial DAG mask limit, including one-edge masks; must be at least one. */
     int enumerationLimit = 50000000;
-    /** Remove explicit H vertices from MOL/SDF and native graph inputs. */
+    /** Remove vertices labelled exactly H and their incident bonds. */
     bool removeHydrogens = true;
     /** Subtract joins between processed disconnected components. */
     bool compensateDisjoint = false;
@@ -50,7 +53,10 @@ struct CalculationOptions
 /** Options for UTF-8 string calculations; each Unicode scalar is a primitive. */
 struct StringCalculationOptions
 {
-    /** Cooperative std::clock budget for exact search; maximum is unlimited. */
+    /**
+     * Cooperative std::clock budget for exact search; maximum is unlimited.
+     * Each batch item receives its own budget. UTF-8 decoding is not budgeted.
+     */
     std::uint64_t runtimeTicks = std::numeric_limits<std::uint64_t>::max();
     /** Identify a fragment with its reversal, without Unicode normalization. */
     bool acceptReversed = false;
@@ -86,6 +92,8 @@ struct CalculationResult
 
 /**
  * Calculate from one V2000 header and atom/bond blocks without creating files.
+ * Graph labels use atom symbols and bond orders. Coordinates, charges,
+ * isotopes, stereochemistry, and other property fields are ignored.
  * Trailing molfile properties and subsequent SDF records are left unread.
  * Parsing, option, and calculation failures are reported in the result.
  */
@@ -96,6 +104,9 @@ PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateMolfile(
 
 /**
  * Calculate from five native graph lines without creating files.
+ * Lines contain the name, vertex count, one-based edge endpoint pairs, atom
+ * labels in vertex order, and positive bond labels in edge order. Entries on
+ * each line are whitespace-separated; atom labels must be valid UTF-8.
  * Trailing lines are left unread; failures are reported in the result.
  */
 PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateGraph(

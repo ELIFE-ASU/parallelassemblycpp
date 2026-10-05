@@ -1,10 +1,28 @@
 # Benchmarks
 
-The benchmark tools run isolated ParallelAssemblyCpp calculations, verify their
-assembly indices, and report wall time and program-reported `std::clock` ticks.
-Plotting requires Matplotlib, included in `environment.yml`. For an existing
-Conda environment, run `conda env update --file environment.yml`; for a separate
-Python installation, run `python -m pip install matplotlib`.
+The benchmark tools run isolated ParallelAssemblyCpp calculations, compare
+reported indices with the selected reference values, and retain raw wall-time
+and program-reported `std::clock` samples. Matching a reference is a regression
+check; it does not independently prove an assembly minimum. Reviewed and
+provisional references are distinguished in [the corpus](#corpus).
+
+Run all examples from the repository root using Python 3.10 or newer. The
+[development guide](../docs/development.md) covers compiler and CMake setup.
+Plotting requires Matplotlib, included in [environment.yml](../environment.yml).
+For an existing Conda environment, run
+`conda env update --file environment.yml`; for a separate Python installation,
+run `python -m pip install matplotlib`. Scaling drivers require Matplotlib even
+when selecting a single layout.
+
+| Task | Guide or tool |
+| --- | --- |
+| Time a suite or custom graph | [Quick start](#quick-start), [common runs](#common-runs) |
+| Compare serial builds | [Paired comparisons](#paired-comparisons), [LTO and PGO](#lto-and-pgo) |
+| Measure OpenMP or MPI/OpenMP scaling | [Parallel scaling](#parallel-scaling) |
+| Run the complete Sol batch experiment | [ASU Sol batch job](#asu-sol-batch-job) |
+| Inspect untimed solver counters | [Telemetry](#telemetry) |
+| Compare cache policies and memory | [Shared transposition-cache experiments](#shared-transposition-cache-experiments) |
+| Compare constructive bounds with exact search | [Graph comparison](#graph-pair-upper-bound-comparison), [string timing](#string-re-pair-timing) |
 
 ## Quick start
 
@@ -18,8 +36,23 @@ python benchmarks/benchmark.py \
   --suite quick
 ```
 
-Use `--list-cases` to inspect the selected cases and
-`python benchmarks/benchmark.py --help` for all runner options.
+The `performance`, `parallel`, LTO, and PGO presets target x86-64-v3 hardware.
+For other CPUs, use the portable `dev` preset and
+`build/dev/ParallelAssemblyCpp`, or configure the performance preset with
+`-DPARALLELASSEMBLYCPP_X86_64_V3=OFF`.
+
+The general runner defaults to five measured rounds and one warm-up round
+(six measured rounds with a baseline), with a 600-second timeout per process.
+Use `--runs 1 --warmup 0` for a smoke check. Inspect the selected cases without
+building or running the solver:
+
+```bash
+python benchmarks/benchmark.py --suite quick --list-cases
+python benchmarks/benchmark.py --help
+```
+
+Without `--suite`, `--case`, `--manifest`, or `--input`, the runner selects
+`unitTests/ketoconazole.mol`; it does not select the whole corpus.
 
 ## Graph-pair upper-bound comparison
 
@@ -91,11 +124,12 @@ Build the string timing probe and compare exact search with its constructive
 bound on a literal UTF-8 input:
 
 ```bash
-cmake --preset dev
-cmake --build --preset dev --target parallelassemblycpp_string_repair_speed_probe
+cmake -S . -B build/repair-timing -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build/repair-timing --target parallelassemblycpp_string_repair_speed_probe
 printf 'abababab' > build/string-repair-input.txt
-build/dev/parallelassemblycpp_string_repair_speed_probe exact build/string-repair-input.txt
-build/dev/parallelassemblycpp_string_repair_speed_probe re-pair build/string-repair-input.txt
+build/repair-timing/parallelassemblycpp_string_repair_speed_probe exact build/string-repair-input.txt
+build/repair-timing/parallelassemblycpp_string_repair_speed_probe re-pair build/string-repair-input.txt
 ```
 
 The entire file is one string, including any final newline; this probe does
@@ -110,7 +144,7 @@ when comparing timings. A bound is not a proof of the minimum.
 
 ## ASU Sol batch job
 
-After the [Sol environment setup](../README.md#quick-start) job succeeds,
+After the [Sol environment setup](../docs/sol.md) job succeeds,
 submit from the repository root:
 
 ```bash
@@ -207,9 +241,9 @@ sbatch --account=<your-account> --time=2-00:00:00 \
   --hybrid-layouts 2x64,4x32,8x16,16x8,32x4,64x2 --runs 6
 ```
 
-Use absolute paths for `--env-prefix`, `--output-dir`, and the optional
-`--repo-dir` when submitting from outside the checkout. Existing output
-directories are rejected. If `--threads` is omitted, the script selects powers
+The script requires absolute paths for `--env-prefix`, `--output-dir`, and
+`--repo-dir`. Set `--repo-dir` when submitting from outside the checkout.
+Existing output directories are rejected. If `--threads` is omitted, the script selects powers
 of two up to the allocated CPU count and adds that count if it is not a power
 of two. Hybrid defaults derive from those selected totals; use `--hybrid-layouts`
 for explicit rank/thread pairs or `--hybrid-layouts none` to run only the OpenMP
@@ -228,7 +262,10 @@ LTO, and PGO options are included.
 
 ## Corpus
 
-`cases.tsv` is the maintained benchmark manifest.
+[`cases.tsv`](cases.tsv) is the maintained benchmark manifest: 37 distinct
+inputs, with overlapping suite membership. Reviewed values come from the
+regression manifest; provisional values guard benchmark behavior and are not
+independently established minima.
 
 | Column | Meaning |
 | --- | --- |
@@ -244,10 +281,10 @@ values are rejected.
 
 | Suite | Scope |
 | --- | --- |
-| `quick` | Short, varied regression workloads for routine checks. |
-| `full` | All quick cases plus larger reviewed inputs. |
-| `profile` | Longer search-heavy inputs; most expectations are provisional. |
-| `scaling` | Cumulative amino-acid and 64-bit mask-boundary series. |
+| `quick` | 5 short, varied regression workloads for routine checks. |
+| `full` | 15 reviewed inputs, including every quick case. |
+| `profile` | 5 longer search-heavy inputs; four expectations are provisional. |
+| `scaling` | 18 cumulative amino-acid and 64-bit mask-boundary inputs. |
 
 The largest amino-acid scaling case has 100 bonds and can take several minutes
 and over 1 GiB of memory. The mask-boundary series extends to 129 bonds.
@@ -272,6 +309,13 @@ python benchmarks/benchmark.py \
   --input unitTests/sucrose.mol \
   --expected 8
 ```
+
+Always provide `--expected` for a custom input when you want result validation;
+a non-default custom input without it has no expected-index check. This runner
+accepts MOL/SDF and native graph files. For strings, use the
+[string timing probe](#string-re-pair-timing).
+
+### Telemetry
 
 Collect one additional, untimed telemetry run per case:
 
@@ -378,8 +422,12 @@ The aggregate and worker records expose `deeper_tasks_spawned`,
 `deeper_tasks_executed`, `task_steal_attempts`, `task_steals`,
 `local_task_executions`, `scheduler_idle_waits`,
 `scheduler_idle_nanoseconds`, `deep_refill_activations`,
-`task_queue_high_watermark`, and `maximum_task_depth_executed`. The reported
-`busy_timing_method` is `elapsed_minus_scheduler_idle_time`.
+`proactive_tail_refills`, `task_queue_high_watermark`, and
+`maximum_task_depth_executed`. `proactive_tail_refills` counts process-local
+root frontiers that arm depth-two donation as their final root leases are
+claimed, independently of observed idle pressure. This is separate from
+starvation-driven deep refills.
+The reported `busy_timing_method` is `elapsed_minus_scheduler_idle_time`.
 
 Task-transfer measurements appear on each worker and in the aggregate:
 
@@ -477,8 +525,11 @@ and rejects stale corpus fingerprints, inconsistent executable fingerprints, or
 mismatched execution configurations. Shared CI does not enforce timing thresholds
 because host contention makes them unreliable.
 
-Promotion reports require 100 rounds for `quick` and `full`, 6 for `profile`,
-and 30 for `scaling`.
+Promotion reports require at least 100 rounds for `quick` and `full`, 6 for
+`profile`, and 30 for `scaling`; a normal six-round exploratory run does not
+satisfy the gate. `--threshold VALUE` changes the required speedup threshold.
+Use [the topology checker](#comparing-topology-reports) for parallel wall-time
+scaling rather than treating process clock ticks as comparable across layouts.
 
 ## Shared transposition-cache experiments
 
@@ -514,8 +565,10 @@ isolated temporary inputs, assembly-index checks, and executable/corpus
 fingerprints. An even round count is required. Each variant has its own paired
 schema-v2 JSON report. The separate `profiles.json` records one extra validated
 run of every baseline and candidate case, with full telemetry and GNU time
-peak RSS in KiB. The telemetry executable is optional; without it, the extra
-run measures RSS using the ordinary executable. These profiles never enter
+peak RSS in KiB. GNU time is required (default `/usr/bin/time`); use
+`--time-executable PATH` when it is installed elsewhere. The telemetry
+executable is optional; without it, the extra run measures RSS using the
+ordinary executable. These profiles never enter
 timing aggregates. RSS from an instrumented executable includes telemetry
 overhead; for OpenMP it describes the whole process, including every worker.
 GNU time does not report summed peak RSS across MPI ranks, so this driver is
@@ -579,8 +632,9 @@ or PGO build.
 
 ## Parallel scaling
 
-The `parallel` preset builds serial, OpenMP, MPI, and hybrid executables plus a
-telemetry-enabled sibling for each parallel topology:
+The `parallel` preset requires both OpenMP and MPI and builds serial, OpenMP,
+MPI, and hybrid executables, each with a telemetry-enabled sibling. For setup
+and solver behavior, see [the parallel guide](../docs/parallel.md).
 
 ```bash
 cmake --preset parallel
@@ -612,58 +666,19 @@ mpirun --map-by slot --bind-to core -n 4 \
     --pathway=0 --parallel=on --threads=1 --telemetry=1
 ```
 
-These placement flags use Open MPI syntax. Each process enumerates the root
-once, then shares an immutable processed graph, canonical seed, runtime DAG,
-and serialized root-job table. Workers own their post-seed canonical deltas,
-fragmentation scratch, and search caches. MPI and hybrid ranks request disjoint
-chunks from a rank-zero global queue, so work follows each rank's actual local
-capacity while every root job is executed exactly once. Root occurrences borrow
-immutable serialized words; transferred descendant masks are rebuilt inside
-the receiving worker.
+These placement flags use Open MPI syntax; replace `molecule.mol` with an
+existing graph input. Set thread and rank counts to fit the available allocation.
+For explicit `taskset` examples below, choose CPU IDs permitted by your current
+process affinity.
 
-The adaptive MPI default uses one-root worker leases, with each rank-level
-broker refill bundling one lease per local worker. This bounds tail imbalance
-when a single root is much more expensive than its neighbours; faster ranks
-simply issue more requests. A low watermark starts one asynchronous pending
-refill while local root work remains. Replies carry the latest incumbent
-bound, and completed work requests are drained before global termination.
-All MPI progress stays on the initializing thread, preserving
-`MPI_THREAD_FUNNELED`. Non-distributed parallel scheduling retains guided leases
-for larger frontiers. Root jobs take priority over transferred work.
-Within hybrid ranks, observed idle pressure can make a root search expose
-immediate children as depth-two tasks. The idle trigger is at least half the
-workers on ranks with fewer than eight local workers, and roughly one quarter
-(with a minimum of two) on larger ranks.
-
-Each rank has one lazily populated deque per local worker. Producers push to
-their own deque and execute its newest task (owner LIFO); idle peers take the
-oldest task from another worker (thief FIFO). After a worker fails to find
-local or stealable work and the live idle count reaches the trigger, the
-scheduler can request a refill before entering its 1 ms signal-poll wait.
-Depths three and four are armed only through this observed-starvation path,
-one level at a time while work at the preceding depth remains outstanding.
-The estimated rank frontier must be below eight tasks per worker to request a
-starvation refill. Donation stops around a target of sixteen tasks per worker,
-with a hard rank-wide task-slot cap of thirty-two times the local worker count
-and an absolute transferred-task depth cap of four. Within the process-local
-scheduler, root/task outstanding counts, ready/slot/idle counts, and the
-donation request occupy separate 64-byte-aligned storage; worker deque state is
-aligned separately too. Its serial/OpenMP root-lease cursor is isolated there;
-distributed searches use the broker's separate cursor.
-
-The largest initial duplicate is evaluated first on each rank to publish a
-valid first-step incumbent before concurrent searching begins. Improved bounds
-are propagated periodically with a passive-target RMA minimum, allowing remote
-progress to tighten local pruning before the final result reduction. Root work
-uses the FUNNELED request broker, and the RMA heartbeat also propagates
-cancellation so it stops issuing new chunks after an observed interrupt or
-search failure. Ranks waiting for global completion continue servicing refill
-requests and RMA, sleeping for 1 ms between progress calls while the completion
-barrier remains pending. Task transfer is disabled in an MPI-only rank with
-one local worker, but remains available within hybrid ranks.
-
-Set the positive `PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to use a
-fixed root lease size. Only MPI rank zero writes output.
+MPI ranks lease disjoint root jobs from a rank-zero queue and exchange improved
+incumbents during search. OpenMP workers and hybrid workers within a rank can
+also transfer descendant tasks. Small process-local frontiers can enable
+initial donation; substantial process-local frontiers enable it near the root
+tail. Observed idle pressure can trigger deeper donation, subject to bounded
+queue size and depth. Only MPI rank zero writes output. Use the positive
+`PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE` environment variable to experiment with
+a fixed root lease size; retain that setting with your timing evidence.
 
 The runner accepts separate parallel policies, launchers, and environment
 variables for each role:
@@ -800,6 +815,33 @@ python benchmarks/benchmark.py \
   --json-output build/parallel-paclitaxel-omp-4.json
 ```
 
+### Paclitaxel hybrid sweep
+
+`hybrid_scaling.py` measures explicit rank/thread layouts on one Linux node.
+It requires Open MPI, `taskset`, readable physical-core topology, and enough
+cores in the driver's current affinity. Use the `parallel` build above, then
+preview a selection for an allocation of eight physical cores:
+
+```bash
+python benchmarks/hybrid_scaling.py \
+  --build-dir build/parallel --cpus 8 --layouts 2x2 2x4 4x2 \
+  --runs 6 --warmup 1 --output-dir build/hybrid-scaling --dry-run
+```
+
+Remove `--dry-run` to measure. Set `--cpus` to your actual allocated physical
+cores; declaring a larger number does not reserve CPUs. Every layout needs at
+least two ranks and two threads per rank, and their product must fit the declared
+allocation. The preview checks argument syntax and prints commands; it does not
+verify that executables, topology, or the declared allocation can support a run.
+
+Each layout measures Paclitaxel against an adjacent serial reference using the
+same reference CPU as the OpenMP sweep. The driver launches local Open MPI with
+core binding and oversubscription disabled, and sets the OpenMP thread limits
+per rank. It produces `hybrid-RxT.json`, `cpu-topology.json`, `scaling.txt`, and
+PNG/PDF plots. Completed JSON reports survive a later layout failure; the final
+summary and plots require all selected layouts to finish. Existing results are
+not overwritten. Use `--mpirun PATH` to select a particular Open MPI installation.
+
 ### Comparing topology reports
 
 Compare topology reports with:
@@ -822,8 +864,12 @@ speedup and efficiency; add `--require-all-faster` to fail on a case at or below
 - Cases run serially in isolated temporary directories; launchers may add
   workers within a calculation.
 - Case order rotates between rounds. Paired runs alternate AB and BA order.
-- Wall time includes startup and parsing. `std::clock` starts after parsing and
-  is platform-specific.
+- Wall time includes startup, parsing, output, and launcher overhead.
+  Program-reported `std::clock` ticks start after graph parsing and have
+  platform-specific semantics; they are not wall seconds or hardware cycles.
+  On typical POSIX systems they measure process CPU time across threads, and
+  MPI output is not the sum of CPU time across ranks. Use wall time to compare
+  parallel layouts.
 - Reports show median, median absolute deviation, p95, and raw samples. No
   outliers are removed automatically.
 - JSON schema 2 stores schedules, platform data, executable and input

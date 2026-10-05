@@ -1,94 +1,143 @@
 # Tests
 
-`regression_cases.tsv` maps each reviewed fixture to its expected assembly
-index. `pathway_cases.tsv` selects cases whose pathway JSON must also match a
-file in `expected_pathways/`. Pathway comparisons ignore formatting.
+Run commands below from the repository root. The CMake test builds require a
+C++20 compiler, CMake 3.25 or newer, Ninja, and Python 3.10 or newer. The benchmark
+tooling tests also require Matplotlib. Activate the supplied Conda environment,
+or install Matplotlib into the Python environment selected by CMake. See the
+[development guide](../docs/development.md) for setup and interpreter selection.
 
-Run the focused developer suite from the repository root:
+## Run the suites
+
+The `dev` preset builds the portable solver, telemetry executable, library, and
+unit tests. It runs CLI checks, tooling checks, and the first 20 manifest cases:
 
 ```bash
 cmake --preset dev
-cmake --build --preset dev
+cmake --build --preset dev --parallel 2
 ctest --preset dev
 ```
 
-Use the `ci` preset to run the complete regression manifest.
+The `ci` preset runs the complete regression manifest and the full exhaustive
+and randomized graph Re-Pair corpus:
 
-Parallel solver parity and per-worker telemetry invariants use a dedicated
-preset so performance builds remain test-free:
+```bash
+cmake --preset ci
+cmake --build --preset ci --parallel 2
+ctest --preset ci
+```
+
+Use CTest names and labels to select checks or list them without running them:
+
+```bash
+ctest --preset dev -N
+ctest --preset dev -L unit
+ctest --preset dev -R '^unit\.string-'
+ctest --preset dev -L tooling
+```
+
+The portable `parallel-tests` build additionally requires OpenMP and MPI. Its
+test preset selects only tests labelled `parallel`; run the `ci` suite as well
+for complete serial regression coverage. See the
+[parallel guide](../docs/parallel.md) for build and runtime requirements.
 
 ```bash
 cmake --preset parallel-tests
-cmake --build --preset parallel-tests
+cmake --build --preset parallel-tests --parallel 2
 ctest --preset parallel-tests
 ```
 
-The parallel harness repeats serial/OpenMP calculations across 1, 2, and 4
-workers, including the 63/64/65 and 127/128/129 edge-mask boundaries and a
-disconnected molecule. It exercises both one-branch and chunked dynamic leases.
-When MPI targets are available, the same harness also checks rank-partitioned
-MPI and hybrid aggregation, exact lease reductions, and complete branch
-coverage.
+The `release`, `performance`, and `parallel` presets have testing disabled.
 
-Run the Python harness directly when selecting cases or controlling parallelism:
+## Select regression cases directly
 
-```bash
-python unitTests/unitTester.py build/release/ParallelAssemblyCpp --jobs 4
-python unitTests/unitTester.py build/release/ParallelAssemblyCpp --limit 20
-python unitTests/unitTester.py --build --pathways-only --verbose
-```
+[regression_cases.tsv](regression_cases.tsv) maps reviewed fixtures to their
+expected assembly indices. [pathway_cases.tsv](pathway_cases.tsv) selects cases
+whose pathway JSON must also match a file in
+[expected_pathways/](expected_pathways/). Comparisons parse JSON, so formatting
+and object-key order do not affect the result.
 
-Outside `--audit` mode, the harness runs command-line checks before the selected
-regression cases. These cover validation, legacy names, limits, inputs, outputs,
-and Linux memory reporting. They also run the five-case upstream string corpus, validate
-line-ending and incompatible-option behavior, and check per-line pathway JSON.
-Canonical and legacy flag spellings are exercised on actual inputs, with
-invalid values, duplicate aliases, unusual filenames, output failures, and
-disabled-output preservation checked separately. Graph-only flags in string
-mode and enabled reversal matching in graph mode must produce diagnostics.
-The focused `stringAssemblyTester` compares short binary and ternary inputs with
-an independent exhaustive search and covers interval merging, remnants,
-multi-step pathways, reversal, cancellation, target-index stopping, and JSON
-escaping. Pathway checks replay fragment boundaries to reject impossible reuse.
-Re-Pair seeds are replayed independently across nested, reversed, Unicode, and
-randomized constructions. Tests check that equality pruning retains an optimal
-seed's witness, exact search improves suboptimal seeds, and cancellation,
-shards, and OpenMP workers preserve a valid incumbent.
-Unicode strings also check scalar and encoding boundaries, embedded control
-characters, malformed UTF-8 byte offsets, and parity with serial, OpenMP, MPI,
-and hybrid execution. CLI checks preserve BOMs, combining marks, and Unicode
-line separators as symbols and verify that malformed records stop processing
-after preserving completed results.
-
-The CMake suite also runs `graphRepairTester.py`, which independently replays
-Re-Pair certificates and compares their bounds with an exact small-graph oracle.
-The `ci` preset enables its full exhaustive and randomized corpus.
-`graphRepairCliTester.py` checks the `--algorithm=full` and `--algorithm=re-pair`
-selectors, the legacy `--upper-bound=graph-repair` selector, incompatible options,
-and the distinct exact-search and heuristic certificate formats. Zero-runtime
-checks ensure that full search retains its trivial initial bound without a
-Re-Pair prepass.
-
-`stringRepairTester.cpp` independently replays string construction rules and
-compares bounds with an exhaustive small-string oracle in both reversal modes.
-It covers overlaps, deterministic choices, Unicode, invalid encodings, and long
-repetitive inputs. `stringRepairCliTester.py` validates per-line certificates,
-flags, status output, line endings, and output failures, including root-only
-execution through OpenMP, two-rank MPI, and hybrid builds when enabled.
-`stringLibraryTester.cpp`
-checks exact and Re-Pair library calls, batch recovery, and budget validation;
-the installed-package consumer also exercises these public entry points.
-
-`--build` compiles and runs four standalone C++ tests: masks, tree and cyclic
-canonicalization, and string assembly. It then builds an x86-64-v3 executable
-with telemetry as a test shortcut. Use CMake for the complete unit-test suite
-and for portable builds on older x86-64 or non-x86 systems.
-
-Audit manifests and fixture coverage without running calculations:
+Pass the executable from your chosen build explicitly:
 
 ```bash
-python unitTests/unitTester.py --audit
+python3 unitTests/unitTester.py build/dev/ParallelAssemblyCpp --jobs 4
+python3 unitTests/unitTester.py build/dev/ParallelAssemblyCpp --limit 20
+python3 unitTests/unitTester.py build/dev/ParallelAssemblyCpp --pathways-only --verbose
 ```
 
-Fixture-only molfiles are reported by the audit and are not treated as passing
-regression cases. Use `--verbose` to list them.
+`--jobs` controls independent test processes, not solver threads. `--limit N`
+selects the first N cases after any `--pathways-only` filtering. `--timeout`
+sets the regression timeout per case in seconds (default: 300). Every normal
+run performs the CLI checks before the selected cases; limiting the manifest
+does not skip those checks. CMake uses two regression processes and a
+120-second timeout per case, plus a separate one-case telemetry regression.
+
+The optional `--build` shortcut uses `$CXX` or `c++` to compile four standalone
+tests (masks, tree canonicalization, cyclic canonicalization, and string
+assembly), then an executable with telemetry. It requires a compiler accepting
+GCC-style flags and an x86-64-v3 CPU. Its default output is
+`build/ParallelAssemblyCpp`, which differs from the CMake preset paths. Use
+CMake for portable builds and the complete test suite.
+
+```bash
+python3 unitTests/unitTester.py --build --pathways-only --verbose
+```
+
+## Coverage
+
+| Area | Checks |
+| --- | --- |
+| Core graph search | Active-word masks and their lifetimes, transposition tables, tree and cyclic canonicalization, cancellation polling, matching-bound refresh, fragmentation metadata, task transfer, MOL/SDF and native graph parsing, and pathway generation. Telemetry variants exercise the cache and bound-refresh counters. |
+| CLI and manifest | Reviewed assembly indices and golden pathways; canonical and legacy flags; invalid values and duplicate aliases; input/output failures and unusual filenames; disabled-output preservation; limits; Linux memory reporting; string records, incompatible options, and malformed UTF-8 diagnostics. |
+| Exact string search | Independent exhaustive short-string oracle, fragment-boundary pathway replay, interval merging, remnants, reversal, cancellation, target-index stopping, JSON escaping, and Unicode scalar/encoding boundaries. Independently replayed Re-Pair seeds cover nested, reversed, Unicode, and randomized constructions, optimal witness retention, and improvement of suboptimal seeds. |
+| Re-Pair bounds | Independent graph and string certificate replay and small-instance exact oracles; deterministic choices, overlaps, Unicode and invalid encodings; CLI algorithm selectors, certificate formats, output failures, and heuristic status. Graph full-search checks verify that zero runtime retains the trivial initial bound without a graph Re-Pair prepass. |
+| Public library | Exact and Re-Pair graph/string calls, file and stream inputs, batch recovery, budgets, and repeated calls without leaking calculation state or creating output files. |
+| Tooling | Fixture audit, repository text policy, benchmark runner unit tests, and benchmark corpus validation. |
+
+[parallelSolverTester.py](parallelSolverTester.py) repeats serial/OpenMP
+calculations with 1, 2, and 4 workers. Cases cover the 63/64/65 and 127/128/129
+edge-mask boundaries and a disconnected molecule. Telemetry checks cover
+single-branch and chunked leases, adaptive task donation and tail refills,
+worker aggregation, and complete branch coverage. MPI and hybrid variants also
+exercise distributed work and refill reductions;
+[mpiRefillTester.cpp](mpiRefillTester.cpp) checks pending replies, cancellation,
+concurrent claims, and empty frontiers.
+
+[parallelStringTester.py](parallelStringTester.py) checks exact string and
+pathway parity across the enabled execution modes, including reversal and
+Unicode. The string Re-Pair CLI tests also run through OpenMP, MPI, and hybrid
+executables; this heuristic executes on the root process in distributed modes.
+
+## Check the installed library
+
+The package consumer exercises the exported `ParallelAssemblyCpp::Library`
+target with both graph and string APIs. After building `release`, configure it
+against a staged install (the example below uses a POSIX shell):
+
+```bash
+cmake --preset release
+cmake --build --preset release --parallel 2
+cmake --install build/release --prefix build/stage
+cmake -S unitTests/packageConsumer -B build/package-consumer -G Ninja \
+  -DCMAKE_PREFIX_PATH="$PWD/build/stage"
+cmake --build build/package-consumer --parallel 2
+ctest --test-dir build/package-consumer --output-on-failure --no-tests=error
+```
+
+[CI](../.github/workflows/test.yml) runs the serial and parallel suites, checks
+Clang and MSVC unit builds, verifies the minimum CMake version, and tests staged
+installs and binary/source packages. Its Python style checks use Ruff in
+addition to the CTest tooling checks.
+
+## Audit fixtures
+
+Audit manifests, golden files, duplicate contents, and fixture coverage without
+running solver calculations:
+
+```bash
+python3 unitTests/unitTester.py --audit
+python3 unitTests/unitTester.py --audit --verbose
+```
+
+Fixture-only molfiles are reported by the audit and are not passing regression
+cases. Add a reviewed expected index to the manifest before counting a fixture
+as regression coverage. `--verbose` lists the fixture-only molecules.
