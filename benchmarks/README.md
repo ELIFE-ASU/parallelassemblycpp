@@ -85,6 +85,29 @@ the cost of obtaining each result, rather than acceleration of the exact search.
 See the [timing report](../audits/2026-09-29-graph-repair/SPEED.md) for measurements
 and all per-case comparisons.
 
+## String Re-Pair timing
+
+Build the string timing probe and compare exact search with its constructive
+bound on a literal UTF-8 input:
+
+```bash
+cmake --preset dev
+cmake --build --preset dev --target parallelassemblycpp_string_repair_speed_probe
+printf 'abababab' > build/string-repair-input.txt
+build/dev/parallelassemblycpp_string_repair_speed_probe exact build/string-repair-input.txt
+build/dev/parallelassemblycpp_string_repair_speed_probe re-pair build/string-repair-input.txt
+```
+
+The entire file is one string, including any final newline; this probe does
+not use the CLI's one-string-per-line convention. Add `--accept-reversed` to
+either command for reversal equivalence. Each process emits a flushed JSON
+`started` event followed by `finished`, reporting scalar length, index, proof
+status, wall seconds and CPU seconds. Re-Pair also reports rule and residual
+counts. Timing excludes file I/O and includes UTF-8 decoding; neither method
+writes a pathway file. Use an external timeout for expensive exact searches,
+repeat samples with alternating order, and retain the different guarantees
+when comparing timings. A bound is not a proof of the minimum.
+
 ## ASU Sol batch job
 
 After the [Sol environment setup](../README.md#quick-start) job succeeds,

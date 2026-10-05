@@ -65,6 +65,16 @@ and the distinct exact-search and heuristic certificate formats. Zero-runtime
 checks ensure that full search retains its trivial initial bound without a
 Re-Pair prepass.
 
+`stringRepairTester.cpp` independently replays string construction rules and
+compares bounds with an exhaustive small-string oracle in both reversal modes.
+It covers overlaps, deterministic choices, Unicode, invalid encodings, and long
+repetitive inputs. `stringRepairCliTester.py` validates per-line certificates,
+flags, status output, line endings, and output failures, including root-only
+execution through OpenMP, two-rank MPI, and hybrid builds when enabled.
+`stringLibraryTester.cpp`
+checks exact and Re-Pair library calls, batch recovery, and budget validation;
+the installed-package consumer also exercises these public entry points.
+
 `--build` compiles and runs four standalone C++ tests: masks, tree and cyclic
 canonicalization, and string assembly. It then builds an x86-64-v3 executable
 with telemetry as a test shortcut. Use CMake for the complete unit-test suite

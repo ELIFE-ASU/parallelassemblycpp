@@ -47,10 +47,11 @@ Notes:
   Options may appear before or after INPUT. Use --name=value.
   Boolean values are 0 or 1.
   --algorithm=full runs exact search (the default). --algorithm=re-pair returns
-  a molecular upper bound and does not prove the minimum. Re-Pair uses serial
-  execution and is unavailable for strings, explicit --runtime or --enum-max,
-  and enabled telemetry or intermediate-index output.
-  --upper-bound=graph-repair remains supported; do not combine it with --algorithm.
+  a graph or string upper bound and does not prove the minimum. Re-Pair uses
+  serial execution: --parallel=auto reports a fallback and --parallel=on fails.
+  Re-Pair rejects explicit --runtime or --enum-max and enabled telemetry or
+  intermediate-index output. Its pathway JSON is a replayable bound certificate.
+  --upper-bound=graph-repair remains graph-only; do not combine it with --algorithm.
   A lone -- ends option parsing, so an INPUT whose name begins with a dash
   must follow it. Nothing after -- is an option: a later --help or
   --name=value is read as INPUT instead.
@@ -74,8 +75,8 @@ Notes:
   --enum-max includes one-edge masks and applies only to graph inputs.
   A limited search records its best index and status in INPUTOut; the index may
   not be minimal.
-  String assembly distributes search branches within each line across OpenMP
-  threads and/or MPI ranks, preserving input order and deterministic pathways.
+  Full string assembly distributes search branches within each line across
+  OpenMP threads and/or MPI ranks, preserving input order and deterministic pathways.
   String threads are capped by available root jobs; short strings may not
   benefit from parallel execution. Telemetry and intermediate-index output
   are unavailable in string mode. Explicit --enum-max and --remove-hydrogens
@@ -118,6 +119,7 @@ Examples:
   ParallelAssemblyCpp molecule.mol --algorithm=re-pair
   ParallelAssemblyCpp molecule --pathway=0 --enum-max=1000000
   ParallelAssemblyCpp strings.txt --run-strings=1
+  ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair
   ParallelAssemblyCpp --pathway=0 -- -dashed-name.mol
 )";
 }

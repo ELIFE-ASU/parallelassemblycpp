@@ -574,7 +574,7 @@ function(parallelassemblycpp_add_solver target)
   parallelassemblycpp_configure_target(${target})
 endfunction()
 
-add_library(ParallelAssemblyCppLibrary STATIC src/main.cpp)
+add_library(ParallelAssemblyCppLibrary STATIC src/main.cpp src/stringApi.cpp)
 add_library(ParallelAssemblyCpp::Library ALIAS ParallelAssemblyCppLibrary)
 target_compile_definitions(
   ParallelAssemblyCppLibrary
@@ -944,6 +944,11 @@ if(BUILD_TESTING)
   )
   # Measure both algorithms under production optimization/assertion settings.
   parallelassemblycpp_configure_target(parallelassemblycpp_graph_repair_speed_probe)
+  add_executable(
+    parallelassemblycpp_string_repair_speed_probe
+    benchmarks/stringRepairSpeedProbe.cpp
+  )
+  parallelassemblycpp_configure_target(parallelassemblycpp_string_repair_speed_probe)
   set(graph_repair_test_options)
   if(PARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS)
     list(APPEND graph_repair_test_options --full)
@@ -968,6 +973,46 @@ if(BUILD_TESTING)
       "$<TARGET_FILE:ParallelAssemblyCpp>" ${graph_repair_cli_options}
   )
   set_tests_properties(unit.graph-repair-cli PROPERTIES LABELS "unit" TIMEOUT 120)
+  parallelassemblycpp_add_unit_test(
+    string-repair
+    parallelassemblycpp_string_repair_tests
+    unitTests/stringRepairTester.cpp
+  )
+  add_test(
+    NAME unit.string-repair-cli
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/unitTests/stringRepairCliTester.py"
+      "$<TARGET_FILE:ParallelAssemblyCpp>" ${graph_repair_cli_options}
+  )
+  set_tests_properties(unit.string-repair-cli PROPERTIES LABELS "unit" TIMEOUT 120)
+  foreach(string_repair_variant IN ITEMS OMP MPI Hybrid)
+    if(TARGET ParallelAssemblyCpp${string_repair_variant})
+      set(string_repair_launcher_options)
+      if(NOT string_repair_variant STREQUAL "OMP")
+        list(APPEND string_repair_launcher_options
+          --mpiexec "${MPIEXEC_EXECUTABLE}"
+          "--mpiexec-numproc-flag=${MPIEXEC_NUMPROC_FLAG}")
+      endif()
+      string(TOLOWER "${string_repair_variant}" string_repair_variant_name)
+      add_test(
+        NAME unit.string-repair-cli-${string_repair_variant_name}
+        COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/unitTests/stringRepairCliTester.py"
+          "$<TARGET_FILE:ParallelAssemblyCpp${string_repair_variant}>"
+          ${string_repair_launcher_options}
+      )
+      set_tests_properties(unit.string-repair-cli-${string_repair_variant_name}
+        PROPERTIES LABELS "unit;parallel" PROCESSORS 4 TIMEOUT 300
+          ENVIRONMENT "OMP_NUM_THREADS=2;OMP_THREAD_LIMIT=4;OMP_DYNAMIC=FALSE")
+    endif()
+  endforeach()
+  parallelassemblycpp_add_unit_test(
+    string-library
+    parallelassemblycpp_string_library_tests
+    unitTests/stringLibraryTester.cpp
+  )
+  target_link_libraries(parallelassemblycpp_string_library_tests
+    PRIVATE ParallelAssemblyCppLibrary)
   parallelassemblycpp_add_unit_test(
     string-assembly
     parallelassemblycpp_string_assembly_tests

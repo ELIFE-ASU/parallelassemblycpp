@@ -39,6 +39,7 @@
 #include <utility>
 #include <vector>
 #include "stringAssembly.h"
+#include "stringRepair.h"
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
     #include <omp.h>
 #endif
@@ -2451,10 +2452,11 @@ bool mergeDistributedStringResult(
 }
 #endif
 
-/** Calculate lines in input order, distributing each string's search branches. */
+/** Calculate lines in input order with exact search or a serial Re-Pair bound. */
 bool stringAssemblyCalculator(const string &input)
 {
     namespace strings = parallelassemblycpp::detail::stringAssembly;
+    namespace repair = parallelassemblycpp::detail::stringRepair;
     searchCancellationFlag.store(false);
     int localThreads = 1;
     bool useParallel = false;
@@ -2473,23 +2475,28 @@ bool stringAssemblyCalculator(const string &input)
 
     if (parallelExecutionMode != parallelMode::off)
     {
-#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
-        const bool configured = configuredLocalParallelThreadCount(localThreads, reason);
-        if (!stringPhaseSucceeded(configured))
-        {
-            if (reason.empty())
-                reason = "could not configure string workers on another MPI rank";
-        }
+        if (graphRepairUpperBound)
+            reason = "string-repair upper bound uses serial execution";
         else
         {
-            reason = parallelCompatibilityFallbackReason(localThreads);
-            useParallel = stringPhaseSucceeded(reason.empty());
-            if (!useParallel && reason.empty())
-                reason = "parallel string execution is unavailable on another MPI rank";
-        }
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
+            const bool configured = configuredLocalParallelThreadCount(localThreads, reason);
+            if (!stringPhaseSucceeded(configured))
+            {
+                if (reason.empty())
+                    reason = "could not configure string workers on another MPI rank";
+            }
+            else
+            {
+                reason = parallelCompatibilityFallbackReason(localThreads);
+                useParallel = stringPhaseSucceeded(reason.empty());
+                if (!useParallel && reason.empty())
+                    reason = "parallel string execution is unavailable on another MPI rank";
+            }
 #else
-        reason = "this executable was built without parallel support";
+            reason = "this executable was built without parallel support";
 #endif
+        }
         if (!useParallel)
         {
             if (isPrimaryProcess())
@@ -2602,16 +2609,30 @@ bool stringAssemblyCalculator(const string &input)
         }
 #endif
         strings::Result result;
+        repair::Result repairResult;
         bool calculated = true;
         string error;
         try
         {
+            if (graphRepairUpperBound)
+            {
+                if (isPrimaryProcess())
+                {
+                    startTime = clock();
+                    repairResult = repair::calculate(value, acceptReversedStrings);
+                    result.clockTicks = elapsedClockTicks();
+                    result.interrupted = interruptionRequested();
+                }
+            }
+            else
+            {
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
-            if (useParallel) result = calculateDistributedString(value, options);
-            else if (isPrimaryProcess()) result = strings::calculate(value, options);
+                if (useParallel) result = calculateDistributedString(value, options);
+                else if (isPrimaryProcess()) result = strings::calculate(value, options);
 #else
-            if (useParallel || isPrimaryProcess()) result = strings::calculate(value, options);
+                if (useParallel || isPrimaryProcess()) result = strings::calculate(value, options);
 #endif
+            }
         }
         catch (const std::exception &exception)
         {
@@ -2683,7 +2704,15 @@ bool stringAssemblyCalculator(const string &input)
         {
             try
             {
-                outputFile << value << " has assembly index: " << result.assemblyIndex << '\n';
+                if (graphRepairUpperBound)
+                    outputFile << value << " has assembly upper bound: "
+                        << repairResult.upperBound << '\n'
+                        << "status: heuristic upper bound (minimum not proven)\n"
+                        << "trivial upper bound: " << repairResult.trivialUpperBound << '\n'
+                        << "string-repair rules: " << repairResult.ruleCount << '\n'
+                        << "remaining fragments: " << repairResult.remainingFragments << '\n';
+                else
+                    outputFile << value << " has assembly index: " << result.assemblyIndex << '\n';
                 if (result.runtimeLimitReached) outputFile << "status: runtime limit reached\n";
                 if (result.interrupted) outputFile << "status: interrupted by user\n";
                 outputFile << "time elapsed: " << result.clockTicks << '\n';
@@ -2696,7 +2725,21 @@ bool stringAssemblyCalculator(const string &input)
                             "output file '" + pathwayName +
                             "' would overwrite input file '" + input + "'"
                         );
-                    if (!strings::writePathway(pathwayName, value, result, error))
+                    if (graphRepairUpperBound)
+                    {
+                        ofstream pathway(pathwayName);
+                        if (!pathway.is_open())
+                            throw std::runtime_error(
+                                "could not open pathway file '" + pathwayName + "'"
+                            );
+                        repair::writeJson(repairResult, value, pathway);
+                        pathway.close();
+                        if (!pathway)
+                            throw std::runtime_error(
+                                "could not write pathway file '" + pathwayName + "'"
+                            );
+                    }
+                    else if (!strings::writePathway(pathwayName, value, result, error))
                         throw std::runtime_error(error);
                 }
                 if (!outputFile) throw std::runtime_error("could not write output file");

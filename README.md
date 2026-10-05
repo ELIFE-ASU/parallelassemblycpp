@@ -255,7 +255,7 @@ Nothing after `--` is treated as an option, so a later `--help` or
 | --- | --- | --- |
 | `-h`, `--help` | — | Show command help. |
 | `--` | — | Stop parsing options; read every later argument as `INPUT`. |
-| `--algorithm=<full\|re-pair>` | `full` | Select full exact search or the molecular Re-Pair upper bound. |
+| `--algorithm=<full\|re-pair>` | `full` | Select full exact search or a Re-Pair upper bound for graphs or strings. |
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial graph DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
@@ -266,7 +266,7 @@ Nothing after `--` is treated as an option, so a later `--help` or
 | `--remove-hydrogens=<0\|1>` | `1` | Remove explicit hydrogens from MOL/SDF and native graph inputs. |
 | `--verbose=<0\|1>` | `0` | Print the parsed graph or each input string. |
 | `--compensate-disjoint=<0\|1>` | `0` | For graphs, subtract one per processed component after the first. |
-| `--upper-bound=graph-repair` | Disabled | Compatibility selector for `--algorithm=re-pair`; cannot be combined with `--algorithm`. |
+| `--upper-bound=graph-repair` | Disabled | Graph-only compatibility selector for `--algorithm=re-pair`; cannot be combined with `--algorithm`. |
 | `--memory-report=<0\|1>` | `0` | Write Linux peak virtual memory to `memUsage`. |
 | `--telemetry=<0\|1>` | `0` | Write search telemetry. |
 | `--write-intermediate-mas=<0\|1>` | `0` | Write each improved index and its clock tick. |
@@ -353,9 +353,11 @@ format. `--pathway=0` skips that file. A smaller bound means a shorter known
 construction, and does not establish that the minimum has been found.
 
 The default remains exact search. The heuristic is serial: `--parallel=auto`
-falls back and `--parallel=on` is rejected. String mode, explicit `--runtime`
-and `--enum-max`, and enabled telemetry or intermediate-index output are
-unavailable in this mode. For disconnected graphs, `--compensate-disjoint=1`
+falls back and `--parallel=on` is rejected. Explicit `--runtime` and
+`--enum-max`, and enabled telemetry or intermediate-index output are
+unavailable in this mode. String inputs use the string counterpart described
+below; the legacy `--upper-bound=graph-repair` selector remains graph-only.
+For disconnected graphs, `--compensate-disjoint=1`
 subtracts the joins between components that contain bonds. Isolated atoms cost
 no joins, and an input with no bonds has bound zero.
 
@@ -400,6 +402,47 @@ Telemetry and intermediate-index output remain unavailable in string mode.
 A finite `--runtime` budget applies separately to each line and requires serial
 search: `--parallel=auto` falls back, while `--parallel=on` reports an error.
 The serial executable rejects `--parallel=on`.
+
+#### String Re-Pair upper bound
+
+Use the same algorithm selector to build a reusable binary string grammar:
+
+```bash
+./build/release/ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair
+./build/release/ParallelAssemblyCpp strings.txt --run-strings=1 \
+  --algorithm=re-pair --accept-palindromes=1
+```
+
+Adjacent fragments are grouped by their full expanded string, with reversal
+equivalence when requested. Each round chooses the group with the greatest
+saving across nonoverlapping occurrences; ties choose the earliest occurrence.
+Creating a binary production costs one join and using an existing production
+costs zero. The final bound is the number of productions plus the number of
+residual fragments minus one. For example, `abababab` has bound 3, obtained by
+building `ab`, building `abab`, then joining two copies. Empty and one-symbol
+strings retain bounds -1 and 0.
+
+`INPUTOut` explicitly reports an assembly upper bound, the status
+`heuristic upper bound (minimum not proven)`, the trivial bound, rule count,
+remaining fragments, and elapsed ticks for each line. With `--pathway=1`, each
+`INPUT_N_Pathway` contains a `string-repair-assembly-v1` certificate. It records
+the original string, Unicode scalar terminals, topologically ordered binary
+rules with child orientations, and ordered residual occurrences with scalar
+offsets, lengths, and orientations. Expanding those occurrences reconstructs
+the input and independently verifies the construction cost. This certificate
+format differs from the exact string pathway format. `--pathway=0` skips it.
+
+String Re-Pair is serial, including in OpenMP and MPI executables.
+`--parallel=auto` reports a serial fallback; `--parallel=on`, explicit runtime
+or enumeration limits, telemetry, and intermediate-index output are rejected.
+UTF-8 validation, line handling, reversal semantics, and output filenames match
+full string mode. `--algorithm=full` remains the default and runs exact search
+directly. A Re-Pair bound may exceed the minimum.
+
+The implementation uses collision-free substring ranks and updates adjacent
+occurrences locally, with deterministic frequency selection. Time and space
+are O(n log n) for n Unicode scalars, including substring-rank preprocessing;
+expanded fragments are not repeatedly copied or compared.
 
 The implementation is adapted from the standard-library string search in
 [AssemblyCPP Public](https://gitlab.com/croningroup/public/assemblycpp-public)
@@ -587,6 +630,22 @@ the upper bound. The runtime budget must remain unlimited; the enumeration limit
 must still be positive but does not limit this mode. Exact calls retain the
 default `upperBoundOnly == false` (runtime or enumeration limits can still
 prevent an exact proof).
+
+`calculateString` and `calculateStringBatch` accept literal UTF-8 strings without
+creating files. They use `StringCalculationOptions`: `acceptReversed` enables
+reversal equivalence, `runtimeTicks` limits exact search, and `rePairUpperBound`
+selects string Re-Pair with an unlimited runtime budget. Results use the same
+`CalculationResult` status fields, with `input == "<string>"`; invalid UTF-8 is
+reported in `error`, and batches continue after failed items. Embedded NULs and
+newlines are ordinary symbols in these literal-string entry points. String
+`clockTicks` includes decoding.
+
+```cpp
+parallelassemblycpp::StringCalculationOptions options;
+options.rePairUpperBound = true;
+const auto bound = parallelassemblycpp::calculateString("abababab", options);
+// bound.assemblyIndex == 3; bound.upperBoundOnly == true
+```
 
 </details>
 

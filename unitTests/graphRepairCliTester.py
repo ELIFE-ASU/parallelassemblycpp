@@ -219,7 +219,6 @@ def main() -> None:
                     diagnostics=("--algorithm", "--upper-bound"),
                 )
         unsupported = {
-            "strings": ("--run-strings=1", "string assembly"),
             "runtime": ("--runtime=0", "--runtime"),
             "enum-limit": ("--enum-max=50000000", "--enum-max"),
             "forced-parallel": ("--parallel=on", "--parallel=on"),

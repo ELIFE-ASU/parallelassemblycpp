@@ -5,6 +5,7 @@
 #include <istream>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace parallelassemblycpp
@@ -46,6 +47,17 @@ struct CalculationOptions
     bool graphRepairUpperBound = false;
 };
 
+/** Options for UTF-8 string calculations; each Unicode scalar is a primitive. */
+struct StringCalculationOptions
+{
+    /** Cooperative std::clock budget for exact search; maximum is unlimited. */
+    std::uint64_t runtimeTicks = std::numeric_limits<std::uint64_t>::max();
+    /** Identify a fragment with its reversal, without Unicode normalization. */
+    bool acceptReversed = false;
+    /** Return a constructive Re-Pair upper bound; requires unlimited runtime. */
+    bool rePairUpperBound = false;
+};
+
 /**
  * Result returned without requiring callers to parse an output file.
  *
@@ -55,11 +67,11 @@ struct CalculationOptions
  */
 struct CalculationResult
 {
-    /** Supplied file name, or "<stream>" for either stream entry point. */
+    /** Supplied file name, "<stream>" for streams, or "<string>" for strings. */
     std::string input;
     /** Best index found when succeeded is true. */
     int assemblyIndex = -1;
-    /** Search duration in std::clock ticks, excluding input parsing. */
+    /** Calculation ticks; excludes graph parsing, includes string decoding. */
     std::uint64_t clockTicks = 0;
     bool succeeded = false;
     bool runtimeLimitReached = false;
@@ -113,6 +125,23 @@ PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculate(
 PARALLELASSEMBLYCPP_PUBLIC std::vector<CalculationResult> calculateBatch(
     const std::vector<std::string>& inputs,
     const CalculationOptions& options = {}
+);
+
+/**
+ * Calculate one literal UTF-8 string without creating files. Embedded NULs and
+ * newlines are ordinary symbols. Empty strings have index -1; singletons have
+ * index 0. Invalid UTF-8 and invalid options are reported through error.
+ * With rePairUpperBound, upperBoundOnly is true: minimality is not checked.
+ */
+PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateString(
+    std::string_view input,
+    const StringCalculationOptions& options = {}
+);
+
+/** Calculate literal strings in order, continuing after individual failures. */
+PARALLELASSEMBLYCPP_PUBLIC std::vector<CalculationResult> calculateStringBatch(
+    const std::vector<std::string>& inputs,
+    const StringCalculationOptions& options = {}
 );
 
 #undef PARALLELASSEMBLYCPP_PUBLIC

@@ -6,7 +6,11 @@ find_package(ParallelAssemblyCpp 0.1.0 CONFIG REQUIRED)
 add_executable(package_consumer ../libraryBatchTester.cpp)
 target_link_libraries(package_consumer PRIVATE ParallelAssemblyCpp::Library)
 
+add_executable(string_package_consumer ../stringLibraryTester.cpp)
+target_link_libraries(string_package_consumer PRIVATE ParallelAssemblyCpp::Library)
+
 enable_testing()
+add_test(NAME installed-string-library COMMAND string_package_consumer)
 add_test(
   NAME installed-library
   COMMAND

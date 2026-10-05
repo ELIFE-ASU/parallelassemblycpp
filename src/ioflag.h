@@ -55,7 +55,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "algorithm",
             "full|re-pair",
             "full",
-            "Select full exact search or the molecular Re-Pair upper bound.",
+            "Select full exact search or a graph/string Re-Pair upper bound.",
             {}
         },
         {
@@ -143,7 +143,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "upper-bound",
             "graph-repair",
             "disabled",
-            "Compatibility selector for --algorithm=re-pair; do not combine with --algorithm.",
+            "Graph-only compatibility selector for --algorithm=re-pair; do not combine with --algorithm.",
             {}
         },
         {
@@ -447,9 +447,10 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
             const string boundOption =
                 seenFlags.count(static_cast<int>(InputFlag::algorithm)) != 0
                     ? "--algorithm=re-pair" : "--upper-bound=graph-repair";
-            if (stringAssemblyMode)
+            if (stringAssemblyMode &&
+                seenFlags.count(static_cast<int>(InputFlag::upperBound)) != 0)
                 throw std::invalid_argument(
-                    boundOption + " is unavailable for string assembly"
+                    boundOption + " is unavailable for string assembly; use --algorithm=re-pair"
                 );
             if (parallelExecutionMode == parallelMode::on)
                 throw std::invalid_argument(
