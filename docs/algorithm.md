@@ -32,8 +32,7 @@ The [Re-Pair modes](cli.md#graphrepair-inspired-molecular-upper-bound) build
 constructive upper bounds without proving optimality. Exact molecular search
 does not use a Re-Pair prepass. Exact string search does use a Re-Pair
 construction as its initial incumbent; see [string assembly](cli.md#string-assembly).
-GPU backends are research proposals in the dated audits, not available build
-targets.
+GPU backends are not available build targets.
 
 ## Compared with the original AssemblyCpp v5
 

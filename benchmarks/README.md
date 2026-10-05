@@ -79,15 +79,11 @@ digram matching on deterministic simple paths with canonical whole-path
 orientation; it does not reproduce an optimized trail partition. This experiment
 measures bound quality and heuristic cost, not exact-search acceleration.
 
-The [recorded comparison](../audits/2026-09-29-graph-repair/REPORT.md) includes
-1,089 inputs, full CSV/JSON results, construction validation, and limitations.
-
 ### Timing against exact search
 
 Full graph calculations run the exact solver directly. Re-Pair is an explicit
-bound-only mode. The [historical seed comparison](../audits/2026-09-29-graph-repair/SEED.md)
-records an experiment that was removed after showing no overall speedup.
-The timing report below compares bound-only calculation with exact search.
+bound-only mode. The timing probe below compares bound-only calculation with
+exact search.
 
 Build the timing probe in Release mode and compare both methods on the 37-case
 benchmark manifest:
@@ -114,9 +110,6 @@ that case are skipped while bound measurements continue.
 The returned indices are retained alongside timing because a heuristic upper
 bound has a different guarantee from a completed exact calculation. This measures
 the cost of obtaining each result, rather than acceleration of the exact search.
-
-See the [timing report](../audits/2026-09-29-graph-repair/SPEED.md) for measurements
-and all per-case comparisons.
 
 ## String Re-Pair timing
 

@@ -155,7 +155,6 @@ ctest --preset dev
 | [Benchmarks](benchmarks/README.md) | Corpus, telemetry, paired comparisons, scaling, LTO, PGO, and Sol jobs |
 | [ASU Sol](docs/sol.md) | Environment installation and job activation |
 | [Algorithm and provenance](docs/algorithm.md) | Molecular search and comparison with AssemblyCpp v5 |
-| [Dated audits](audits/README.md) | Historical measurements, validation evidence, and research proposals |
 
 Report reproducible problems through
 [GitHub issues](https://github.com/ELIFE-ASU/parallelassemblycpp/issues), including

@@ -330,10 +330,7 @@ class Probe:
 
 
 def load_oracle() -> ModuleType:
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "audits/2026-09-28-branch-and-bound/molecular_oracle.py"
-    )
+    path = Path(__file__).resolve().with_name("molecular_oracle.py")
     spec = importlib.util.spec_from_file_location("molecular_oracle", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -523,7 +520,7 @@ def run(
                 "src/graphRepair.h",
                 "unitTests/graphRepairProbe.cpp",
                 "unitTests/graphRepairTester.py",
-                "audits/2026-09-28-branch-and-bound/molecular_oracle.py",
+                "unitTests/molecular_oracle.py",
             )
         },
         "counts": dict(results),
