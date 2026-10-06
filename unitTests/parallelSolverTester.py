@@ -141,17 +141,19 @@ SPARSE_ADAPTIVE_TELEMETRY_CASE = SolverCase(
     active_mask_words=1,
 )
 LATE_REFILL_ADAPTIVE_TELEMETRY_CASE = SolverCase(
-    name="late-refill-amino-acid-scale-09c",
+    # The smaller 09c case can now finish before starvation is observed under
+    # stronger addition-chain pruning. Keep enough work to exercise deep refill.
+    name="late-refill-amino-acid-scale-10c",
     source=(
         REPOSITORY_ROOT
         / "benchmarks"
         / "inputs"
         / "scaling"
-        / "amino_acid_scaling_09c_077a.mol"
+        / "amino_acid_scaling_10c_086a.mol"
     ),
-    expected_index=25,
-    # Hydrogen removal leaves 66 processed bonds from 68 input bonds.
-    edges=66,
+    expected_index=27,
+    # Removing two unique bond classes leaves 74 processed bonds from 76.
+    edges=74,
     active_mask_words=2,
 )
 PATHWAY_PARITY_NAME = "ketoconazole-pathway"

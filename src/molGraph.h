@@ -1,5 +1,7 @@
 #pragma once
 
+#include "additionChainBounds.h"
+
 #include <span>
 
 #include "compilerAttributes.h"
@@ -326,7 +328,8 @@ public:
  */
 molGraph preprocessWriteback(
     const molGraph &graph,
-    vector<MoleculeEdge> &writeback
+    vector<MoleculeEdge> &writeback,
+    int *compositionFloor = nullptr
 )
 {
     std::unordered_map<
@@ -336,6 +339,28 @@ molGraph preprocessWriteback(
     > edgeClasses;
     molGraph output = graph;
     graph.writeEdgeList(edgeClasses);
+    if (compositionFloor != nullptr)
+    {
+        // The internal index includes joins between disconnected components;
+        // the optional output compensation is applied only after search.
+        // Count original bonds here, before unique classes are removed.
+        *compositionFloor = graph.totalBonds == 0 ? -1 :
+            assembly_bounds::scalarLowerBound(
+                static_cast<int>(graph.totalBonds)
+            );
+        if constexpr (assembly_bounds::vectorBoundsEnabled)
+        {
+            if (graph.totalBonds > 0)
+            {
+                vector<int> counts;
+                counts.reserve(edgeClasses.size());
+                for (const auto &entry : edgeClasses)
+                    counts.push_back(entry.second.first);
+                assembly_bounds::VectorBoundCache bounds;
+                *compositionFloor = bounds.lowerBound(std::move(counts));
+            }
+        }
+    }
     vector<MoleculeEdge> uniqueEdges;
     for (const auto &entry : edgeClasses)
     {

@@ -2478,11 +2478,13 @@ def run_cli_checks(executable: Path) -> int:
         # Exercise scalar, wide, adaptive, later-word, and pre-fragment
         # equivalence-quotient paths.
         for edge_count, expected_index, active_words, cache_outcome in (
-            (64, 6, 1, "scalar-lookups"),
-            (65, 7, 2, "equivalence-quotient"),
-            (127, 10, 2, "wide-hits"),
-            (128, 7, 2, "adaptive-fallback"),
-            (129, 8, 3, "adaptive-fallback"),
+            (63, 8, 1, "cache-lookups"),
+            (64, 6, 1, "certified-stop"),
+            (65, 7, 2, "certified-stop"),
+            (95, 9, 2, "wide-hits"),
+            (127, 10, 2, "cache-lookups"),
+            (128, 7, 2, "certified-stop"),
+            (129, 8, 3, "certified-stop"),
         ):
             wide_graph = "\n".join(
                 (
@@ -2576,37 +2578,30 @@ def run_cli_checks(executable: Path) -> int:
                 f"the {edge_count}-edge case did not exercise an eligible cache path",
                 completed,
             )
-            if cache_outcome == "scalar-lookups":
+            if cache_outcome == "cache-lookups":
                 require_cli(
                     residual["lookups"] > 0
                     and residual["admissions"] > 0
                     and residual["runtime_disabled_bypasses"] == 0,
-                    f"the {edge_count}-edge case did not exercise scalar caching",
+                    f"the {edge_count}-edge case did not exercise caching",
+                    completed,
+                )
+            elif cache_outcome == "certified-stop":
+                # These paths reach a certified scalar-chain floor on their
+                # first descent. Continuing merely to accumulate cache hits
+                # would defeat the optimality proof's early stopping.
+                require_cli(
+                    counters["matching_visits"] <= expected_index
+                    and residual["runtime_disabled_bypasses"] == 0,
+                    f"the {edge_count}-edge case continued after its chain proof",
                     completed,
                 )
             elif cache_outcome == "wide-hits":
                 require_cli(
-                    residual["lookups"] > 0
-                    and residual["hits"] > 0
+                    residual["hits"] > 0
                     and residual["admissions"] > 0
                     and residual["runtime_disabled_bypasses"] == 0,
                     f"the {edge_count}-edge case did not exercise wide cache hits",
-                    completed,
-                )
-            elif cache_outcome == "equivalence-quotient":
-                require_cli(
-                    counters["matching_visits"] < 5000
-                    and residual["first_occurrence_bypasses"] > 0
-                    and residual["runtime_disabled_bypasses"] == 0,
-                    f"the {edge_count}-edge case did not reduce equivalent "
-                    "matchings before adaptive fallback",
-                    completed,
-                )
-            else:
-                require_cli(
-                    residual["first_occurrence_bypasses"] > 0
-                    and residual["runtime_disabled_bypasses"] > 0,
-                    f"the {edge_count}-edge case did not exercise adaptive fallback",
                     completed,
                 )
             phases = telemetry["memory"]["phases"]

@@ -31,6 +31,7 @@
 #include <omp.h>
 #endif
 
+#include "additionChainBounds.h"
 #include "stringEncoding.h"
 #include "stringRepair.h"
 
@@ -447,10 +448,22 @@ class Search
     std::vector<PathwayStep> currentPath_;
     std::vector<PathwayStep> bestPath_;
     int bestAssemblyIndex_ = -1;
+    // A whole-input composition bound, never a sum over fragments: fragment
+    // constructions can share products. Copies/replay reuse this same proof.
+    int assemblyLowerBound_ = -1;
     bool runtimeLimitReached_ = false;
     bool interrupted_ = false;
     bool targetReached_ = false;
     ParallelControl *parallelControl_ = nullptr;
+
+    [[nodiscard]] bool optimumReached() const noexcept
+    {
+        return assemblyLowerBound_ >= 0 &&
+            (parallelControl_ == nullptr
+                ? bestAssemblyIndex_
+                : parallelControl_->bestAssemblyIndex.load(std::memory_order_relaxed))
+                <= assemblyLowerBound_;
+    }
 
     [[nodiscard]] unsigned long long elapsedTicks() const noexcept
     {
@@ -477,6 +490,7 @@ class Search
     bool shouldStop()
     {
         if (targetReached_) return true;
+        if (optimumReached()) return true;
         if (parallelControl_ != nullptr)
         {
             ParallelControl &control = *parallelControl_;
@@ -965,7 +979,7 @@ class Search
         const int assemblyIndex =
             static_cast<int>(original_.size()) - state.duplicatedSymbols - 1;
         recordBest(assemblyIndex, currentPath_);
-        if (targetReached_) return;
+        if (targetReached_ || optimumReached()) return;
 
         Enumeration enumeration = enumerate(state, initial);
         if (shouldStop()) return;
@@ -1178,6 +1192,37 @@ class Search
             return;
         }
         if (shouldStop()) return;
+        if (assemblyLowerBound_ < 0)
+        {
+            assemblyLowerBound_ = assembly_bounds::scalarLowerBound(
+                static_cast<int>(original_.size())
+            );
+            if (assembly_bounds::vectorBoundsEnabled && !optimumReached())
+            {
+                // Concatenation adds symbol counts, including when either
+                // operand is reversed. Every string construction therefore
+                // maps to a vector addition chain. Its certified lower bound
+                // can prove a complete witness already held here optimal.
+                std::unordered_map<char32_t, int> frequencies;
+                for (size_t index = 0; index < original_.size(); ++index)
+                {
+                    if ((index & 1023U) == 0 && shouldStop()) return;
+                    ++frequencies[original_[index]];
+                }
+                std::vector<int> counts;
+                counts.reserve(frequencies.size());
+                for (const auto &[symbol, count] : frequencies)
+                {
+                    static_cast<void>(symbol);
+                    counts.push_back(count);
+                }
+                assembly_bounds::VectorBoundCache bounds;
+                assemblyLowerBound_ = bounds.lowerBound(
+                    std::move(counts), bestAssemblyIndex_
+                );
+            }
+        }
+        if (shouldStop()) return;
         std::vector<int> rootKey(root.intervals.size(), -1);
         states_.emplace(std::move(rootKey), 0);
         if (options_.threadCount > 1 || options_.shardCount > 1)
@@ -1224,6 +1269,7 @@ public:
             Search replay(original_, replayOptions);
             replay.started_ = started_;
             replay.bestAssemblyIndex_ = static_cast<int>(original_.size()) - 1;
+            replay.assemblyLowerBound_ = assemblyLowerBound_;
             replay.runFromRoot();
             if (replay.bestAssemblyIndex_ <= bestAssemblyIndex_)
             {

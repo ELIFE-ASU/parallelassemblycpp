@@ -38,6 +38,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include "additionChainBounds.h"
 #include "stringAssembly.h"
 #include "stringRepair.h"
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP)

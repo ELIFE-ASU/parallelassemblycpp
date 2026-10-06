@@ -139,6 +139,9 @@ struct MoleculeEdge
 };
 
 PARALLELASSEMBLYCPP_SEARCH_LOCAL unsigned int totalBonds = 0;
+// Certified floor for the original, uncompensated input. Never add this to
+// fragment costs: different fragments can share their construction.
+PARALLELASSEMBLYCPP_SEARCH_LOCAL int assemblyCompositionLowerBound = -1;
 PARALLELASSEMBLYCPP_SEARCH_LOCAL vector<MoleculeEdge> originalEdgeList, universeEdgeList;
 
 // Parallel workers borrow the process-owned edge universe instead of copying

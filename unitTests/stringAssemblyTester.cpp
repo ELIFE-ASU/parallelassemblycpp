@@ -599,6 +599,119 @@ void testRepairSeededSearch()
     }
 }
 
+size_t compositionProofPolls = 0;
+size_t compositionProofCancelAt = 0;
+
+bool countCompositionProofPolls()
+{
+    ++compositionProofPolls;
+    return compositionProofPolls == compositionProofCancelAt;
+}
+
+void testCertifiedCompositionBounds()
+{
+    // Compare with a targeted Re-Pair run to count work without a timing
+    // assertion. Once the seed attains the proof, exact enumeration would
+    // only add polls and cannot improve the answer.
+    std::vector<std::string> tightInputs{repeated('a', 1024)};
+    if (assembly_bounds::vectorBoundsEnabled)
+    {
+        tightInputs.push_back("aaabaaab"); // (6, 2): vector 4, scalar 3.
+        tightInputs.push_back("abcdeabcde"); // Five reused primitives need 5 joins.
+        tightInputs.push_back(
+            "\xc3\xa9\xc3\xa9\xc3\xa9\xf0\x9f\x98\x80"
+            "\xc3\xa9\xc3\xa9\xc3\xa9\xf0\x9f\x98\x80"
+        );
+    }
+    for (const std::string &input : tightInputs)
+    {
+        for (const bool acceptReversed : {false, true})
+        {
+            const Result seed = repairWitness(input, acceptReversed);
+            Options options;
+            options.acceptReversed = acceptReversed;
+            options.targetAssemblyIndex = seed.assemblyIndex;
+            options.cancellationRequested = &countCompositionProofPolls;
+            compositionProofPolls = 0;
+            const Result targeted = calculate(input, options);
+            const size_t seedPolls = compositionProofPolls;
+            requireSamePathway(targeted, seed, "composition proof seed");
+
+            options.targetAssemblyIndex = -1;
+            compositionProofPolls = 0;
+            const Result proved = calculate(input, options);
+            requireSamePathway(proved, seed, "certified composition proof");
+            requireConsistentPathway(input, proved, acceptReversed);
+            require(!proved.interrupted && !proved.runtimeLimitReached,
+                "an optimality proof was reported as cancellation or timeout");
+            require(compositionProofPolls <= seedPolls + 8,
+                "a certified optimal seed still enumerated duplicate matches");
+
+            // An unattainable reconstruction target must not override the
+            // proof, nor manufacture a witness of that requested cost.
+            options.targetAssemblyIndex = 0;
+            const Result impossibleTarget = calculate(input, options);
+            requireSamePathway(impossibleTarget, seed,
+                "composition proof with unattainable target");
+
+            // The bound is only computed after the complete seed and its
+            // cancellation poll. A pending stop must preserve that witness
+            // and its interrupted status, even when a later bound could
+            // immediately certify the seed.
+            Options cancellationOptions = options;
+            cancellationOptions.targetAssemblyIndex = -1;
+            compositionProofPolls = 0;
+            compositionProofCancelAt = seedPolls + 1;
+            const Result cancelled = calculate(input, cancellationOptions);
+            compositionProofCancelAt = 0;
+            require(cancelled.interrupted && !cancelled.runtimeLimitReached,
+                "composition certification bypassed pending cancellation");
+            requireSamePathway(cancelled, seed,
+                "seed retained before composition-bound cancellation");
+
+            Options zeroRuntimeOptions = options;
+            zeroRuntimeOptions.targetAssemblyIndex = -1;
+            zeroRuntimeOptions.cancellationRequested = nullptr;
+            zeroRuntimeOptions.runtimeTicks = 0;
+            const Result timedOut = calculate(input, zeroRuntimeOptions);
+            require(timedOut.runtimeLimitReached && !timedOut.interrupted &&
+                    timedOut.pathway.empty() &&
+                    timedOut.assemblyIndex ==
+                        static_cast<int>(implementation::decodeInput(input).size()) - 1,
+                "composition certification bypassed a zero runtime limit");
+
+#if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
+            options.targetAssemblyIndex = -1;
+            options.threadCount = 4;
+            options.reconstructPathway = false;
+            compositionProofPolls = 0;
+            const Result parallel = calculate(input, options);
+            requireSamePathway(parallel, seed, "parallel composition proof");
+            require(compositionProofPolls <= seedPolls + 8,
+                "a certified seed unnecessarily started parallel enumeration");
+#endif
+        }
+    }
+
+    // The composition relaxation forgets order. A lower bound below the seed
+    // is neither an attainable construction nor permission to stop searching.
+    for (const bool acceptReversed : {false, true})
+    {
+        ReferenceSearch reference(acceptReversed);
+        Options options;
+        options.acceptReversed = acceptReversed;
+        for (const std::string &input : {
+            std::string("bbbabba"), std::string("baabaa"),
+            std::string("ababcdcd"), std::string("aaaaabb")})
+        {
+            const Result exact = calculate(input, options);
+            require(exact.assemblyIndex == reference.assemblyIndex(input),
+                "composition pruning disagrees with independent string oracle");
+            requireConsistentPathway(input, exact, acceptReversed);
+        }
+    }
+}
+
 void testShardedSearch()
 {
     const std::vector<std::string> inputs{
@@ -2083,6 +2196,7 @@ int main()
         testTrivialStrings();
         testRepairPathways();
         testRepairSeededSearch();
+        testCertifiedCompositionBounds();
         testExhaustiveShortStrings();
         testShardedSearch();
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP)

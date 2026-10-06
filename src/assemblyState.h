@@ -1,5 +1,7 @@
 #pragma once
 
+#include "additionChainBounds.h"
+
 /**
  * @brief Assembly state data structure. Records the current state of this assembly pathway
  */
@@ -94,7 +96,8 @@ struct assemblyState
         const MaskRange &targetMasks
     ) const
     {
-        int totalDuplicateBondBound = -ceilLog2(maximumFragmentSize);
+        int totalDuplicateBondBound =
+            -assembly_bounds::scalarLowerBound(maximumFragmentSize);
         for (
             size_t fragmentIndex = 0;
             fragmentIndex < fragments.size();
@@ -144,7 +147,7 @@ struct assemblyState
              duplicateSize++)
         {
             const size_t index = duplicateSize - 2;
-            int bound = -ceilLog2(duplicateSize);
+            int bound = -assembly_bounds::scalarLowerBound(duplicateSize);
             for (
                 size_t fragmentIndex = 0;
                 fragmentIndex < fragments.size();
@@ -193,7 +196,8 @@ struct assemblyState
                     duplicateSize
                 );
             }
-            candidateDuplicateBondBound -= ceilLog2(duplicateSize);
+            candidateDuplicateBondBound -=
+                assembly_bounds::scalarLowerBound(duplicateSize);
             bestDuplicateBondBound = max(
                 bestDuplicateBondBound,
                 candidateDuplicateBondBound
@@ -234,7 +238,10 @@ public:
      */
     int lowerBoundAssemblyIndex() const
     {
-        return static_cast<int>(totalBonds) - sumDupBonds - 1 - maxDupBonds();
+        return max(
+            assemblyCompositionLowerBound,
+            static_cast<int>(totalBonds) - sumDupBonds - 1 - maxDupBonds()
+        );
     }
 
     /**

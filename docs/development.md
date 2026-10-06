@@ -44,6 +44,11 @@ Enable individual optional executables with
 requires both. See [parallel builds](parallel.md). In-source CMake builds are
 rejected; use a separate build directory.
 
+`PARALLELASSEMBLYCPP_VECTOR_CHAIN_BOUNDS` controls composition-vector bounds in
+exact graph and string search. Setting it to `OFF` retains certified scalar
+addition-chain bounds and provides a comparison for measuring vector-bound
+overhead. See [addition-chain bounds](addition-chain-bounds.md).
+
 ## Tests
 
 Run the focused developer suite:

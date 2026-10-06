@@ -55,6 +55,11 @@ option(
   OFF
 )
 option(
+  PARALLELASSEMBLYCPP_VECTOR_CHAIN_BOUNDS
+  "Use certified composition bounds in addition to scalar addition-chain bounds"
+  ON
+)
+option(
   PARALLELASSEMBLYCPP_STRICT_WARNINGS
   "Treat high-signal compiler warnings as errors"
   ON
@@ -330,6 +335,11 @@ endif()
 
 function(parallelassemblycpp_configure_target target)
   target_compile_features(${target} PRIVATE cxx_std_20)
+  if(NOT PARALLELASSEMBLYCPP_VECTOR_CHAIN_BOUNDS)
+    target_compile_definitions(
+      ${target} PRIVATE PARALLELASSEMBLYCPP_DISABLE_VECTOR_CHAIN_BOUNDS
+    )
+  endif()
   set_target_properties(
     ${target}
     PROPERTIES
@@ -788,6 +798,11 @@ endfunction()
 if(BUILD_TESTING)
   find_package(Threads REQUIRED)
   parallelassemblycpp_add_unit_test(
+    addition-chain-bounds
+    parallelassemblycpp_addition_chain_bounds_tests
+    unitTests/additionChainBoundsTester.cpp
+  )
+  parallelassemblycpp_add_unit_test(
     active-word-mask
     parallelassemblycpp_active_word_mask_tests
     unitTests/activeWordMaskTester.cpp
@@ -952,6 +967,28 @@ if(BUILD_TESTING)
   )
   add_executable(parallelassemblycpp_graph_repair_probe unitTests/graphRepairProbe.cpp)
   parallelassemblycpp_configure_test_target(parallelassemblycpp_graph_repair_probe)
+  add_executable(
+    parallelassemblycpp_graph_addition_chain_probe
+    unitTests/graphAdditionChainProbe.cpp
+  )
+  parallelassemblycpp_configure_test_target(parallelassemblycpp_graph_addition_chain_probe)
+  target_link_libraries(
+    parallelassemblycpp_graph_addition_chain_probe PRIVATE ParallelAssemblyCppLibrary
+  )
+  set(graph_addition_chain_test_options)
+  if(PARALLELASSEMBLYCPP_FULL_REGRESSION_TESTS)
+    list(APPEND graph_addition_chain_test_options --full)
+  endif()
+  add_test(
+    NAME unit.graph-addition-chain-bounds
+    COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/unitTests/graphAdditionChainTester.py"
+      "$<TARGET_FILE:parallelassemblycpp_graph_addition_chain_probe>"
+      ${graph_addition_chain_test_options}
+  )
+  set_tests_properties(
+    unit.graph-addition-chain-bounds PROPERTIES LABELS "unit" TIMEOUT 300
+  )
   add_executable(
     parallelassemblycpp_graph_repair_speed_probe
     benchmarks/graphRepairSpeedProbe.cpp

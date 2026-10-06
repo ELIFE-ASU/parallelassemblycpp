@@ -135,6 +135,45 @@ writes a pathway file. Use an external timeout for expensive exact searches,
 repeat samples with alternating order, and retain the different guarantees
 when comparing timings. A bound is not a proof of the minimum.
 
+## Addition-chain ablation
+
+Compare a saved pre-change executable with two otherwise identical Release
+builds. Set `PARALLELASSEMBLYCPP_VECTOR_CHAIN_BOUNDS=OFF` for the scalar build
+and `ON` for the vector build. Scalar bounds remain enabled in both. The
+[derivation](../docs/addition-chain-bounds.md) describes the certified bounds
+and their search budgets.
+
+Use the ordinary paired graph runner for each comparison, for example:
+
+```bash
+python benchmarks/benchmark.py \
+  --baseline-executable build/addition-chains-scalar/ParallelAssemblyCpp \
+  --executable build/addition-chains-vector/ParallelAssemblyCpp \
+  --baseline-launcher 'taskset -c 0' --candidate-launcher 'taskset -c 0' \
+  --suite full --runs 6 --warmup 1 \
+  --json-output build/addition-chains-graph-ablation.json
+```
+
+For strings, build `parallelassemblycpp_string_repair_speed_probe` in each
+configuration with `BUILD_TESTING=ON`, then run:
+
+```bash
+python benchmarks/addition_chain_strings.py \
+  --baseline build/addition-chains-baseline/parallelassemblycpp_string_repair_speed_probe \
+  --scalar build/addition-chains-scalar/parallelassemblycpp_string_repair_speed_probe \
+  --vector build/addition-chains-vector/parallelassemblycpp_string_repair_speed_probe \
+  --cpu 0 --runs 6 --warmup 1 --timeout 3 \
+  --output build/addition-chains-strings.json
+```
+
+Choose an allowed CPU or omit pinning. The string runner rotates all six build
+orders, retains raw algorithm, CPU and process times, and requires agreement
+between all completed exact indices. Timed-out configurations are not repeated
+for that case or included in paired speedups. Fixtures include tight composition
+bounds, loose bounds that discard useful structure, Unicode, reversal, and
+seeded random strings. These timings exclude pathway serialization; independent
+unit tests replay the resulting construction witnesses.
+
 ## ASU Sol batch job
 
 After the [Sol environment setup](../docs/sol.md) job succeeds,

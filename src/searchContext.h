@@ -77,6 +77,7 @@ struct SearchContext
     unsigned int bondCount = 0;
     int componentCount = 1;
     int rootAssemblyIndex = -1;
+    int compositionLowerBound = -1;
     bool enumerationLimit = false;
     bool sharedReuseEligible = false;
 
@@ -289,6 +290,8 @@ inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t sharedAssemblyWorkerIndex = 
 struct assemblySearchStorage
 {
     assemblyTranspositionTable states;
+    assembly_bounds::VectorBoundCache compositionBounds;
+    std::unordered_map<int, int> fragmentCompositionBounds;
     assemblyPathWitness *pathway = nullptr;
     int pathwayTargetAssemblyIndex = std::numeric_limits<int>::max();
     bool stopAtPathwayTarget = false;

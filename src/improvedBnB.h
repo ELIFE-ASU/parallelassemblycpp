@@ -364,7 +364,8 @@ int postFragmentationCutoff(
     const assemblyState &target,
     const MatchMask &matchMask,
     const MaxFragmentMask &maxFragMask,
-    IntegerVector &boundTotals
+    IntegerVector &boundTotals,
+    int retainedFragmentBound = 0
 )
 {
     const int maximumFragmentSize = target.fragments[0].edgeCount;
@@ -419,9 +420,15 @@ int postFragmentationCutoff(
     int result = 0;
     if (useTargetedBounds)
     {
-        matchingDuplicateBondBound -= ceilLog2(maximumFragmentSize);
+        // These two routes require constructing the retained first fragment.
+        // A different maximal class needs one additional distinct final join.
+        const int constructionBound = max(
+            assembly_bounds::scalarLowerBound(maximumFragmentSize),
+            retainedFragmentBound
+        );
+        matchingDuplicateBondBound -= constructionBound;
         maximumFragmentDuplicateBondBound -=
-            ceilLog2(maximumFragmentSize) + 1;
+            constructionBound + 1;
         result = max(
             matchingDuplicateBondBound,
             maximumFragmentDuplicateBondBound
@@ -436,10 +443,49 @@ int postFragmentationCutoff(
              duplicateSize++)
         {
             const size_t index = duplicateSize - 2;
-            boundTotals[index] -= ceilLog2(duplicateSize);
+            boundTotals[index] -= assembly_bounds::scalarLowerBound(duplicateSize);
             result = max(result, boundTotals[index]);
         }
     }
+    return result;
+}
+
+/** Certified construction cost of the retained duplicate, cached per worker. */
+int retainedFragmentCompositionBound(
+    const assemblyFragment &fragment,
+    assemblySearchStorage &storage
+)
+{
+    const int sizeBound = assembly_bounds::scalarLowerBound(fragment.edgeCount);
+    if constexpr (!assembly_bounds::vectorBoundsEnabled) return sizeBound;
+    if (fragment.edgeCount <= 2) return sizeBound;
+    const auto cached = storage.fragmentCompositionBounds.find(fragment.canonicalId);
+    if (cached != storage.fragmentCompositionBounds.end()) return cached->second;
+
+    const auto &graph = searchTargetMolecule();
+    const auto &edges = searchUniverseEdgeList();
+    std::unordered_map<bondClassKey, int, bondClassKeyHash> classes;
+    for (size_t index = fragment.mask.findFirst();
+         index < edges.size(); index = fragment.mask.findNext(index))
+    {
+        const auto &edge = edges[index];
+        const string &source = graph.atomType(edge.sourceAtomIndex);
+        const string &target = graph.atomType(edge.targetAtomIndex);
+        const short label = graph.bondType(
+            edge.sourceAtomIndex, edge.sourceBondIndex
+        );
+        ++classes[source < target ? bondClassKey{source, target, label} :
+            bondClassKey{target, source, label}];
+    }
+    vector<int> counts;
+    counts.reserve(classes.size());
+    for (const auto &entry : classes) counts.push_back(entry.second);
+    const int result = storage.compositionBounds.lowerBound(std::move(counts));
+    // Eviction affects performance only. IDs belong to this search's registry.
+    if (storage.fragmentCompositionBounds.size() >= 4096)
+        storage.fragmentCompositionBounds.clear();
+    if (fragment.canonicalId != unknownCanonicalId)
+        storage.fragmentCompositionBounds.emplace(fragment.canonicalId, result);
     return result;
 }
 
@@ -538,7 +584,7 @@ int pairSpecificGenericBound(
                 duplicateSize
             );
         }
-        result = max(result, total - ceilLog2(duplicateSize));
+        result = max(result, total - assembly_bounds::scalarLowerBound(duplicateSize));
     }
     return result;
 }
@@ -615,7 +661,7 @@ PARALLELASSEMBLYCPP_NOINLINE int pairSpecificGenericBound(
                 duplicateSize
             );
         }
-        result = max(result, total - ceilLog2(duplicateSize));
+        result = max(result, total - assembly_bounds::scalarLowerBound(duplicateSize));
     }
     return result;
 }
@@ -1251,6 +1297,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
         if (searchStorage.pathwayTargetReached) return;
     }
     if (searchShouldStop()) return;
+    if (bestAssemblyIndex <= assemblyCompositionLowerBound) return;
 
     dagAssemblySearchFrameScope frameScope(
         searchStorage,
@@ -1520,6 +1567,7 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                     }
                     return false;
                 };
+                int retainedConstructionBound = -1;
                 auto matchingVisitor = [&](validMatchings &matching)
                 {
                     if constexpr (
@@ -1552,12 +1600,46 @@ void dagRecursiveAssemblyWithWorkspaceImpl(
                         candidate,
                         classMask,
                         levelMask,
-                        fragmentationWorkspace.boundTotals
+                        fragmentationWorkspace.boundTotals,
+                        max(0, retainedConstructionBound)
                     );
                     if (searchShouldStop()) return false;
-                    const int candidateAssemblyIndexBound =
+                    int candidateAssemblyIndexBound = max(
+                        assemblyCompositionLowerBound,
                         static_cast<int>(totalBonds) - sumDupBonds - 1 -
-                        fragmentationCutoff;
+                            fragmentationCutoff
+                    );
+                    if constexpr (assembly_bounds::vectorBoundsEnabled)
+                    {
+                        // Only pay for a composition lookup after cheap bounds
+                        // survive. Every matching in this class retains the
+                        // same fragment, so resolve it once per class visit.
+                        if (candidateAssemblyIndexBound < bestAssemblyIndex &&
+                            retainedConstructionBound < 0 &&
+                            candidate.fragments.size() >= 2)
+                        {
+                            retainedConstructionBound =
+                                retainedFragmentCompositionBound(
+                                    candidate.fragments.front(), searchStorage
+                                );
+                            if (retainedConstructionBound >
+                                assembly_bounds::scalarLowerBound(
+                                    matching.maximumFragmentSize
+                                ))
+                            {
+                                fragmentationCutoff = postFragmentationCutoff(
+                                    candidate, classMask, levelMask,
+                                    fragmentationWorkspace.boundTotals,
+                                    retainedConstructionBound
+                                );
+                                candidateAssemblyIndexBound = max(
+                                    assemblyCompositionLowerBound,
+                                    static_cast<int>(totalBonds) - sumDupBonds -
+                                        1 - fragmentationCutoff
+                                );
+                            }
+                        }
+                    }
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
                     boundRefresh.recordPrune(
                         candidateAssemblyIndexBound,
@@ -1935,6 +2017,9 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
     if (enumerationLimitReached || searchShouldStop()) return;
 
     if (!hasInitialMatchings) return;
+    // Keep initial enumeration and its explicit cap semantics identical for
+    // serial and prepared parallel searches, even for a trivial root proof.
+    if (bestAssemblyIndex <= assemblyCompositionLowerBound) return;
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     setSearchTelemetryPhase(SearchTelemetryPhase::assemblySearch);
 #endif
@@ -2013,6 +2098,8 @@ void initialRecursiveAssemblyWithWorkspaceImpl(
                         bestAssemblyIndex,
                         sharedAssemblyIndex->load(std::memory_order_relaxed)
                     );
+                if (bestAssemblyIndex <= assemblyCompositionLowerBound)
+                    return false;
                 candidate.clearFragments();
                 fragmentAssemblyStateWithoutCanonisationWithWorkspace(
                     input,
@@ -2363,7 +2450,10 @@ void prepareParallelSearchContext(
     totalBonds = molecule.totalBonds;
     disjointFragments = molecule.disjointFragments();
     context.removedEdges.clear();
-    targetMolecule = preprocessWriteback(molecule, context.removedEdges);
+    targetMolecule = preprocessWriteback(
+        molecule, context.removedEdges, &assemblyCompositionLowerBound
+    );
+    context.compositionLowerBound = assemblyCompositionLowerBound;
     universeEdgeList = targetMolecule.writeEdgeList();
     prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
 
@@ -2516,6 +2606,7 @@ void configureParallelWorker(
     runtimeLimitReached = false;
     enumerationLimitReached = context.enumerationLimit;
     totalBonds = context.bondCount;
+    assemblyCompositionLowerBound = context.compositionLowerBound;
     disjointFragments = context.componentCount;
     sharedTargetMolecule = std::addressof(context.processedMolecule);
     sharedUniverseEdgeList = std::addressof(context.universeEdges);
@@ -2635,6 +2726,7 @@ bool runParallelRootJobImpl(
             sharedAssemblyIndex->load(std::memory_order_relaxed)
         );
     }
+    if (worker.assemblyIndex <= assemblyCompositionLowerBound) return true;
     worker.candidate.clearFragments();
     fragmentAssemblyStateWithoutCanonisationWithWorkspace(
         worker.root,
@@ -3048,7 +3140,9 @@ bool improvedBnB(molGraph &molecule, ofstream &outputStream)
     disjointFragments = molecule.disjointFragments();
     originalMolecule = molecule;
     vector<MoleculeEdge> removedEdges;
-    targetMolecule = preprocessWriteback(molecule, removedEdges);
+    targetMolecule = preprocessWriteback(
+        molecule, removedEdges, &assemblyCompositionLowerBound
+    );
     universeEdgeList = targetMolecule.writeEdgeList();
     prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
     // End the persistent mask's lifetime under its old representation before

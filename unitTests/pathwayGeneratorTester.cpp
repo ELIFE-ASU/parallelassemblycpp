@@ -123,9 +123,9 @@ void testRetainedPathwaySurvivesDecisionOwners(size_t edgeCount)
         rootDuplicate.set(edgeCount - 1);
         vector<uint64_t> dagMatch(EdgeMask::activeWordCount(), 0);
         vector<uint64_t> dagDuplicate(EdgeMask::activeWordCount(), 0);
-        dagMatch[1 / EdgeMask::wordBits] |=
+        dagMatch.at(1 / EdgeMask::wordBits) |=
             uint64_t{1} << (1 % EdgeMask::wordBits);
-        dagDuplicate[(edgeCount - 2) / EdgeMask::wordBits] |=
+        dagDuplicate.at((edgeCount - 2) / EdgeMask::wordBits) |=
             uint64_t{1} << ((edgeCount - 2) % EdgeMask::wordBits);
 
         witness.pushDecision(rootMatch, rootDuplicate);
