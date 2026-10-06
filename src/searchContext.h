@@ -340,33 +340,11 @@ struct assemblySearchStorage
         int sumDupBonds
     )
     {
-        const assemblyTranspositionTable::result localResult =
-            states.consider(key, sumDupBonds);
-        if (localResult == assemblyTranspositionTable::result::dominated ||
-            !sharedAssemblyStates->lookupEnabled())
-            return localResult;
-
-        const sharedAssemblyTranspositionTable::consideration sharedResult =
-            sharedAssemblyStates->considerWithBestForWorker(
-                key,
-                sumDupBonds,
-                sharedAssemblyWorkerIndex
-            );
-        if (
-            sharedResult.outcome ==
-                assemblyTranspositionTable::result::dominated &&
-            sharedResult.bestSumDupBonds > sumDupBonds
-        )
-        {
-            // Promote the observed L2 score so subsequent local visits can
-            // prune without acquiring the shard again. A later genuinely
-            // better score can still improve L1 and be checked in L2.
-            static_cast<void>(states.consider(
-                key,
-                sharedResult.bestSumDupBonds
-            ));
-        }
-        return sharedResult.outcome;
+        // SearchContext owns L2 until all workers and their local tables have
+        // finished. Local entries can therefore borrow its immutable keys.
+        return sharedAssemblyStates->considerWithLocal(
+            states, key, sumDupBonds, sharedAssemblyWorkerIndex
+        );
     }
 };
 

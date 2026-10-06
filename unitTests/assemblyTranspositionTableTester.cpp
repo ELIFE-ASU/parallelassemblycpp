@@ -802,6 +802,323 @@ void testSharedConcurrentSelectiveAdmission()
     assert(stats.hitCount == stats.prunedHitCount + stats.updatedHitCount);
 }
 
+
+void testIntegratedLocalBorrowingAndScorePromotion()
+{
+    sharedAssemblyTranspositionTable shared(2);
+    countingMemoryResource firstResource;
+    countingMemoryResource secondResource;
+    assemblyTranspositionTable firstLocal(8, &firstResource);
+    assemblyTranspositionTable secondLocal(8, &secondResource);
+    std::vector<int> scratch(4096);
+    for (std::size_t index = 0; index < scratch.size(); ++index)
+        scratch[index] = static_cast<int>(index * 31 + 17);
+    const std::vector<int> key = scratch;
+
+    assert(shared.considerWithLocal(firstLocal, scratch, 10, 0) ==
+        tableResult::inserted);
+    assert(firstResource.allocationCalls == 0);
+    std::fill(scratch.begin(), scratch.end(), -77);
+    const auto afterInsert = shared.stats();
+    assert(shared.considerWithLocal(firstLocal, key, 9, 0) ==
+        tableResult::dominated);
+    assert(shared.stats().lockAcquisitionCount == afterInsert.lockAcquisitionCount);
+
+    // An L2 hit lends its stable key and promotes the stronger score into L1.
+    assert(shared.considerWithLocal(secondLocal, key, 7, 1) ==
+        tableResult::dominated);
+    assert(secondResource.allocationCalls == 0);
+    const auto afterPromotion = shared.stats();
+    assert(shared.considerWithLocal(secondLocal, key, 10, 1) ==
+        tableResult::dominated);
+    assert(shared.stats().lockAcquisitionCount ==
+        afterPromotion.lockAcquisitionCount);
+
+    assert(shared.consider(key, 14) == tableResult::improved);
+    const auto beforeRefresh = shared.stats();
+    // Only immutable keys are shared. Each worker still has score 10, so its
+    // first stronger candidate must consult L2 before learning score 14.
+    assert(shared.considerWithLocal(firstLocal, key, 11, 0) ==
+        tableResult::dominated);
+    assert(shared.considerWithLocal(secondLocal, key, 11, 1) ==
+        tableResult::dominated);
+    assert(shared.stats().lockAcquisitionCount ==
+        beforeRefresh.lockAcquisitionCount + 2);
+    assert(shared.considerWithLocal(firstLocal, key, 13, 0) ==
+        tableResult::dominated);
+    assert(shared.considerWithLocal(secondLocal, key, 14, 1) ==
+        tableResult::dominated);
+    assert(shared.stats().lockAcquisitionCount ==
+        beforeRefresh.lockAcquisitionCount + 2);
+
+    assert(shared.considerWithLocal(firstLocal, key, 15, 0) ==
+        tableResult::improved);
+    assert(shared.considerWithLocal(secondLocal, key, 15, 1) ==
+        tableResult::dominated);
+    assert(firstLocal.size() == 1);
+    assert(secondLocal.size() == 1);
+    assert(shared.size() == 1);
+    assert(firstResource.allocationCalls == 0);
+    assert(secondResource.allocationCalls == 0);
+}
+
+void testIntegratedExactKeysCollisionsAndZeroHash()
+{
+    sharedAssemblyTranspositionTable shared(2);
+    countingMemoryResource firstResource;
+    countingMemoryResource secondResource;
+    assemblyTranspositionTable firstLocal(8, &firstResource);
+    assemblyTranspositionTable secondLocal(8, &secondResource);
+    const std::vector<std::vector<int>> keys{
+        {-1744324134, -1879786136, 873751343, 1729211343},
+        {1933699411, -1276699930, -106575768},
+        {0, 118251589},
+        {},
+        {4, 1, 2},
+        {5, 1, 2},
+        {4, 1},
+        {4, 1, 2, 0}
+    };
+    assert(assemblyTranspositionTable::keyHash(keys[0]) ==
+        assemblyTranspositionTable::keyHash(keys[1]));
+    assert(assemblyTranspositionTable::keyHash(keys[2]) == 0);
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        const int score = static_cast<int>(index) + 10;
+        std::vector<int> scratch = keys[index];
+        assert(shared.considerWithLocal(firstLocal, scratch, score, 0) ==
+            tableResult::inserted);
+        std::fill(scratch.begin(), scratch.end(), -999);
+        assert(shared.considerWithLocal(secondLocal, keys[index], score - 1, 1) ==
+            tableResult::dominated);
+    }
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        const int score = static_cast<int>(index) + 10;
+        assert(shared.considerWithLocal(firstLocal, keys[index], score + 2, 0) ==
+            tableResult::improved);
+        assert(shared.considerWithLocal(secondLocal, keys[index], score + 1, 1) ==
+            tableResult::dominated);
+    }
+    const auto beforeLocalHits = shared.stats();
+    for (std::size_t index = 0; index < keys.size(); ++index)
+    {
+        assert(shared.considerWithLocal(
+            secondLocal, keys[index], static_cast<int>(index) + 12, 1
+        ) == tableResult::dominated);
+    }
+    assert(shared.stats().lockAcquisitionCount ==
+        beforeLocalHits.lockAcquisitionCount);
+    assert(firstLocal.size() == keys.size());
+    assert(secondLocal.size() == keys.size());
+    assert(shared.size() == keys.size());
+    assert(firstResource.allocationCalls == 0);
+    assert(secondResource.allocationCalls == 0);
+}
+
+void testIntegratedMixedOwnershipAndGrowth()
+{
+    countingMemoryResource sharedResource;
+    {
+        sharedAssemblyTranspositionTable shared(2, &sharedResource);
+        countingMemoryResource firstResource;
+        countingMemoryResource secondResource;
+        assemblyTranspositionTable firstLocal(8, &firstResource);
+        assemblyTranspositionTable secondLocal(8, &secondResource);
+        const auto keys = keysForOneShard(2000);
+        for (std::size_t index = 0; index < keys.size(); ++index)
+        {
+            const int score = static_cast<int>(index);
+            if (index % 2 == 0)
+            {
+                assert(shared.consider(keys[index], score) ==
+                    tableResult::inserted);
+                assert(shared.considerWithLocal(
+                    firstLocal, keys[index], score, 0
+                ) == tableResult::dominated);
+            }
+            else
+            {
+                assert(shared.considerWithLocal(
+                    firstLocal, keys[index], score, 0
+                ) == tableResult::inserted);
+            }
+        }
+        assert(shared.stats().growthCount > 0);
+        assert(firstLocal.capacity() > 8);
+        for (std::size_t index = 0; index < keys.size(); ++index)
+        {
+            const int score = static_cast<int>(index);
+            assert(shared.considerWithLocal(
+                secondLocal, keys[index], score, 1
+            ) == tableResult::dominated);
+            assert(shared.considerWithLocal(
+                firstLocal, keys[index], score + 1, 0
+            ) == tableResult::improved);
+            assert(shared.considerWithLocal(
+                secondLocal, keys[index], score + 1, 1
+            ) == tableResult::dominated);
+        }
+        assert(secondLocal.capacity() > 8);
+        assert(firstLocal.size() == keys.size());
+        assert(secondLocal.size() == keys.size());
+        assert(shared.size() == keys.size());
+        assert(firstResource.allocationCalls == 0);
+        assert(secondResource.allocationCalls == 0);
+        assert(sharedResource.allocationCalls > 0);
+    }
+    assert(sharedResource.deallocationCalls == sharedResource.allocationCalls);
+}
+
+void testIntegratedRejectedAdmissionKeepsLocalCopy()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    for (const policy mode : {policy::shared, policy::selective, policy::local})
+    {
+        countingMemoryResource sharedResource;
+        sharedAssemblyTranspositionTable shared(1, &sharedResource, mode, 1);
+        countingMemoryResource localResource;
+        assemblyTranspositionTable local(8, &localResource);
+        std::vector<int> scratch(4096, 23);
+        const std::vector<int> key = scratch;
+        assert(shared.considerWithLocal(local, scratch, 10, 0) ==
+            tableResult::inserted);
+        assert(localResource.allocationCalls > 0);
+        const auto allocationsAfterMiss = localResource.allocationCalls;
+        std::fill(scratch.begin(), scratch.end(), -77);
+        const auto afterMiss = shared.stats();
+        assert(shared.considerWithLocal(local, key, 9, 0) ==
+            tableResult::dominated);
+        assert(shared.stats().lockAcquisitionCount == afterMiss.lockAcquisitionCount);
+        assert(shared.considerWithLocal(local, key, 11, 0) ==
+            (mode == policy::local ? tableResult::improved : tableResult::inserted));
+        assert(shared.considerWithLocal(local, key, 11, 0) ==
+            tableResult::dominated);
+        assert(localResource.allocationCalls == allocationsAfterMiss);
+        assert(local.size() == 1);
+        assert(shared.size() == 0);
+        assert(sharedResource.allocationCalls == 0);
+        const auto stats = shared.stats();
+        assert(stats.lockAcquisitionCount == (mode == policy::local ? 0 : 2));
+        assert(stats.admissionRejectionCount == (mode == policy::local ? 0 : 2));
+    }
+}
+
+void testIntegratedSelectiveFallbackThenBorrowing()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    sharedAssemblyTranspositionTable shared(
+        2, std::pmr::new_delete_resource(), policy::selective
+    );
+    countingMemoryResource firstResource;
+    countingMemoryResource secondResource;
+    assemblyTranspositionTable firstLocal(8, &firstResource);
+    assemblyTranspositionTable secondLocal(8, &secondResource);
+    const std::array<int, 4> key{19, 3, 5, 7};
+    assert(shared.considerWithLocal(firstLocal, key, 10, 0) ==
+        tableResult::inserted);
+    assert(shared.size() == 0);
+    assert(firstResource.allocationCalls > 0);
+    const auto allocationsAfterRejection = firstResource.allocationCalls;
+    assert(shared.considerWithLocal(firstLocal, key, 11, 0) ==
+        tableResult::inserted);
+    assert(shared.size() == 1);
+    assert(firstResource.allocationCalls == allocationsAfterRejection);
+    assert(shared.considerWithLocal(secondLocal, key, 7, 1) ==
+        tableResult::dominated);
+    assert(secondResource.allocationCalls == 0);
+    assert(shared.considerWithLocal(firstLocal, key, 12, 0) ==
+        tableResult::improved);
+    assert(shared.considerWithLocal(secondLocal, key, 12, 1) ==
+        tableResult::dominated);
+    assert(firstResource.allocationCalls == allocationsAfterRejection);
+    assert(secondResource.allocationCalls == 0);
+    assert(shared.stats().admissionRejectionCount == 1);
+}
+
+void testIntegratedConcurrentWorkers()
+{
+    constexpr std::size_t threadCount = 8;
+    constexpr int rounds = 512;
+    sharedAssemblyTranspositionTable shared(threadCount);
+    const std::array<int, 6> commonKey{7, 2, 3, 5, 11, 13};
+    std::barrier start(static_cast<std::ptrdiff_t>(threadCount));
+    std::atomic<int> insertionCount{0};
+    std::vector<std::thread> workers;
+    for (std::size_t worker = 0; worker < threadCount; ++worker)
+    {
+        workers.emplace_back([&, worker]
+        {
+            countingMemoryResource localResource;
+            assemblyTranspositionTable local(8, &localResource);
+            start.arrive_and_wait();
+            for (int round = 0; round < rounds; ++round)
+            {
+                const int score = round * static_cast<int>(threadCount) +
+                    static_cast<int>(worker);
+                if (shared.considerWithLocal(local, commonKey, score, worker) ==
+                    tableResult::inserted)
+                    insertionCount.fetch_add(1, std::memory_order_relaxed);
+                const std::array<int, 3> uniqueKey{
+                    0x2468ace, static_cast<int>(worker), round
+                };
+                assert(shared.considerWithLocal(local, uniqueKey, score, worker) ==
+                    tableResult::inserted);
+                assert(shared.considerWithLocal(local, uniqueKey, score, worker) ==
+                    tableResult::dominated);
+            }
+            const int maximumScore = rounds * static_cast<int>(threadCount) - 1;
+            start.arrive_and_wait();
+            assert(shared.considerWithLocal(local, commonKey, maximumScore, worker) ==
+                tableResult::dominated);
+            assert(local.consider(commonKey, maximumScore) == tableResult::dominated);
+            assert(local.size() == rounds + 1);
+            assert(localResource.allocationCalls == 0);
+        });
+    }
+    for (std::thread &worker : workers) worker.join();
+    assert(insertionCount.load(std::memory_order_relaxed) == 1);
+    assert(shared.size() == threadCount * rounds + 1);
+    const auto stats = shared.stats();
+    assert(stats.missCount == threadCount * rounds + 1);
+    assert(stats.hitCount == stats.prunedHitCount + stats.updatedHitCount);
+    assert(stats.lockAcquisitionCount == stats.hitCount + stats.missCount);
+    assert(stats.lockAcquisitionCount <= 2 * threadCount * rounds + threadCount);
+}
+
+void testIntegratedInvalidWorkerIndex()
+{
+    using policy = sharedAssemblyTranspositionTable::policy;
+    for (const policy mode : {policy::shared, policy::local})
+    {
+        sharedAssemblyTranspositionTable shared(
+            1, std::pmr::new_delete_resource(), mode
+        );
+        countingMemoryResource localResource;
+        assemblyTranspositionTable local(8, &localResource);
+        const std::array<int, 3> key{4, 1, 2};
+        for (const bool localHit : {false, true})
+        {
+            if (localHit)
+                assert(shared.considerWithLocal(local, key, 10, 0) ==
+                    tableResult::inserted);
+            const auto before = shared.stats();
+            bool threw = false;
+            try
+            {
+                static_cast<void>(shared.considerWithLocal(local, key, 7, 1));
+            }
+            catch (const std::out_of_range &)
+            {
+                threw = true;
+            }
+            assert(threw);
+            assert(local.size() == (localHit ? 1 : 0));
+            assert(shared.stats().lockAcquisitionCount == before.lockAcquisitionCount);
+        }
+    }
+}
+
 int main()
 {
     testBasicResultsAndExactKeys();
@@ -821,4 +1138,11 @@ int main()
     testSharedSelectiveFingerprintCollisionCannotPrune();
     testSharedLocalPolicyBypassesLocksAndStorage();
     testSharedConcurrentSelectiveAdmission();
+    testIntegratedLocalBorrowingAndScorePromotion();
+    testIntegratedExactKeysCollisionsAndZeroHash();
+    testIntegratedMixedOwnershipAndGrowth();
+    testIntegratedRejectedAdmissionKeepsLocalCopy();
+    testIntegratedSelectiveFallbackThenBorrowing();
+    testIntegratedConcurrentWorkers();
+    testIntegratedInvalidWorkerIndex();
 }

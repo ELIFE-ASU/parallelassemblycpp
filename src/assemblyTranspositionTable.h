@@ -101,6 +101,8 @@ public:
     }
 
 private:
+    friend class sharedAssemblyTranspositionTable;
+
     static constexpr std::size_t minimumCapacity = 8;
 
     struct alignas(int) storedKeyHeader
@@ -273,6 +275,23 @@ private:
         return result::inserted;
     }
 
+    PARALLELASSEMBLYCPP_NOINLINE void insertBorrowed(
+        std::uint32_t hash,
+        int sumDupBonds,
+        const findResult &found,
+        const storedKeyHeader *storedKey
+    )
+    {
+        const bool needsGrowth =
+            sizeValue >= maximumEntries(slots.size());
+        if (needsGrowth) grow();
+
+        slot incoming{storedKey, hash, sumDupBonds};
+        if (needsGrowth) insertWithoutLookup(slots, incoming);
+        else insertAt(slots, incoming, found.index, found.distance);
+        ++sizeValue;
+    }
+
     static void insertWithoutLookup(
         std::vector<slot> &destination,
         slot incoming
@@ -422,16 +441,12 @@ public:
             // Production workers publish only arena-owned, trivially
             // destructible keys. Release those arenas in bulk without a
             // pointer-chasing pass over every occupied slot at shutdown.
-            if (selected.directAllocatedBytes == 0) continue;
-            for (entry *stored : selected.activeKeys())
+            for (entry *stored : selected.directKeys)
             {
-                if (stored != nullptr && stored->pooled == 0)
-                {
-                    const std::size_t bytes = entryBytes(stored->length);
-                    std::pmr::new_delete_resource()->deallocate(
-                        stored, bytes, alignof(entry)
-                    );
-                }
+                const std::size_t bytes = entryBytes(stored->key.length);
+                std::pmr::new_delete_resource()->deallocate(
+                    stored, bytes, alignof(entry)
+                );
             }
         }
     }
@@ -453,7 +468,8 @@ public:
      * Completed lookups satisfy hits + misses == lock acquisitions,
      * hits == pruned + updated, and misses == admissions + rejections.
      * allocatedBytes is retained entry/key storage; slotBytes includes inline
-     * and expanded indices, arenaAllocatedBytes includes upstream arena slack
+     * and expanded indices and direct-entry ownership, arenaAllocatedBytes
+     * includes upstream arena slack
      * and directly allocated keys. Timings are collected only in telemetry
      * builds. Growth duration includes allocation, rehash and old-index free
      * under the lock; maxGrowthNanoseconds is the longest individual growth.
@@ -494,8 +510,12 @@ public:
 
     consideration considerWithBest(std::span<const int> key, int sumDupBonds)
     {
+        validateKey(key);
+        if (!lookupEnabled())
+            return {assemblyTranspositionTable::result::inserted, sumDupBonds};
         return considerWithResource(
-            key, sumDupBonds, *std::pmr::new_delete_resource(), false
+            key, sumDupBonds, assemblyTranspositionTable::keyHash(key),
+            *std::pmr::new_delete_resource(), false
         );
     }
 
@@ -505,9 +525,54 @@ public:
     {
         if (workerIndex >= workerPools.size())
             throw std::out_of_range("shared-table worker index is invalid");
+        validateKey(key);
+        if (!lookupEnabled())
+            return {assemblyTranspositionTable::result::inserted, sumDupBonds};
         return considerWithResource(
-            key, sumDupBonds, *workerPools[workerIndex], true
+            key, sumDupBonds, assemblyTranspositionTable::keyHash(key),
+            *workerPools[workerIndex], true
         );
+    }
+
+    /**
+     * L1-first lookup using one hash and one local probe. L1 borrows immutable
+     * admitted keys from this table, which must outlive the local table's use.
+     * Each caller must exclusively own both local and its workerIndex arena.
+     * Rejected admissions still receive an owned L1 key; they never prune.
+     */
+    assemblyTranspositionTable::result considerWithLocal(
+        assemblyTranspositionTable &local,
+        std::span<const int> key,
+        int sumDupBonds,
+        std::size_t workerIndex
+    )
+    {
+        if (workerIndex >= workerPools.size())
+            throw std::out_of_range("shared-table worker index is invalid");
+        validateKey(key);
+        if (!lookupEnabled()) return local.consider(key, sumDupBonds);
+
+        const std::uint32_t hash = assemblyTranspositionTable::keyHash(key);
+        const auto found = local.find(key, hash);
+        const bool localHit =
+            found.distance == assemblyTranspositionTable::foundDistance;
+        if (localHit && sumDupBonds <= local.slots[found.index].bestSumDupBonds)
+            return assemblyTranspositionTable::result::dominated;
+
+        const auto shared = considerWithResource(
+            key, sumDupBonds, hash, *workerPools[workerIndex], true
+        );
+        // L2 never mutates L1, so the saved probe remains valid across the
+        // locked lookup. Copy the strongest observed score directly into L1.
+        if (localHit)
+            local.slots[found.index].bestSumDupBonds = shared.bestSumDupBonds;
+        else if (shared.storedKey != nullptr)
+            local.insertBorrowed(hash, shared.bestSumDupBonds, found, shared.storedKey);
+        else
+            static_cast<void>(local.insertMiss(
+                key, hash, shared.bestSumDupBonds, found
+            ));
+        return shared.outcome;
     }
 
     [[nodiscard]] std::size_t workerCount() const noexcept
@@ -533,16 +598,21 @@ public:
         {
             std::lock_guard lock(selected.mutex);
             const statistics &source = selected.counters;
+            // These identities hold because entries are never erased. Derive
+            // redundant totals on inspection instead of dirtying more shared
+            // counter words on every lookup under the shard lock.
+            const std::uint64_t misses =
+                selected.sizeValue + source.admissionRejectionCount;
             result.hitCount += source.hitCount;
-            result.missCount += source.missCount;
+            result.missCount += misses;
             result.collisionChainSteps += source.collisionChainSteps;
             result.allocatedBytes += source.allocatedBytes;
-            result.lockAcquisitionCount += source.lockAcquisitionCount;
+            result.lockAcquisitionCount += source.hitCount + misses;
             result.lockWaitCount += source.lockWaitCount;
             result.lockWaitNanoseconds += source.lockWaitNanoseconds;
-            result.admissionCount += source.admissionCount;
+            result.admissionCount += selected.sizeValue;
             result.admissionRejectionCount += source.admissionRejectionCount;
-            result.prunedHitCount += source.prunedHitCount;
+            result.prunedHitCount += source.hitCount - source.updatedHitCount;
             result.updatedHitCount += source.updatedHitCount;
             result.growthCount += source.growthCount;
             result.rehashedEntries += source.rehashedEntries;
@@ -553,7 +623,8 @@ public:
             result.slotBytes += sizeof(selected.initialKeys) +
                 sizeof(selected.initialHashes) +
                 selected.expandedKeys.capacity() * sizeof(entry *) +
-                selected.expandedHashes.capacity() * sizeof(std::uint32_t);
+                selected.expandedHashes.capacity() * sizeof(std::uint32_t) +
+                selected.directKeys.capacity() * sizeof(entry *);
             result.admissionFilterBytes +=
                 selected.admissionFilter.capacity() * sizeof(std::uint32_t);
             result.arenaAllocatedBytes += selected.directAllocatedBytes;
@@ -570,12 +641,19 @@ private:
 
     struct alignas(int) entry
     {
-        std::uint32_t length;
         int bestSumDupBonds;
-        std::uint32_t pooled;
+        // Keep the immutable length immediately before the values, matching
+        // L1's owned-key representation without exposing the shared score.
+        assemblyTranspositionTable::storedKeyHeader key;
     };
-    static_assert(sizeof(entry) == 12);
+    static_assert(sizeof(entry) == 8);
+    static_assert(offsetof(entry, key) + sizeof(entry::key) == sizeof(entry));
     static_assert(std::is_trivially_destructible_v<entry>);
+
+    struct lookupResult : consideration
+    {
+        const assemblyTranspositionTable::storedKeyHeader *storedKey = nullptr;
+    };
 
     struct entryDeleter
     {
@@ -603,6 +681,9 @@ private:
         std::array<entry *, minimumShardCapacity> initialKeys{};
         std::vector<std::uint32_t> expandedHashes;
         std::vector<entry *> expandedKeys;
+        // Only the non-worker API allocates individual entries. Keeping its
+        // ownership here saves a flag word in every production arena entry.
+        std::vector<entry *> directKeys;
         // A bounded, direct-mapped first-sighting filter, allocated only for
         // selective mode. Fingerprints control admission, never equality.
         std::vector<std::uint32_t> admissionFilter;
@@ -662,21 +743,23 @@ private:
     bool bounded;
     std::size_t shardByteBudget;
 
-    consideration considerWithResource(
+    static void validateKey(std::span<const int> key)
+    {
+        if (key.size() > std::numeric_limits<std::uint32_t>::max() ||
+            key.size() >
+                (std::numeric_limits<std::size_t>::max() - sizeof(entry)) /
+                    sizeof(int))
+            throw std::length_error("assembly-state key is too long");
+    }
+
+    lookupResult considerWithResource(
         std::span<const int> key,
         int sumDupBonds,
+        std::uint32_t hash,
         std::pmr::memory_resource &resource,
         bool pooled
     )
     {
-        if (key.size() > std::numeric_limits<std::uint32_t>::max() ||
-            key.size_bytes() >
-                std::numeric_limits<std::size_t>::max() - sizeof(entry))
-            throw std::length_error("assembly-state key is too long");
-        if (!lookupEnabled())
-            return {assemblyTranspositionTable::result::inserted, sumDupBonds};
-
-        const std::uint32_t hash = assemblyTranspositionTable::keyHash(key);
         shard &selected = shards[shardIndex(hash)];
         bool lockWaited = false;
         std::uint64_t lockWaitNanoseconds = 0;
@@ -688,18 +771,21 @@ private:
         if (found.value != nullptr)
         {
             ++selected.counters.hitCount;
-            recordCompletedLock(selected, lockWaited, lockWaitNanoseconds);
+            recordLockWait(selected, lockWaited, lockWaitNanoseconds);
             if (sumDupBonds <= found.value->bestSumDupBonds)
             {
-                ++selected.counters.prunedHitCount;
                 return {
-                    assemblyTranspositionTable::result::dominated,
-                    found.value->bestSumDupBonds
+                    {assemblyTranspositionTable::result::dominated,
+                     found.value->bestSumDupBonds},
+                    &found.value->key
                 };
             }
             ++selected.counters.updatedHitCount;
             found.value->bestSumDupBonds = sumDupBonds;
-            return {assemblyTranspositionTable::result::improved, sumDupBonds};
+            return {
+                {assemblyTranspositionTable::result::improved, sumDupBonds},
+                &found.value->key
+            };
         }
 
         const std::size_t bytes = entryBytes(key.size());
@@ -707,10 +793,9 @@ private:
             bytes <= shardByteBudget - selected.counters.allocatedBytes;
         if (!withinBudget || !admit(selected, hash))
         {
-            ++selected.counters.missCount;
             ++selected.counters.admissionRejectionCount;
-            recordCompletedLock(selected, lockWaited, lockWaitNanoseconds);
-            return {assemblyTranspositionTable::result::inserted, sumDupBonds};
+            recordLockWait(selected, lockWaited, lockWaitNanoseconds);
+            return {{assemblyTranspositionTable::result::inserted, sumDupBonds}};
         }
 
         std::size_t insertionIndex = found.index;
@@ -721,18 +806,23 @@ private:
         }
         // Allocate only after absence and admission are established. Neither
         // rejected misses nor racing hits consume monotonic arena space.
-        ownedEntry prepared = prepareEntry(key, sumDupBonds, resource, pooled);
-        selected.activeKeys()[insertionIndex] = prepared.release();
+        ownedEntry prepared = prepareEntry(key, sumDupBonds, resource);
+        // Register ownership before publication: a vector allocation failure
+        // leaves the entry owned by prepared and the index unchanged.
+        if (!pooled) selected.directKeys.push_back(prepared.get());
+        entry *stored = prepared.release();
+        selected.activeKeys()[insertionIndex] = stored;
         // The low bits already selected the shard; setting bit zero cannot
         // change the slot index. Zero remains an unambiguous empty marker.
         selected.activeHashes()[insertionIndex] = hash | 1U;
         ++selected.sizeValue;
-        ++selected.counters.missCount;
-        ++selected.counters.admissionCount;
         selected.counters.allocatedBytes += bytes;
         if (!pooled) selected.directAllocatedBytes += bytes;
-        recordCompletedLock(selected, lockWaited, lockWaitNanoseconds);
-        return {assemblyTranspositionTable::result::inserted, sumDupBonds};
+        recordLockWait(selected, lockWaited, lockWaitNanoseconds);
+        return {
+            {assemblyTranspositionTable::result::inserted, sumDupBonds},
+            &stored->key
+        };
     }
 
     bool admit(shard &selected, std::uint32_t hash)
@@ -751,7 +841,7 @@ private:
 
     static bool keysEqual(const entry &stored, std::span<const int> key) noexcept
     {
-        return stored.length == key.size() && std::equal(
+        return stored.key.length == key.size() && std::equal(
             key.begin(), key.end(),
             reinterpret_cast<const int *>(std::addressof(stored) + 1)
         );
@@ -873,11 +963,10 @@ private:
 #endif
     }
 
-    static void recordCompletedLock(
+    static void recordLockWait(
         shard &selected, bool waited, std::uint64_t waitNanoseconds
     ) noexcept
     {
-        ++selected.counters.lockAcquisitionCount;
         if (waited)
         {
             ++selected.counters.lockWaitCount;
@@ -887,16 +976,15 @@ private:
 
     static ownedEntry prepareEntry(
         std::span<const int> key, int score,
-        std::pmr::memory_resource &resource, bool pooled
+        std::pmr::memory_resource &resource
     )
     {
         const std::size_t bytes = entryBytes(key.size());
         void *memory = resource.allocate(bytes, alignof(entry));
         ownedEntry prepared(
             std::construct_at(static_cast<entry *>(memory), entry{
-                static_cast<std::uint32_t>(key.size()),
                 score,
-                static_cast<std::uint32_t>(pooled)
+                {static_cast<std::uint32_t>(key.size())}
             }),
             entryDeleter{std::addressof(resource), bytes}
         );
