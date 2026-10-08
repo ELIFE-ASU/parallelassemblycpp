@@ -233,6 +233,7 @@ def run(probe: Path, *, full: bool = False) -> dict:
         input="".join(record(graph) + "\n" for graph, _, _ in cases),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=240 if full else 120,
         check=False,
     )
