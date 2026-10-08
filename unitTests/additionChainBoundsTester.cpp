@@ -56,7 +56,10 @@ void testScalarTable()
     assert(assembly_bounds::scalarLowerBound(256) == 8);
     assert(assembly_bounds::scalarLowerBound(257) == 9);
     assert(assembly_bounds::scalarLowerBound(1024) == 10);
-    assert(assembly_bounds::scalarLowerBound(INT_MAX) == 31);
+    // MSVC 19.43-19.44 /O2 crashes (C1001) constant-folding a literal INT_MAX
+    // argument here; a volatile operand keeps the same runtime check.
+    volatile int largest = INT_MAX;
+    assert(assembly_bounds::scalarLowerBound(largest) == 31);
 }
 
 using Vector = std::vector<int>;
