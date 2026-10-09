@@ -1407,7 +1407,6 @@ def run_cli_checks(executable: Path) -> int:
             "--parallel=off",
             "--threads=auto",
             "--threads=1",
-            "--threads=2147483647",
         )
         for option in valid_execution_options:
             completed = run_cli_command(

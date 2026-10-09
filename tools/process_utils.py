@@ -65,5 +65,3 @@ def run_command(
         raise
 
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-
