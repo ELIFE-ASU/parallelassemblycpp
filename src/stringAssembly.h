@@ -32,6 +32,7 @@
 #endif
 
 #include "additionChainBounds.h"
+#include "clockTicks.h"
 #include "stringEncoding.h"
 #include "stringRepair.h"
 
@@ -467,24 +468,7 @@ class Search
 
     [[nodiscard]] unsigned long long elapsedTicks() const noexcept
     {
-        const std::clock_t now = std::clock();
-        const std::clock_t error = static_cast<std::clock_t>(-1);
-        if (now == error || started_ == error) return 0;
-
-        using UnsignedClock = std::make_unsigned_t<std::clock_t>;
-        const UnsignedClock elapsed =
-            static_cast<UnsignedClock>(now) -
-            static_cast<UnsignedClock>(started_);
-        if constexpr (sizeof(UnsignedClock) > sizeof(unsigned long long))
-        {
-            if (
-                elapsed >
-                static_cast<UnsignedClock>(
-                    std::numeric_limits<unsigned long long>::max()
-                )
-            ) return std::numeric_limits<unsigned long long>::max();
-        }
-        return static_cast<unsigned long long>(elapsed);
+        return assembly_clock::budgetTicks(started_, std::clock());
     }
 
     bool shouldStop()

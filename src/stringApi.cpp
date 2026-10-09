@@ -43,12 +43,7 @@ CalculationResult calculateString(
             result.runtimeLimitReached = exact.runtimeLimitReached;
         }
         const std::clock_t finished = std::clock();
-        if (started != static_cast<std::clock_t>(-1) && finished != static_cast<std::clock_t>(-1))
-        {
-            using ClockTicks = std::make_unsigned_t<std::clock_t>;
-            result.clockTicks =
-                static_cast<ClockTicks>(finished) - static_cast<ClockTicks>(started);
-        }
+        result.clockTicks = assembly_clock::difference(started, finished);
         result.succeeded = true;
     }
     catch (const std::exception &exception)

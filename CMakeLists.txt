@@ -798,6 +798,11 @@ endfunction()
 if(BUILD_TESTING)
   find_package(Threads REQUIRED)
   parallelassemblycpp_add_unit_test(
+    clock-ticks
+    parallelassemblycpp_clock_ticks_tests
+    unitTests/clockTicksTester.cpp
+  )
+  parallelassemblycpp_add_unit_test(
     addition-chain-bounds
     parallelassemblycpp_addition_chain_bounds_tests
     unitTests/additionChainBoundsTester.cpp

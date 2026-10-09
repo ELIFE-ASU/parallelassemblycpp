@@ -22,6 +22,8 @@ inline bool searchTelemetryEnabled = false;
 #include <utility>
 #include <vector>
 
+#include "clockTicks.h"
+
 #ifdef __linux__
     #include <cerrno>
     #include <cstdlib>
@@ -304,10 +306,7 @@ inline const char* searchTelemetryPhaseName(SearchTelemetryPhase phase)
 
 inline uint64_t telemetryClockDifference(clock_t start, clock_t end)
 {
-    const clock_t clockError = static_cast<clock_t>(-1);
-    if (start == clockError || end == clockError) return 0;
-    using UnsignedClock = std::make_unsigned_t<clock_t>;
-    return static_cast<UnsignedClock>(end) - static_cast<UnsignedClock>(start);
+    return assembly_clock::difference(start, end);
 }
 
 inline uint64_t searchTelemetryWallNanoseconds()

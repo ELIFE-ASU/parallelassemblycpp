@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "compilerAttributes.h"
+#include "clockTicks.h"
 
 constexpr int unknownCanonicalId = -1;
 
@@ -228,19 +229,7 @@ bool receivedUserInterrupt()
  */
 unsigned long long elapsedClockTicks()
 {
-    const clock_t now = clock();
-    const clock_t clockError = static_cast<clock_t>(-1);
-    if (now == clockError || startTime == clockError) return 0;
-
-    using unsignedClock = std::make_unsigned_t<clock_t>;
-    const unsignedClock elapsed =
-        static_cast<unsignedClock>(now) - static_cast<unsignedClock>(startTime);
-    const std::uintmax_t elapsedWide = static_cast<std::uintmax_t>(elapsed);
-    const std::uintmax_t outputMax =
-        static_cast<std::uintmax_t>(std::numeric_limits<unsigned long long>::max());
-    if (elapsedWide > outputMax)
-        return std::numeric_limits<unsigned long long>::max();
-    return static_cast<unsigned long long>(elapsedWide);
+    return assembly_clock::budgetTicks(startTime, clock());
 }
 
 /**
