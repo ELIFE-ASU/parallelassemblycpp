@@ -135,31 +135,13 @@ inline graphHash canonical(const molGraph &source,
     return graphHash(fragment, cyclic);
 }
 
+/** Bond primitives exclude the isolated atoms counted by the graph API. */
 inline int componentCount(const molGraph &graph)
 {
-    std::vector<bool> visited(graph.atoms.size(), false);
-    std::vector<std::size_t> pending;
-    int components = 0;
-    for (std::size_t vertex = 0; vertex < graph.atoms.size(); ++vertex)
-    {
-        if (visited[vertex] || graph.atoms[vertex].bonds.empty()) continue;
-        ++components;
-        visited[vertex] = true;
-        pending.push_back(vertex);
-        while (!pending.empty())
-        {
-            const auto current = pending.back();
-            pending.pop_back();
-            for (const bond &edge : graph.atoms[current].bonds)
-            {
-                const auto neighbour = static_cast<std::size_t>(edge.neighbourAtomIndex);
-                if (visited[neighbour]) continue;
-                visited[neighbour] = true;
-                pending.push_back(neighbour);
-            }
-        }
-    }
-    return components;
+    return graph.disjointFragments() - static_cast<int>(std::count_if(
+        graph.atoms.begin(), graph.atoms.end(),
+        [](const atom &vertex) { return vertex.bonds.empty(); }
+    ));
 }
 } // namespace implementation
 

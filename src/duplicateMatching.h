@@ -482,76 +482,18 @@ struct duplicateSet
         Visitor &&visitor
     )
     {
-        if (list.size() < 2) return true;
-
-        for (size_t firstIndex = list.size() - 1; firstIndex > 0;)
-        {
-            --firstIndex;
-            if (searchShouldStop()) return false;
-            const int fragmentIndex = list[firstIndex].fragmentIndex;
-            for (size_t secondIndex = list.size();
-                 secondIndex > firstIndex + 1;)
-            {
-                --secondIndex;
-                if (searchShouldStopPeriodically()) return false;
-                if (
-                    fragmentIndex == list[secondIndex].fragmentIndex &&
-                    !list[firstIndex].mask.disjoint(list[secondIndex].mask)
-                ) continue;
-
-                validMatchings matching(
-                    list[firstIndex].mask,
-                    list[secondIndex].mask,
-                    fragmentIndex,
-                    list[secondIndex].fragmentIndex,
-                    size
-                );
-                if (filter(matching, firstIndex, secondIndex)) continue;
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-                if (searchTelemetryEnabled) [[unlikely]]
-                    ++searchTelemetry.counters.matchingVisits;
-#endif
-                if (!visitor(matching)) return false;
-            }
-        }
-        return true;
+        return visitMatchingsInReverseImpl(
+            std::forward<Filter>(filter), std::forward<Visitor>(visitor)
+        );
     }
 
     template<typename Visitor>
     PARALLELASSEMBLYCPP_ALWAYS_INLINE bool visitMatchingsInReverse(Visitor &&visitor)
     {
-        if (list.size() < 2) return true;
-
-        for (size_t firstIndex = list.size() - 1; firstIndex > 0;)
-        {
-            --firstIndex;
-            if (searchShouldStop()) return false;
-            const int fragmentIndex = list[firstIndex].fragmentIndex;
-            for (size_t secondIndex = list.size();
-                 secondIndex > firstIndex + 1;)
-            {
-                --secondIndex;
-                if (searchShouldStopPeriodically()) return false;
-                if (
-                    fragmentIndex == list[secondIndex].fragmentIndex &&
-                    !list[firstIndex].mask.disjoint(list[secondIndex].mask)
-                ) continue;
-
-                validMatchings matching(
-                    list[firstIndex].mask,
-                    list[secondIndex].mask,
-                    fragmentIndex,
-                    list[secondIndex].fragmentIndex,
-                    size
-                );
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-                if (searchTelemetryEnabled) [[unlikely]]
-                    ++searchTelemetry.counters.matchingVisits;
-#endif
-                if (!visitor(matching)) return false;
-            }
-        }
-        return true;
+        return visitMatchingsInReverseImpl(
+            [](validMatchings &, size_t, size_t) { return false; },
+            std::forward<Visitor>(visitor)
+        );
     }
 
     /**
@@ -735,7 +677,91 @@ struct duplicateSet
         spansMultipleFragments = spansFragments;
     }
 
+    /**
+     * Visit occurrences in insertion order with their pairability, preserving
+     * boundary/inner polling and the interleaved scan/expansion order. Classes
+     * spanning fragments need no pair scan because every occurrence has a
+     * partner. A false visitor result stops expansion immediately.
+     */
+    template<typename Visitor>
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE bool visitOccurrencePairability(
+        vector<uint8_t> &aliveScratch,
+        Visitor &&visitor
+    )
+    {
+        if (searchShouldStop()) return false;
+        if (occurrencesSpanMultipleFragments())
+        {
+            for (PotentialDuplicate &duplicate : list)
+            {
+                if (searchShouldStop()) return false;
+                if (!visitor(duplicate, true)) return false;
+            }
+            return true;
+        }
+
+        aliveScratch.assign(list.size(), 0);
+        for (size_t i = 0; i < list.size(); i++)
+        {
+            if (searchShouldStop()) return false;
+            const int fragmentIndex = list[i].fragmentIndex;
+            for (size_t j = i + 1; j < list.size(); j++)
+            {
+                if (searchShouldStopPeriodically()) return false;
+                if (fragmentIndex != list[j].fragmentIndex ||
+                    list[i].mask.disjoint(list[j].mask))
+                {
+                    aliveScratch[i] = 1;
+                    aliveScratch[j] = 1;
+                }
+            }
+            if (!visitor(list[i], aliveScratch[i] != 0)) return false;
+        }
+        return true;
+    }
+
 private:
+    template<typename Filter, typename Visitor>
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE bool visitMatchingsInReverseImpl(
+        Filter &&filter,
+        Visitor &&visitor
+    )
+    {
+        if (list.size() < 2) return true;
+
+        for (size_t firstIndex = list.size() - 1; firstIndex > 0;)
+        {
+            --firstIndex;
+            if (searchShouldStop()) return false;
+            const int fragmentIndex = list[firstIndex].fragmentIndex;
+            for (size_t secondIndex = list.size();
+                 secondIndex > firstIndex + 1;)
+            {
+                --secondIndex;
+                if (searchShouldStopPeriodically()) return false;
+                if (
+                    fragmentIndex == list[secondIndex].fragmentIndex &&
+                    !list[firstIndex].mask.disjoint(list[secondIndex].mask)
+                ) continue;
+
+                validMatchings matching(
+                    list[firstIndex].mask,
+                    list[secondIndex].mask,
+                    fragmentIndex,
+                    list[secondIndex].fragmentIndex,
+                    size
+                );
+                if (filter(matching, firstIndex, secondIndex)) continue;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+                if (searchTelemetryEnabled) [[unlikely]]
+                    ++searchTelemetry.counters.matchingVisits;
+#endif
+                if (!visitor(matching)) return false;
+            }
+        }
+        return true;
+    }
+
     bool valid = false;
     bool spansMultipleFragments = false;
 };
@@ -766,65 +792,31 @@ struct initialDuplicateSet : duplicateSet<initialPotentialDuplicate>
     const initialIncidentEdgeIndex &incidentEdges,
     vector<uint8_t> &aliveScratch)
     {
-        bool output = 0;
-        const bool allAlive = occurrencesSpanMultipleFragments();
-        if (searchShouldStop()) return output;
-
-        auto populateDAG = [&](initialPotentialDuplicate &duplicate)
-        {
-            const bool completed = duplicate.generateDAG(
-                q,
-                retainedStateCount,
-                tempDag,
-                fragments[duplicate.fragmentIndex].mask,
-                incidentEdges
-            );
-            // Each retained initial occurrence is expanded at most once. Its
-            // frontier is not needed by matching, so release the wide mask for
-            // reuse while keeping the occurrence mask and fragment identity.
-            duplicate.frontier.reset();
-            if (!completed) return false;
-            output = 1;
-            return true;
-        };
-        if (allAlive)
-        {
-            for (initialPotentialDuplicate &duplicate : list)
+        bool output = false;
+        static_cast<void>(visitOccurrencePairability(
+            aliveScratch,
+            [&](initialPotentialDuplicate &duplicate, bool alive)
             {
-                if (searchShouldStop()) return output;
-                if (!populateDAG(duplicate)) return output;
-            }
-            return output;
-        }
-
-        aliveScratch.assign(list.size(), 0);
-        for (size_t i = 0; i < list.size(); i++)
-        {
-            if (searchShouldStop()) return output;
-            const int fragmentIndex = list[i].fragmentIndex;
-            for (size_t j = i + 1; j < list.size(); j++)
-            {
-                if (searchShouldStopPeriodically()) return output;
-                if (fragmentIndex == list[j].fragmentIndex)
+                if (!alive)
                 {
-                    if (list[i].mask.disjoint(list[j].mask))
-                    {
-                        aliveScratch[i] = 1;
-                        aliveScratch[j] = 1;
-                    }
+                    duplicate.frontier.reset();
+                    return true;
                 }
-                else
-                {
-                    aliveScratch[i] = 1;
-                    aliveScratch[j] = 1;
-                }
+                const bool completed = duplicate.generateDAG(
+                    q,
+                    retainedStateCount,
+                    tempDag,
+                    fragments[duplicate.fragmentIndex].mask,
+                    incidentEdges
+                );
+                // An initial occurrence is expanded once; matching retains
+                // only its occurrence mask, so release every spent frontier.
+                duplicate.frontier.reset();
+                if (!completed) return false;
+                output = true;
+                return true;
             }
-            if (aliveScratch[i])
-            {
-                if (!populateDAG(list[i])) return output;
-            }
-            else list[i].frontier.reset();
-        }
+        ));
         return output;
     }
 };
@@ -1518,18 +1510,16 @@ bool dagDuplicateGenerator(
     bool last,
     vector<uint8_t> &aliveScratch
 )
-    {
-        bool output = 0;
-        const bool allAlive = duplicates.occurrencesSpanMultipleFragments();
-        if (searchShouldStop()) return output;
-
-        // Each occurrence is preceded by one boundary poll; dagGenerate polls
-        // periodically inside, and the caller polls again after this class.
-        auto generateFromDuplicate = [&](dagPotentialDuplicate &duplicate)
+{
+    bool output = false;
+    static_cast<void>(duplicates.visitOccurrencePairability(
+        aliveScratch,
+        [&](dagPotentialDuplicate &duplicate, bool alive)
         {
+            if (!alive) return true;
             const int fragmentIndex = duplicate.fragmentIndex;
             takenMasks[fragmentIndex].add(duplicate.mask);
-            duplicates.dead = 0;
+            duplicates.dead = false;
             if (!last)
             {
                 overweight |= dagGenerate(
@@ -1542,46 +1532,10 @@ bool dagDuplicateGenerator(
                     ordinal,
                     duplicates.fragmentCount
                 );
-                output = 1;
+                output = true;
             }
-        };
-        if (allAlive)
-        {
-            for (dagPotentialDuplicate &duplicate : duplicates.list)
-            {
-                if (searchShouldStop()) return output;
-                generateFromDuplicate(duplicate);
-            }
-            return output;
+            return true;
         }
-
-        aliveScratch.assign(duplicates.list.size(), 0);
-        for (size_t i = 0; i < duplicates.list.size(); i++)
-        {
-            if (searchShouldStop()) return output;
-            const int fragmentIndex = duplicates.list[i].fragmentIndex;
-            for (size_t j = i + 1; j < duplicates.list.size(); j++)
-            {
-                if (searchShouldStopPeriodically()) return output;
-                if (fragmentIndex == duplicates.list[j].fragmentIndex)
-                {
-                    if (
-                        duplicates.list[i].mask.disjoint(
-                            duplicates.list[j].mask
-                        )
-                    )
-                    {
-                        aliveScratch[i] = 1;
-                        aliveScratch[j] = 1;
-                    }
-                }
-                else
-                {
-                    aliveScratch[i] = 1;
-                    aliveScratch[j] = 1;
-                }
-            }
-            if (aliveScratch[i]) generateFromDuplicate(duplicates.list[i]);
-        }
-        return output;
-    }
+    ));
+    return output;
+}

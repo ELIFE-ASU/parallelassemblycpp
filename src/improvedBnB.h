@@ -513,82 +513,6 @@ void buildUnrestrictedDupBondTotals(
     }
 }
 
-int pairSpecificGenericBound(
-    const assemblyState &target,
-    const validMatchings &matching,
-    const IntegerVector &parentTotals
-)
-{
-    // Evaluate the generic bound on a virtual child whose selected copies have
-    // been removed but whose residual parents remain unsplit. Since
-    // n - ceil(n / k) is superadditive, later component splitting can only
-    // lower this duplicate-bond estimate, so it is safe before union-find.
-    const int selectedSize = matching.maximumFragmentSize;
-    int total = parentTotals[0] + selectedSize / 2;
-    if (matching.firstFragmentIndex == matching.secondFragmentIndex)
-    {
-        const int parentEdges =
-            target.fragments[matching.firstFragmentIndex].edgeCount;
-        total += (parentEdges - 2 * selectedSize) / 2 - parentEdges / 2;
-    }
-    else
-    {
-        const int firstParentEdges =
-            target.fragments[matching.firstFragmentIndex].edgeCount;
-        const int secondParentEdges =
-            target.fragments[matching.secondFragmentIndex].edgeCount;
-        total += (firstParentEdges - selectedSize) / 2 - firstParentEdges / 2;
-        total += (secondParentEdges - selectedSize) / 2 - secondParentEdges / 2;
-    }
-    int result = total - 1;
-
-    for (int duplicateSize = 3;
-         duplicateSize < selectedSize;
-         duplicateSize++)
-    {
-        total = parentTotals[duplicateSize - 2] +
-            assemblyState::unrestrictedDupBondsForFragment(
-                selectedSize,
-                duplicateSize
-            );
-        if (matching.firstFragmentIndex == matching.secondFragmentIndex)
-        {
-            const int parentEdges =
-                target.fragments[matching.firstFragmentIndex].edgeCount;
-            total += assemblyState::unrestrictedDupBondsForFragment(
-                parentEdges - 2 * selectedSize,
-                duplicateSize
-            ) - assemblyState::unrestrictedDupBondsForFragment(
-                parentEdges,
-                duplicateSize
-            );
-        }
-        else
-        {
-            const int firstParentEdges =
-                target.fragments[matching.firstFragmentIndex].edgeCount;
-            const int secondParentEdges =
-                target.fragments[matching.secondFragmentIndex].edgeCount;
-            total += assemblyState::unrestrictedDupBondsForFragment(
-                firstParentEdges - selectedSize,
-                duplicateSize
-            ) - assemblyState::unrestrictedDupBondsForFragment(
-                firstParentEdges,
-                duplicateSize
-            );
-            total += assemblyState::unrestrictedDupBondsForFragment(
-                secondParentEdges - selectedSize,
-                duplicateSize
-            ) - assemblyState::unrestrictedDupBondsForFragment(
-                secondParentEdges,
-                duplicateSize
-            );
-        }
-        result = max(result, total - assembly_bounds::scalarLowerBound(duplicateSize));
-    }
-    return result;
-}
-
 PARALLELASSEMBLYCPP_NOINLINE int pairSpecificGenericBound(
     const assemblyState &target,
     int selectedSize,
@@ -664,6 +588,22 @@ PARALLELASSEMBLYCPP_NOINLINE int pairSpecificGenericBound(
         result = max(result, total - assembly_bounds::scalarLowerBound(duplicateSize));
     }
     return result;
+}
+
+/** Project matching metadata onto the canonical virtual-child bound. */
+inline int pairSpecificGenericBound(
+    const assemblyState &target,
+    const validMatchings &matching,
+    const IntegerVector &parentTotals
+)
+{
+    return pairSpecificGenericBound(
+        target,
+        matching.maximumFragmentSize,
+        matching.firstFragmentIndex,
+        matching.secondFragmentIndex,
+        parentTotals
+    );
 }
 
 template<typename DuplicateMasks>
@@ -2416,6 +2356,53 @@ bool buildRootJobDescriptors(
 }
 
 /**
+ * Reconfigure the persistent mask only after other owning masks from the old
+ * domain have been destroyed. Keep its destructor under the old arena width.
+ */
+void configureSearchMaskDomains(size_t edgeCount, size_t atomCount)
+{
+    std::destroy_at(std::addressof(allEdges));
+    EdgeMask::configure(edgeCount);
+    std::construct_at(std::addressof(allEdges));
+    AtomMask::configure(atomCount);
+}
+
+/** Prepare the owned molecule state used by serial search and the producer. */
+void prepareMolecularSearchInput(
+    const molGraph &molecule,
+    vector<MoleculeEdge> &removedEdges,
+    clock_t startedAt
+)
+{
+    sharedTargetMolecule = nullptr;
+    sharedUniverseEdgeList = nullptr;
+    startTime = startedAt;
+    searchStopPollCountdown = 0;
+    searchStopInnerPollCountdown = 0;
+    runtimeLimitReached = false;
+    enumerationLimitReached = false;
+    sharedCanonicalRegistry = nullptr;
+    sharedAssemblyStates = nullptr;
+    sharedAssemblyWorkerIndex = 0;
+    bitsetHashTable.clear();
+    clearGraphHashDelta();
+    clearTreeCanonInterner();
+    intermediateAssemblyIndices.clear();
+
+    totalBonds = molecule.totalBonds;
+    originalEdgeList = molecule.writeEdgeList();
+    disjointFragments = molecule.disjointFragments();
+    originalMolecule = molecule;
+    removedEdges.clear();
+    targetMolecule = preprocessWriteback(
+        molecule, removedEdges, &assemblyCompositionLowerBound
+    );
+    universeEdgeList = targetMolecule.writeEdgeList();
+    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
+    configureSearchMaskDomains(universeEdgeList.size(), targetMolecule.atoms.size());
+}
+
+/**
  * Build the mask-free, read-only state shared by one process's workers.
  * Root-owned masks are explicitly released before the producer thread can
  * enter the worker pool and reconfigure its thread-local mask arena.
@@ -2425,43 +2412,13 @@ void prepareParallelSearchContext(
     SearchContext &context
 )
 {
-    sharedTargetMolecule = nullptr;
-    sharedUniverseEdgeList = nullptr;
     context.startedAt = clock();
-    startTime = context.startedAt;
-    searchStopPollCountdown = 0;
-    searchStopInnerPollCountdown = 0;
-    runtimeLimitReached = false;
-    enumerationLimitReached = false;
-    sharedCanonicalRegistry = nullptr;
-    sharedAssemblyStates = nullptr;
-    sharedAssemblyWorkerIndex = 0;
+    prepareMolecularSearchInput(molecule, context.removedEdges, context.startedAt);
     context.canonicalRegistry.reset();
     context.sharedStates.reset();
-    bitsetHashTable.clear();
-    clearGraphHashDelta();
-    clearTreeCanonInterner();
-    intermediateAssemblyIndices.clear();
-
-    context.originalMolecule = molecule;
-    context.originalEdges = molecule.writeEdgeList();
-    originalMolecule = context.originalMolecule;
-    originalEdgeList = context.originalEdges;
-    totalBonds = molecule.totalBonds;
-    disjointFragments = molecule.disjointFragments();
-    context.removedEdges.clear();
-    targetMolecule = preprocessWriteback(
-        molecule, context.removedEdges, &assemblyCompositionLowerBound
-    );
+    context.originalMolecule = originalMolecule;
+    context.originalEdges = originalEdgeList;
     context.compositionLowerBound = assemblyCompositionLowerBound;
-    universeEdgeList = targetMolecule.writeEdgeList();
-    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
-
-    // Release the persistent mask before configure() clears this TLS arena.
-    std::destroy_at(std::addressof(allEdges));
-    EdgeMask::configure(universeEdgeList.size());
-    std::construct_at(std::addressof(allEdges));
-    AtomMask::configure(targetMolecule.atoms.size());
 
     context.homogeneousPathEdgePositions.clear();
     configureHomogeneousPathEdgePositions(
@@ -2595,10 +2552,9 @@ void configureParallelWorker(
         sharedAssemblyWorkerIndex = workerIndex;
     }
     bitsetHashTable.clear();
-    std::destroy_at(std::addressof(allEdges));
-    EdgeMask::configure(context.universeEdges.size());
-    std::construct_at(std::addressof(allEdges));
-    AtomMask::configure(context.processedMolecule.atoms.size());
+    configureSearchMaskDomains(
+        context.universeEdges.size(), context.processedMolecule.atoms.size()
+    );
 
     startTime = context.startedAt;
     searchStopPollCountdown = 0;
@@ -3118,40 +3074,12 @@ void runParallelRootJobs(
  */
 bool improvedBnB(molGraph &molecule, ofstream &outputStream)
 {
-    sharedTargetMolecule = nullptr;
-    sharedUniverseEdgeList = nullptr;
-    startTime = clock();
-    searchStopPollCountdown = 0;
-    searchStopInnerPollCountdown = 0;
-    runtimeLimitReached = false;
-    enumerationLimitReached = false;
-    sharedCanonicalRegistry = nullptr;
-    sharedAssemblyStates = nullptr;
-    sharedAssemblyWorkerIndex = 0;
-    bitsetHashTable.clear();
-    clearGraphHashDelta();
-    clearTreeCanonInterner();
-    intermediateAssemblyIndices.clear();
+    const clock_t startedAt = clock();
     searchRootBranchOrdinal = 0;
     searchBranchLeaseCount = 0;
     searchBranchAssignmentCount = 0;
-    totalBonds = molecule.totalBonds;
-    originalEdgeList = molecule.writeEdgeList();
-    disjointFragments = molecule.disjointFragments();
-    originalMolecule = molecule;
     vector<MoleculeEdge> removedEdges;
-    targetMolecule = preprocessWriteback(
-        molecule, removedEdges, &assemblyCompositionLowerBound
-    );
-    universeEdgeList = targetMolecule.writeEdgeList();
-    prepareCanonicalisationGraph(targetMolecule, universeEdgeList);
-    // End the persistent mask's lifetime under its old representation before
-    // changing the domain width, then construct its new representation. Other
-    // mask-owning globals were cleared above.
-    std::destroy_at(std::addressof(allEdges));
-    EdgeMask::configure(universeEdgeList.size());
-    std::construct_at(std::addressof(allEdges));
-    AtomMask::configure(targetMolecule.atoms.size());
+    prepareMolecularSearchInput(molecule, removedEdges, startedAt);
     ufdsMaskWorkspace fragmentationWorkspace(
         targetMolecule.atoms.size(),
         universeEdgeList.size(),
@@ -3170,7 +3098,7 @@ bool improvedBnB(molGraph &molecule, ofstream &outputStream)
         fragmentationWorkspace.reuseResidualDecompositions
     );
 #endif
-    for (size_t i = 0; i < universeEdgeList.size(); i++) allEdges.set(i);
+    allEdges.set();
     assemblyState rootState;
     rootState.appendFragment(
         allEdges,
