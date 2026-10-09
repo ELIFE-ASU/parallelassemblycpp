@@ -14,9 +14,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 if __package__:
-    from . import benchmark
+    from . import benchmark, report_reader
 else:
     import benchmark
+    import report_reader
 
 
 @dataclass(frozen=True)
@@ -36,9 +37,7 @@ MINIMUM_RUNS = {
     "profile": 6,
     "scaling": 30,
 }
-PAIRED_COMPARISON_ORDER = (
-    "baseline/candidate on odd rounds, candidate/baseline on even rounds"
-)
+PAIRED_COMPARISON_ORDER = report_reader.PAIRED_COMPARISON_ORDER
 MAX_CLOCK_TICKS = (1 << 64) - 1
 ExecutionIdentity = tuple[
     tuple[str, ...],
@@ -78,47 +77,9 @@ def string_at(document: object, keys: Sequence[str], context: str) -> str:
 def execution_identity(
     document: dict[str, object], role: str, path: Path
 ) -> ExecutionIdentity:
-    """Return one canonical launcher/arguments/environment report identity."""
-    execution = document.get("execution")
-    if execution is None:
-        # Schema-v2 reports written before execution configurations existed used
-        # the ordinary direct-launch configuration for both roles.
-        return (), (), ()
-    if not isinstance(execution, dict):
-        raise GateError(f"invalid execution configurations in {path}")
-    config = execution.get(role)
-    if not isinstance(config, dict):
-        raise GateError(f"missing {role} execution configuration in {path}")
-
-    launcher = config.get("launcher")
-    if not isinstance(launcher, list) or any(
-        not isinstance(value, str) or not value for value in launcher
-    ):
-        raise GateError(f"invalid {role} launcher configuration in {path}")
-    arguments = config.get("arguments", [])
-    if not isinstance(arguments, list) or any(
-        not isinstance(value, str) or not value or "\x00" in value
-        for value in arguments
-    ):
-        raise GateError(f"invalid {role} arguments configuration in {path}")
-    environment = config.get("environment")
-    if not isinstance(environment, dict):
-        raise GateError(f"invalid {role} environment configuration in {path}")
-    normalized_environment: list[tuple[str, str]] = []
-    for key, value in environment.items():
-        if (
-            not isinstance(key, str)
-            or benchmark.ENVIRONMENT_KEY_PATTERN.fullmatch(key) is None
-            or not isinstance(value, str)
-            or "\x00" in value
-        ):
-            raise GateError(f"invalid {role} environment configuration in {path}")
-        normalized_environment.append((key, value))
-    return (
-        tuple(launcher),
-        tuple(arguments),
-        tuple(sorted(normalized_environment)),
-    )
+    """Retain the historical tuple interface around shared identity parsing."""
+    identity = report_reader.execution_identity(document, role, path, GateError)
+    return identity.launcher, identity.arguments, identity.environment
 
 
 def load_result(path: Path) -> dict[str, object]:
@@ -155,22 +116,9 @@ def validate_corpus_identity(
     if recorded_manifest_sha256 != expected_manifest.get("sha256"):
         raise GateError(f"stale benchmark manifest fingerprint in {path}")
 
-    recorded_inputs = corpus.get("inputs")
-    if not isinstance(recorded_inputs, list):
-        raise GateError(f"missing corpus input fingerprints in {path}")
-    recorded_by_name: dict[str, str] = {}
-    for index, entry in enumerate(recorded_inputs):
-        if not isinstance(entry, dict):
-            raise GateError(f"invalid corpus input fingerprint {index} in {path}")
-        name = string_at(entry, ("name",), f"corpus input {index} name in {path}")
-        sha256 = string_at(
-            entry,
-            ("sha256",),
-            f"corpus input {name!r} SHA-256 in {path}",
-        )
-        if name in recorded_by_name:
-            raise GateError(f"duplicate corpus input fingerprint {name!r} in {path}")
-        recorded_by_name[name] = sha256
+    recorded_by_name = report_reader.corpus_input_fingerprints(
+        corpus, path, string_at, GateError
+    )
 
     expected_inputs = expected.get("inputs")
     if not isinstance(expected_inputs, list):

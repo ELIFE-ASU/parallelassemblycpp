@@ -22,6 +22,51 @@
 template<typename Domain>
 class ActiveWordMaskView;
 
+namespace activeWordMaskDetail
+{
+/** Ascending bit scans shared by owning masks and borrowed views. */
+template<typename Mask>
+[[nodiscard]] std::size_t findFirst(const Mask &mask) noexcept
+{
+    if (Mask::activeWordCount() <= 1) [[likely]]
+    {
+        const auto word = mask.activeWord(0);
+        return word == 0 ? Mask::size()
+            : static_cast<std::size_t>(std::countr_zero(word));
+    }
+    for (std::size_t i = 0; i < Mask::activeWordCount(); ++i)
+    {
+        const auto word = mask.activeWord(i);
+        if (word != 0)
+            return i * Mask::wordBits +
+                static_cast<std::size_t>(std::countr_zero(word));
+    }
+    return Mask::size();
+}
+
+template<typename Mask>
+[[nodiscard]] std::size_t findNext(const Mask &mask, std::size_t position) noexcept
+{
+    using word_type = typename Mask::word_type;
+    if (Mask::size() == 0 || position >= Mask::size() - 1) return Mask::size();
+    ++position;
+    std::size_t wordIndex = position / Mask::wordBits;
+    word_type word = mask.activeWord(wordIndex);
+    word &= std::numeric_limits<word_type>::max() << (position % Mask::wordBits);
+    if (word != 0)
+        return wordIndex * Mask::wordBits +
+            static_cast<std::size_t>(std::countr_zero(word));
+    for (++wordIndex; wordIndex < Mask::activeWordCount(); ++wordIndex)
+    {
+        word = mask.activeWord(wordIndex);
+        if (word != 0)
+            return wordIndex * Mask::wordBits +
+                static_cast<std::size_t>(std::countr_zero(word));
+    }
+    return Mask::size();
+}
+} // namespace activeWordMaskDetail
+
 /**
  * @brief Runtime-width bit mask with an exact one-word small specialization.
  *
@@ -511,49 +556,12 @@ public:
 
     [[nodiscard]] std::size_t findFirst() const noexcept
     {
-        if (isSmall()) [[likely]]
-        {
-            return storage_.word == 0
-                ? activeBitCount_
-                : static_cast<std::size_t>(std::countr_zero(storage_.word));
-        }
-        for (std::size_t i = 0; i < activeWordCount_; i++)
-        {
-            const word_type word = activeWord(i);
-            if (word != 0)
-            {
-                return i * wordBits +
-                    static_cast<std::size_t>(std::countr_zero(word));
-            }
-        }
-        return activeBitCount_;
+        return activeWordMaskDetail::findFirst(*this);
     }
 
     [[nodiscard]] std::size_t findNext(std::size_t position) const noexcept
     {
-        if (activeBitCount_ == 0 || position >= activeBitCount_ - 1)
-        {
-            return activeBitCount_;
-        }
-        position++;
-        std::size_t wordIndex = position / wordBits;
-        word_type word = activeWord(wordIndex);
-        word &= std::numeric_limits<word_type>::max() << (position % wordBits);
-        if (word != 0)
-        {
-            return wordIndex * wordBits +
-                static_cast<std::size_t>(std::countr_zero(word));
-        }
-        for (wordIndex++; wordIndex < activeWordCount_; wordIndex++)
-        {
-            word = activeWord(wordIndex);
-            if (word != 0)
-            {
-                return wordIndex * wordBits +
-                    static_cast<std::size_t>(std::countr_zero(word));
-            }
-        }
-        return activeBitCount_;
+        return activeWordMaskDetail::findNext(*this, position);
     }
 
     ActiveWordMask &operator&=(const ActiveWordMask &other)
@@ -1318,47 +1326,12 @@ public:
 
     [[nodiscard]] std::size_t findFirst() const noexcept
     {
-        if (isSmall()) [[likely]]
-        {
-            return storage_.word == 0
-                ? size()
-                : static_cast<std::size_t>(std::countr_zero(storage_.word));
-        }
-        for (std::size_t i = 0; i < activeWordCount(); i++)
-        {
-            const word_type word = activeWord(i);
-            if (word != 0)
-            {
-                return i * wordBits +
-                    static_cast<std::size_t>(std::countr_zero(word));
-            }
-        }
-        return size();
+        return activeWordMaskDetail::findFirst(*this);
     }
 
     [[nodiscard]] std::size_t findNext(std::size_t position) const noexcept
     {
-        const std::size_t bitCount = size();
-        if (bitCount == 0 || position >= bitCount - 1) return bitCount;
-        position++;
-        std::size_t wordIndex = position / wordBits;
-        word_type word = activeWord(wordIndex);
-        word &= std::numeric_limits<word_type>::max() << (position % wordBits);
-        if (word != 0)
-        {
-            return wordIndex * wordBits +
-                static_cast<std::size_t>(std::countr_zero(word));
-        }
-        for (wordIndex++; wordIndex < activeWordCount(); wordIndex++)
-        {
-            word = activeWord(wordIndex);
-            if (word != 0)
-            {
-                return wordIndex * wordBits +
-                    static_cast<std::size_t>(std::countr_zero(word));
-            }
-        }
-        return bitCount;
+        return activeWordMaskDetail::findNext(*this, position);
     }
 
     [[nodiscard]] PARALLELASSEMBLYCPP_ALWAYS_INLINE bool intersects(

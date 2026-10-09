@@ -30,6 +30,42 @@ class GraphRepairBenchmarkTests(unittest.TestCase):
         )["certificate"]
         self.certificate["elapsed_seconds"] = 0.01
 
+    def test_corpus_merge_preserves_regression_identity_and_suite_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            regression = root / "unitTests"
+            regression.mkdir()
+            (regression / "sample.mol").write_text("fixture", encoding="utf-8")
+            (regression / "regression_cases.tsv").write_text(
+                "molecule\texpected_assembly_index\nsample\t7\n", encoding="utf-8"
+            )
+            corpus = root / "benchmarks"
+            corpus.mkdir()
+            manifest = corpus / "cases.tsv"
+            header = "\t".join(bounds.benchmark.MANIFEST_HEADER) + "\n"
+            row = (
+                "alias\t../unitTests/sample.mol\t7\tprovisional\tquick,full\tfixture\n"
+            )
+            manifest.write_text(header + row, encoding="utf-8")
+            with patch.object(bounds, "REPOSITORY_ROOT", root):
+                self.assertEqual(
+                    bounds.load_cases("all"),
+                    [
+                        {
+                            "name": "sample",
+                            "input": "unitTests/sample.mol",
+                            "expected_assembly_index": 7,
+                            "expectation": "reviewed",
+                            "suites": ["regression", "quick", "full"],
+                        }
+                    ],
+                )
+                manifest.write_text(
+                    header + row.replace("\t7\t", "\t8\t"), encoding="utf-8"
+                )
+                with self.assertRaisesRegex(ValueError, "conflicting expected indices"):
+                    bounds.load_cases("all")
+
     def run_samples(self, samples: list[dict]) -> list[dict]:
         processes = [
             subprocess.CompletedProcess(

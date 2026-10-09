@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import importlib.util
 import json
 import math
@@ -24,6 +23,11 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+if __package__:
+    from . import benchmark
+else:
+    import benchmark
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
@@ -48,22 +52,22 @@ def load_cases(corpus: str) -> list[dict]:
                 }
     if corpus in {"benchmarks", "all"}:
         manifest = REPOSITORY_ROOT / "benchmarks" / "cases.tsv"
-        with manifest.open(encoding="utf-8", newline="") as stream:
-            for row in csv.DictReader(stream, delimiter="\t"):
-                source = (manifest.parent / row["input"]).resolve(strict=True)
-                expected = int(row["expected_assembly_index"])
-                if source in cases:
-                    if cases[source]["expected_assembly_index"] != expected:
-                        raise ValueError(f"conflicting expected indices for {source}")
-                    cases[source]["suites"].extend(row["suites"].split(","))
-                    continue
-                cases[source] = {
-                    "name": row["name"],
-                    "input": str(source.relative_to(REPOSITORY_ROOT)),
-                    "expected_assembly_index": expected,
-                    "expectation": row["expectation"],
-                    "suites": row["suites"].split(","),
-                }
+        _, benchmark_cases = benchmark.load_manifest(manifest)
+        for case in benchmark_cases:
+            source = case.source
+            expected = case.expected_assembly_index
+            if source in cases:
+                if cases[source]["expected_assembly_index"] != expected:
+                    raise ValueError(f"conflicting expected indices for {source}")
+                cases[source]["suites"].extend(case.suites)
+                continue
+            cases[source] = {
+                "name": case.name,
+                "input": str(source.relative_to(REPOSITORY_ROOT)),
+                "expected_assembly_index": expected,
+                "expectation": case.expectation,
+                "suites": list(case.suites),
+            }
     return list(cases.values())
 
 
@@ -364,9 +368,7 @@ def run_probe(
                 "trail_construction_valid": True,
                 "algorithm_seconds": timings,
                 "trail_python_seconds": trail_seconds,
-                "input_sha256": hashlib.sha256(
-                    (REPOSITORY_ROOT / case["input"]).read_bytes()
-                ).hexdigest(),
+                "input_sha256": benchmark.file_sha256(REPOSITORY_ROOT / case["input"]),
                 "improvement": trivial - bound,
                 "gap_to_reference": bound - case["expected_assembly_index"],
                 "median_algorithm_seconds": statistics.median(timings),
@@ -424,9 +426,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": platform.platform(),
         "executable": str(executable),
-        "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "executable_sha256": benchmark.file_sha256(executable),
         "source_sha256": {
-            str(path): hashlib.sha256((REPOSITORY_ROOT / path).read_bytes()).hexdigest()
+            str(path): benchmark.file_sha256(REPOSITORY_ROOT / path)
             for path in (
                 Path("src/graphRepair.h"),
                 Path("unitTests/graphRepairProbe.cpp"),
@@ -490,6 +492,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (
+        OSError,
+        ValueError,
+        benchmark.BenchmarkError,
+        subprocess.SubprocessError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)

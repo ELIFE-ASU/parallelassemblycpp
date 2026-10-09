@@ -194,20 +194,11 @@ def corpus_metadata(
     cases: Sequence[benchmark.BenchmarkCase],
 ) -> dict[str, object]:
     """Fingerprint the manifest and every input used by the training corpus."""
-    return {
-        "manifest": {
-            "path": repository_path(manifest_path),
-            "sha256": file_sha256(manifest_path),
-        },
-        "inputs": [
-            {
-                "name": case.name,
-                "path": repository_path(case.source),
-                "sha256": file_sha256(case.source),
-            }
-            for case in cases
-        ],
-    }
+    metadata = benchmark.benchmark_corpus_metadata(manifest_path, cases)
+    metadata["manifest"]["path"] = repository_path(manifest_path)
+    for record, case in zip(metadata["inputs"], cases, strict=True):
+        record["path"] = repository_path(case.source)
+    return metadata
 
 
 def write_completion_record(

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
 if __package__:
@@ -124,18 +125,20 @@ def executable_path(build_directory: Path, name: str) -> Path:
     return build_directory / (name + (".exe" if os.name == "nt" else ""))
 
 
-def make_runs(
-    arguments: argparse.Namespace, topology: cpu_topology.CpuTopology
-) -> list[ScalingRun]:
+def paired_paclitaxel_arguments(
+    arguments: argparse.Namespace,
+    topology: cpu_topology.CpuTopology,
+    candidate_name: str,
+) -> list[str]:
+    """Configure the common paired case and pinned one-worker serial reference."""
     build_directory = arguments.build_dir.expanduser().resolve()
-    output_directory = arguments.output_dir.expanduser().resolve()
     common = [
         "--baseline-executable",
         str(executable_path(build_directory, "ParallelAssemblyCpp")),
         "--baseline-parallel",
         "off",
         "--executable",
-        str(executable_path(build_directory, "ParallelAssemblyCppOMP")),
+        str(executable_path(build_directory, candidate_name)),
         "--candidate-parallel",
         "on",
         "--suite",
@@ -164,6 +167,15 @@ def make_runs(
         f"OMP_PLACES={baseline_places}",
     ):
         common.extend(("--baseline-env", setting))
+    return common
+
+
+def make_runs(
+    arguments: argparse.Namespace, topology: cpu_topology.CpuTopology
+) -> list[ScalingRun]:
+    build_directory = arguments.build_dir.expanduser().resolve()
+    output_directory = arguments.output_dir.expanduser().resolve()
+    common = paired_paclitaxel_arguments(arguments, topology, "ParallelAssemblyCppOMP")
     if arguments.telemetry:
         common.extend(
             (
@@ -248,6 +260,35 @@ def create_scaling_figure() -> Figure:
     return figure
 
 
+def finish_scaling_plot(
+    figure: Figure,
+    axes: tuple[Axes, Axes],
+    counts: Sequence[int],
+    path: Path,
+    *,
+    xlabel: str,
+    speedup_label: str,
+) -> None:
+    """Apply shared scaling guides and export the completed plot in both formats."""
+    speedup_axis, efficiency_axis = axes
+    maximum = max(counts)
+    speedup_axis.plot([1, maximum], [1, maximum], "--", label="Ideal scaling")
+    speedup_axis.axhline(1, color="gray", linewidth=0.8, linestyle=":")
+    speedup_axis.set_ylabel(speedup_label)
+    efficiency_axis.axhline(100, color="gray", linestyle="--", label="Ideal efficiency")
+    efficiency_axis.set_ylabel("Parallel efficiency (%)")
+    for axis in axes:
+        axis.set_xlabel(xlabel)
+        axis.set_xlim(1, maximum + 0.5)
+        axis.set_ylim(bottom=0)
+        if len(counts) <= 16:
+            axis.set_xticks(counts)
+        axis.grid(True, alpha=0.25)
+        axis.legend(fontsize="small")
+    figure.savefig(path, format="png", dpi=160)
+    figure.savefig(path.with_suffix(".pdf"), format="pdf")
+
+
 def save_scaling_plot(
     results: Sequence[check_parallel_scaling.ScalingResult],
     path: Path,
@@ -263,22 +304,15 @@ def save_scaling_plot(
     speedup_axis, efficiency_axis = figure.subplots(1, 2)
     figure.suptitle("Paclitaxel OpenMP scaling")
     speedup_axis.plot(threads, speedups, "o-", label="Measured paired median")
-    speedup_axis.plot([1, max(threads)], [1, max(threads)], "--", label="Ideal scaling")
-    speedup_axis.axhline(1, color="gray", linewidth=0.8, linestyle=":")
-    speedup_axis.set_ylabel("Wall-time speedup (serial / parallel)")
     efficiency_axis.plot(threads, efficiencies, "o-", label="Measured efficiency")
-    efficiency_axis.axhline(100, color="gray", linestyle="--", label="Ideal efficiency")
-    efficiency_axis.set_ylabel("Parallel efficiency (%)")
-    for axis in (speedup_axis, efficiency_axis):
-        axis.set_xlabel("OpenMP threads")
-        axis.set_xlim(1, max(threads) + 0.5)
-        axis.set_ylim(bottom=0)
-        if len(threads) <= 16:
-            axis.set_xticks(threads)
-        axis.grid(True, alpha=0.25)
-        axis.legend(fontsize="small")
-    figure.savefig(path, format="png", dpi=160)
-    figure.savefig(path.with_suffix(".pdf"), format="pdf")
+    finish_scaling_plot(
+        figure,
+        (speedup_axis, efficiency_axis),
+        threads,
+        path,
+        xlabel="OpenMP threads",
+        speedup_label="Wall-time speedup (serial / parallel)",
+    )
 
 
 def configure_threads(

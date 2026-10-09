@@ -26,6 +26,11 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __package__:
+    from . import benchmark
+else:
+    import benchmark
+
 VARIANTS = ("baseline", "scalar", "vector")
 ORDERS = tuple(itertools.permutations(VARIANTS))
 METRICS = ("algorithm_seconds", "cpu_seconds", "process_seconds")
@@ -244,7 +249,7 @@ def main() -> int:
         "probes": {
             name: {
                 "path": str(path),
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "sha256": benchmark.file_sha256(path),
             }
             for name, path in probes.items()
         },

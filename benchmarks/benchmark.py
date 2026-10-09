@@ -12,7 +12,6 @@ import platform
 import re
 import shlex
 import shutil
-import signal
 import statistics
 import subprocess
 import sys
@@ -29,6 +28,18 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+# Support both direct script invocation and package imports.
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from tools.process_utils import run_command  # noqa: E402
+
+if __package__:
+    from . import cpu_topology, report_reader
+else:
+    import cpu_topology
+    import report_reader
+
 BENCHMARK_DIRECTORY = Path(__file__).resolve().parent
 DEFAULT_EXECUTABLE = REPOSITORY_ROOT / "build" / "ParallelAssemblyCpp"
 DEFAULT_INPUT = REPOSITORY_ROOT / "unitTests" / "ketoconazole.mol"
@@ -49,7 +60,7 @@ PARALLEL_MODES = ("auto", "on", "off")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
-ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENVIRONMENT_KEY_PATTERN = report_reader.ENVIRONMENT_KEY_PATTERN
 MOLFILE_SUFFIXES = (".mol", ".sdf")
 SEARCH_TELEMETRY_PHASES = frozenset(
     (
@@ -480,19 +491,7 @@ def cpu_description() -> str:
     processor = platform.processor().strip()
     if processor:
         return processor
-    try:
-        with Path("/proc/cpuinfo").open(encoding="utf-8") as stream:
-            for line in stream:
-                key, separator, value = line.partition(":")
-                if (
-                    separator
-                    and key.strip() in {"model name", "Processor"}
-                    and (description := value.strip())
-                ):
-                    return description
-    except OSError:
-        pass
-    return platform.machine() or "unknown"
+    return cpu_topology.cpu_model()
 
 
 def load_manifest(path: Path) -> tuple[Path, list[BenchmarkCase]]:
@@ -725,59 +724,49 @@ def prepare_cases(
     return prepared
 
 
-def terminate_command(process: subprocess.Popen[str]) -> None:
-    """Terminate a configured launch, including its POSIX process group."""
-    killed_group = False
-    if os.name == "posix":
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-            killed_group = True
-        except ProcessLookupError:
-            killed_group = True
-        except OSError:
-            pass
-    if not killed_group:
-        process.kill()
+def prepare_solver_launch(
+    executable: Path,
+    prepared: PreparedCase,
+    execution: ExecutionConfig | None,
+    pathways: bool,
+    extra_arguments: Sequence[str] = (),
+) -> tuple[list[str], dict[str, str] | None]:
+    command = [
+        *(execution.launcher if execution is not None else ()),
+        str(executable),
+        *(execution.arguments if execution is not None else ()),
+        f"--pathway={int(pathways)}",
+        "--memory-report=0",
+        "--write-intermediate-mas=0",
+        *extra_arguments,
+        "--",
+        prepared.input_name,
+    ]
+    environment = None
+    if execution is not None and execution.environment:
+        environment = os.environ.copy()
+        environment.update(execution.environment)
+    return command, environment
 
 
-def run_command(
+def run_solver_command(
     command: Sequence[str],
-    working_directory: Path,
+    prepared: PreparedCase,
     timeout: float,
     environment: dict[str, str] | None,
+    execution: ExecutionConfig | None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command and clean up its process group on timeout or interruption."""
-    popen_arguments: dict[str, object] = {
-        "cwd": working_directory,
-        "env": environment,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-    }
-    if os.name == "posix":
-        popen_arguments["start_new_session"] = True
-
-    process = subprocess.Popen(command, **popen_arguments)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        terminate_command(process)
-        stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
+    # Preserve direct-launch behavior for historical default callers.
+    if execution is None:
+        return subprocess.run(
             command,
-            error.timeout,
-            output=stdout,
-            stderr=stderr,
-        ) from error
-    except BaseException:
-        # start_new_session deliberately keeps launcher workers out of the
-        # driver's foreground process group, so an interrupt must stop them
-        # explicitly before it propagates to the caller.
-        terminate_command(process)
-        process.communicate()
-        raise
-
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            cwd=prepared.working_directory,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    return run_command(command, prepared.working_directory, timeout, environment)
 
 
 def run_once(
@@ -788,39 +777,15 @@ def run_once(
     execution: ExecutionConfig | None = None,
     pathways: bool = False,
 ) -> Measurement:
-    command = [
-        *(execution.launcher if execution is not None else ()),
-        str(executable),
-        *(execution.arguments if execution is not None else ()),
-        f"--pathway={int(pathways)}",
-        "--memory-report=0",
-        "--write-intermediate-mas=0",
-        "--",
-        prepared.input_name,
-    ]
-    environment = None
-    if execution is not None and execution.environment:
-        environment = os.environ.copy()
-        environment.update(execution.environment)
+    command, environment = prepare_solver_launch(
+        executable, prepared, execution, pathways
+    )
     prepared.output_path.unlink(missing_ok=True)
     started = time.perf_counter()
     try:
-        if execution is None:
-            completed = subprocess.run(
-                command,
-                cwd=prepared.working_directory,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        else:
-            completed = run_command(
-                command,
-                prepared.working_directory,
-                timeout,
-                environment,
-            )
+        completed = run_solver_command(
+            command, prepared, timeout, environment, execution
+        )
     except subprocess.TimeoutExpired as error:
         raise BenchmarkError(
             f"{prepared.case.name} timed out after {error.timeout:g} seconds"
@@ -1913,40 +1878,15 @@ def run_telemetry_once(
     execution: ExecutionConfig | None = None,
     pathways: bool = False,
 ) -> dict[str, object]:
-    command = [
-        *(execution.launcher if execution is not None else ()),
-        str(executable),
-        *(execution.arguments if execution is not None else ()),
-        f"--pathway={int(pathways)}",
-        "--memory-report=0",
-        "--write-intermediate-mas=0",
-        "--telemetry=1",
-        "--",
-        prepared.input_name,
-    ]
-    environment = None
-    if execution is not None and execution.environment:
-        environment = os.environ.copy()
-        environment.update(execution.environment)
+    command, environment = prepare_solver_launch(
+        executable, prepared, execution, pathways, ("--telemetry=1",)
+    )
     prepared.output_path.unlink(missing_ok=True)
     prepared.telemetry_path.unlink(missing_ok=True)
     try:
-        if execution is None:
-            completed = subprocess.run(
-                command,
-                cwd=prepared.working_directory,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        else:
-            completed = run_command(
-                command,
-                prepared.working_directory,
-                timeout,
-                environment,
-            )
+        completed = run_solver_command(
+            command, prepared, timeout, environment, execution
+        )
     except subprocess.TimeoutExpired as error:
         raise BenchmarkError(
             f"{prepared.case.name} telemetry run timed out after "
@@ -2699,10 +2639,7 @@ def write_json_report(
             "comparison_order": (
                 None
                 if baseline_metadata is None
-                else (
-                    "baseline/candidate on odd rounds, candidate/baseline "
-                    "on even rounds"
-                )
+                else report_reader.PAIRED_COMPARISON_ORDER
             ),
             "measurement_array_order": "round order, starting at round 1",
         },

@@ -28,6 +28,13 @@ def _find_component_root(parents: list[int], atom_index: int) -> int:
 
 
 class BenchmarkTests(unittest.TestCase):
+    def parse_telemetry_document(
+        self, path: Path, document: dict[str, object]
+    ) -> dict[str, object]:
+        """Exercise the production file parser for each explicit fixture mutation."""
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return benchmark.parse_search_telemetry(path)
+
     def create_fixture(self, directory: Path, name: str = "input.mol") -> Path:
         fixture = directory / name
         fixture.write_text("fixture\n", encoding="utf-8")
@@ -1808,14 +1815,12 @@ class BenchmarkTests(unittest.TestCase):
             malformed = json.loads(json.dumps(telemetry))
             malformed["caches"]["canonical_mask"]["hit_rate"] = 0.999
             malformed_path = directory / "malformed-rate.json"
-            malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
             with self.assertRaisesRegex(benchmark.BenchmarkError, "invalid cache rate"):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed)
 
             malformed["caches"]["canonical_mask"]["hit_rate"] = 10**400
-            malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
             with self.assertRaisesRegex(benchmark.BenchmarkError, "invalid cache rate"):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed)
 
             malformed = json.loads(json.dumps(telemetry))
             malformed["processed_graph"]["edges"] = 65
@@ -1824,12 +1829,11 @@ class BenchmarkTests(unittest.TestCase):
                 "eligible_for_processed_graph"
             ] = False
             malformed_path = directory / "malformed-cache-eligibility.json"
-            malformed_path.write_text(json.dumps(malformed), encoding="utf-8")
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent residual cache eligibility",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed)
 
             wider = json.loads(json.dumps(telemetry))
             wider["processed_graph"] = {
@@ -1838,19 +1842,14 @@ class BenchmarkTests(unittest.TestCase):
                 "active_mask_words": 9,
             }
             wider_path = directory / "dynamic-mask-width.json"
-            wider_path.write_text(json.dumps(wider), encoding="utf-8")
-            parsed = benchmark.parse_search_telemetry(wider_path)
+            parsed = self.parse_telemetry_document(wider_path, wider)
             self.assertEqual(parsed["processed_graph"]["active_mask_words"], 9)
 
             self.assertNotIn("parallel", telemetry)
             parallel_telemetry = json.loads(json.dumps(telemetry))
             self.add_valid_parallel_telemetry(parallel_telemetry)
             parallel_path = directory / "parallel-telemetry.json"
-            parallel_path.write_text(
-                json.dumps(parallel_telemetry),
-                encoding="utf-8",
-            )
-            parsed = benchmark.parse_search_telemetry(parallel_path)
+            parsed = self.parse_telemetry_document(parallel_path, parallel_telemetry)
             self.assertEqual(parsed["parallel"]["worker_count"], 2)
             self.assertEqual(
                 parsed["parallel"]["aggregate"]["worker_busy_nanoseconds"],
@@ -1880,11 +1879,7 @@ class BenchmarkTests(unittest.TestCase):
             dynamic_telemetry = json.loads(json.dumps(telemetry))
             self.add_valid_dynamic_parallel_telemetry(dynamic_telemetry)
             dynamic_path = directory / "parallel-dynamic-openmp.json"
-            dynamic_path.write_text(
-                json.dumps(dynamic_telemetry),
-                encoding="utf-8",
-            )
-            parsed = benchmark.parse_search_telemetry(dynamic_path)
+            parsed = self.parse_telemetry_document(dynamic_path, dynamic_telemetry)
             self.assertNotIn("shard_ownership", parsed["parallel"])
             self.assertEqual(
                 parsed["parallel"]["branch_scheduler"]["lease_size"],
@@ -1923,14 +1918,13 @@ class BenchmarkTests(unittest.TestCase):
                     malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
                     malformed_transfer["parallel"]["aggregate"][field] += 1
                     malformed_path = directory / f"parallel-transfer-{field}.json"
-                    malformed_path.write_text(
-                        json.dumps(malformed_transfer), encoding="utf-8"
-                    )
                     with self.assertRaisesRegex(
                         benchmark.BenchmarkError,
                         f"aggregate scheduler field {field}",
                     ):
-                        benchmark.parse_search_telemetry(malformed_path)
+                        self.parse_telemetry_document(
+                            malformed_path, malformed_transfer
+                        )
 
             for field in (
                 *benchmark.PARALLEL_TASK_TRANSFER_SUM_FIELDS,
@@ -1940,13 +1934,12 @@ class BenchmarkTests(unittest.TestCase):
                     malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
                     del malformed_transfer["parallel"]["workers"][1][field]
                     malformed_path = directory / "parallel-transfer-missing.json"
-                    malformed_path.write_text(
-                        json.dumps(malformed_transfer), encoding="utf-8"
-                    )
                     with self.assertRaisesRegex(
                         benchmark.BenchmarkError, "invalid worker measurement"
                     ):
-                        benchmark.parse_search_telemetry(malformed_path)
+                        self.parse_telemetry_document(
+                            malformed_path, malformed_transfer
+                        )
 
             invalid_transfer_cases = (
                 ("tasks_immediately_pruned", 2, "immediate prunes exceed executed"),
@@ -1959,100 +1952,74 @@ class BenchmarkTests(unittest.TestCase):
                     malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
                     malformed_transfer["parallel"]["workers"][0][field] = value
                     malformed_path = directory / "parallel-transfer-invalid.json"
-                    malformed_path.write_text(
-                        json.dumps(malformed_transfer), encoding="utf-8"
-                    )
                     with self.assertRaisesRegex(benchmark.BenchmarkError, message):
-                        benchmark.parse_search_telemetry(malformed_path)
+                        self.parse_telemetry_document(
+                            malformed_path, malformed_transfer
+                        )
 
             malformed_transfer = json.loads(json.dumps(dynamic_telemetry))
             malformed_transfer["parallel"]["aggregate"]["task_minimum_work_units"] = 200
             malformed_path = directory / "parallel-transfer-minimum-maximum.json"
-            malformed_path.write_text(json.dumps(malformed_transfer), encoding="utf-8")
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError, "aggregate minimum task work"
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_transfer)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["branch_scheduler"]["adaptive_splitting"][
                 "maximum_depth"
             ] = 2
             malformed_path = directory / "parallel-dynamic-task-depth-policy.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent branch scheduler",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][0]["scheduler_idle_waits"] = -1
             malformed_path = directory / "parallel-dynamic-negative-scheduler.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "invalid worker measurement",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][0]["task_steals"] = 2
             malformed_path = directory / "parallel-dynamic-steal-attempts.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "worker task steals exceed attempts",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][0]["local_task_executions"] = 0
             malformed_path = directory / "parallel-dynamic-task-executions.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "worker task executions do not match transferred tasks",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["aggregate"]["scheduler_idle_waits"] += 1
             malformed_path = directory / "parallel-dynamic-scheduler-sum.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "aggregate scheduler field scheduler_idle_waits",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["aggregate"]["task_queue_high_watermark"] += 1
             malformed_path = directory / "parallel-dynamic-queue-maximum.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "aggregate task queue high-water mark",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][1][
@@ -2062,58 +2029,42 @@ class BenchmarkTests(unittest.TestCase):
                 "maximum_task_depth_executed"
             ] = 5
             malformed_path = directory / "parallel-dynamic-depth-bound.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "invalid worker maximum task depth",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][1][
                 "maximum_task_depth_executed"
             ] = 0
             malformed_path = directory / "parallel-dynamic-zero-task-depth.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "invalid worker maximum task depth",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][0]["depth_two_tasks_spawned"] += 1
             malformed_dynamic["parallel"]["aggregate"]["depth_two_tasks_spawned"] += 1
             malformed_path = directory / "parallel-dynamic-depth-two-balance.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "spawned depth-two tasks were not each executed once",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["workers"][0]["busy_nanoseconds"] = 51
             malformed_parallel["parallel"]["aggregate"]["worker_busy_nanoseconds"] = 81
             malformed_path = directory / "parallel-scheduler-busy-time.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent worker busy time",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             mpi_dynamic_telemetry = json.loads(json.dumps(telemetry))
             self.add_valid_dynamic_parallel_telemetry(
@@ -2121,11 +2072,9 @@ class BenchmarkTests(unittest.TestCase):
                 mode="mpi",
             )
             mpi_dynamic_path = directory / "parallel-dynamic-mpi.json"
-            mpi_dynamic_path.write_text(
-                json.dumps(mpi_dynamic_telemetry),
-                encoding="utf-8",
+            parsed = self.parse_telemetry_document(
+                mpi_dynamic_path, mpi_dynamic_telemetry
             )
-            parsed = benchmark.parse_search_telemetry(mpi_dynamic_path)
             self.assertEqual(parsed["parallel"]["rank_count"], 2)
             self.assertEqual(
                 [
@@ -2140,15 +2089,11 @@ class BenchmarkTests(unittest.TestCase):
                 "lock_acquisitions"
             ] = 1
             malformed_path = directory / "parallel-shared-cache-lookups.json"
-            malformed_path.write_text(
-                json.dumps(malformed_shared_cache),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent shared assembly-cache lookups",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_shared_cache)
 
             legacy_mpi_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
             del legacy_mpi_dynamic["parallel"]["aggregate"]["shared_assembly_cache"]
@@ -2163,11 +2108,9 @@ class BenchmarkTests(unittest.TestCase):
                 del worker["root_queue"]
                 worker["rank_partition"] = {"index": rank, "count": 2}
             legacy_mpi_path = directory / "parallel-dynamic-legacy-v1-mpi.json"
-            legacy_mpi_path.write_text(
-                json.dumps(legacy_mpi_dynamic),
-                encoding="utf-8",
+            parsed_legacy = self.parse_telemetry_document(
+                legacy_mpi_path, legacy_mpi_dynamic
             )
-            parsed_legacy = benchmark.parse_search_telemetry(legacy_mpi_path)
             self.assertEqual(parsed_legacy["schema_version"], 1)
             self.assertEqual(
                 parsed_legacy["parallel"]["branch_scheduler"]["strategy"],
@@ -2189,15 +2132,11 @@ class BenchmarkTests(unittest.TestCase):
             malformed_legacy_path = (
                 directory / "parallel-dynamic-legacy-rank-redistribution.json"
             )
-            malformed_legacy_path.write_text(
-                json.dumps(malformed_legacy),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "rank 0 branch assignments do not match partition",
             ):
-                benchmark.parse_search_telemetry(malformed_legacy_path)
+                self.parse_telemetry_document(malformed_legacy_path, malformed_legacy)
 
             redistributed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
             redistributed_dynamic["parallel"]["workers"][0]["branch_assignments"] = 2
@@ -2205,11 +2144,9 @@ class BenchmarkTests(unittest.TestCase):
             redistributed_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
             redistributed_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
             redistributed_path = directory / "parallel-dynamic-rank-redistribution.json"
-            redistributed_path.write_text(
-                json.dumps(redistributed_dynamic),
-                encoding="utf-8",
+            redistributed = self.parse_telemetry_document(
+                redistributed_path, redistributed_dynamic
             )
-            redistributed = benchmark.parse_search_telemetry(redistributed_path)
             self.assertEqual(
                 [
                     worker["branch_assignments"]
@@ -2221,79 +2158,55 @@ class BenchmarkTests(unittest.TestCase):
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["branch_scheduler"]["lease_size"] = 0
             malformed_path = directory / "parallel-dynamic-lease-size.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent branch scheduler",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(mpi_dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][1]["root_queue"][
                 "participant_rank"
             ] = 0
             malformed_path = directory / "parallel-dynamic-root-queue.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "invalid worker root queue participant",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["aggregate"]["branch_leases"] = 3
             malformed_path = directory / "parallel-dynamic-aggregate-leases.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "aggregate branch leases do not match workers",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             malformed_dynamic = json.loads(json.dumps(dynamic_telemetry))
             malformed_dynamic["parallel"]["workers"][0]["branch_leases"] = 0
             malformed_path = directory / "parallel-dynamic-worker-leases.json"
-            malformed_path.write_text(
-                json.dumps(malformed_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent worker leases",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_dynamic)
 
             idle_lease_dynamic = json.loads(json.dumps(dynamic_telemetry))
             idle_lease_dynamic["parallel"]["workers"][1]["branch_assignments"] = 0
             idle_lease_dynamic["parallel"]["aggregate"]["branch_assignments"] = 1
             idle_lease_dynamic["parallel"]["branch_scan_complete"] = False
             idle_lease_path = directory / "parallel-dynamic-idle-lease.json"
-            idle_lease_path.write_text(
-                json.dumps(idle_lease_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "inconsistent worker leases",
             ):
-                benchmark.parse_search_telemetry(idle_lease_path)
+                self.parse_telemetry_document(idle_lease_path, idle_lease_dynamic)
 
             idle_lease_dynamic["parallel"]["workers"][1]["branch_leases"] = 0
             idle_lease_dynamic["parallel"]["aggregate"]["branch_leases"] = 1
-            idle_lease_path.write_text(
-                json.dumps(idle_lease_dynamic),
-                encoding="utf-8",
-            )
-            parsed = benchmark.parse_search_telemetry(idle_lease_path)
+            parsed = self.parse_telemetry_document(idle_lease_path, idle_lease_dynamic)
             self.assertEqual(
                 parsed["parallel"]["workers"][1]["branch_leases"],
                 0,
@@ -2302,95 +2215,67 @@ class BenchmarkTests(unittest.TestCase):
             incomplete_dynamic = json.loads(json.dumps(idle_lease_dynamic))
             incomplete_dynamic["parallel"]["branch_scan_complete"] = True
             incomplete_path = directory / "parallel-dynamic-incomplete-scan.json"
-            incomplete_path.write_text(
-                json.dumps(incomplete_dynamic),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "complete branch scan has incomplete assignments",
             ):
-                benchmark.parse_search_telemetry(incomplete_path)
+                self.parse_telemetry_document(incomplete_path, incomplete_dynamic)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["enabled"] = False
             malformed_path = directory / "parallel-disabled.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "parallel telemetry is not enabled",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["workers"][1]["global_worker_index"] = 0
             malformed_path = directory / "parallel-duplicate-worker.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "invalid worker identity",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["workers"][0]["busy_nanoseconds"] = 101
             malformed_path = directory / "parallel-worker-busy.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "worker busy time exceeds elapsed time",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["aggregate"]["counters"][
                 "matching_visits"
             ] += 1
             malformed_path = directory / "parallel-counter-sum.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "aggregate counter matching_visits does not match workers",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["workers"][1]["branch_candidates"] = 3
             malformed_path = directory / "parallel-branch-disagreement.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "aggregate branch count does not match workers",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             del malformed_parallel["parallel"]["workers"][0]["phases"]["output"]
             malformed_path = directory / "parallel-worker-phases.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "invalid worker phases",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
             malformed_parallel = json.loads(json.dumps(parallel_telemetry))
             malformed_parallel["parallel"]["aggregate"]["counters"][
@@ -2400,15 +2285,11 @@ class BenchmarkTests(unittest.TestCase):
                 "matching_visits"
             ] += 1
             malformed_path = directory / "parallel-legacy-mismatch.json"
-            malformed_path.write_text(
-                json.dumps(malformed_parallel),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(
                 benchmark.BenchmarkError,
                 "aggregate counters do not match legacy telemetry",
             ):
-                benchmark.parse_search_telemetry(malformed_path)
+                self.parse_telemetry_document(malformed_path, malformed_parallel)
 
     def test_json_output_rejects_protected_paths_before_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
@@ -2505,8 +2386,7 @@ class BenchmarkTests(unittest.TestCase):
             group = benchmark.MATCHING_BOUND_TELEMETRY_COUNTERS
 
             def parse(value: dict[str, object]) -> dict[str, object]:
-                path.write_text(json.dumps(value), encoding="utf-8")
-                return benchmark.parse_search_telemetry(path)
+                return self.parse_telemetry_document(path, value)
 
             def records(value: dict[str, object]) -> list[dict[str, object]]:
                 result = [value["counters"]]
@@ -2616,8 +2496,7 @@ class BenchmarkTests(unittest.TestCase):
             cache = telemetry["parallel"]["aggregate"]["shared_assembly_cache"]
 
             def parse() -> dict[str, object]:
-                path.write_text(json.dumps(telemetry), encoding="utf-8")
-                return benchmark.parse_search_telemetry(path)
+                return self.parse_telemetry_document(path, telemetry)
 
             self.assertEqual(parse(), telemetry)
             cache.update(dict.fromkeys(benchmark.SHARED_CACHE_ADMISSION_FIELDS, 0))
@@ -2694,8 +2573,7 @@ class BenchmarkTests(unittest.TestCase):
             original = benchmark.parse_search_telemetry(path)
 
             def parse(value: dict[str, object]) -> dict[str, object]:
-                path.write_text(json.dumps(value), encoding="utf-8")
-                return benchmark.parse_search_telemetry(path)
+                return self.parse_telemetry_document(path, value)
 
             legacy = json.loads(json.dumps(original))
             del legacy["pathway_reconstruction"]
@@ -2762,12 +2640,10 @@ class BenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(benchmark.BenchmarkError, "could not parse"):
                 benchmark.parse_search_telemetry(path)
 
-            path.write_text(
-                json.dumps({"schema_version": 1, "counters": {}}),
-                encoding="utf-8",
-            )
             with self.assertRaisesRegex(benchmark.BenchmarkError, "missing search"):
-                benchmark.parse_search_telemetry(path)
+                self.parse_telemetry_document(
+                    path, {"schema_version": 1, "counters": {}}
+                )
 
     def test_unchecked_ab_run_rejects_index_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

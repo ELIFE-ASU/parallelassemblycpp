@@ -288,33 +288,16 @@ struct ufdsSplit
         }
     }
 
-    /**
-     * @brief Append connected components containing at least two edges
-     *
-     * @param fragmentList Receives fragments from a one-word edge domain
-     */
-    PARALLELASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
-        vector<assemblyFragment> &fragmentList
-    )
+private:
+    /** Visit touched atoms in ascending order, including sparse overflow words. */
+    template<typename Visitor>
+    PARALLELASSEMBLYCPP_ALWAYS_INLINE void forEachTouchedAtom(Visitor &&visitor)
     {
-        componentMaskWords.clear();
-        auto addTouchedAtom = [&](size_t index) {
-            find(index);
-            const int root = elements[index].parent;
-            int32_t &component = elements[root].component;
-            if (component == -1)
-            {
-                component = static_cast<int32_t>(componentMaskWords.size());
-                componentMaskWords.push_back(0);
-            }
-            componentMaskWords[component] |=
-                uint64_t{1} << elements[index].val;
-        };
         uint64_t atoms = touchedAtomWords[0];
         while (atoms != 0)
         {
             const size_t bitIndex = std::countr_zero(atoms);
-            addTouchedAtom(bitIndex);
+            visitor(bitIndex);
             atoms &= atoms - 1;
         }
         uint64_t activeWords = touchedAtomWordMask & ~uint64_t{1};
@@ -325,7 +308,7 @@ struct ufdsSplit
             while (atoms != 0)
             {
                 const size_t bitIndex = std::countr_zero(atoms);
-                addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                visitor(wordIndex * atomWordBits + bitIndex);
                 atoms &= atoms - 1;
             }
             activeWords &= activeWords - 1;
@@ -348,11 +331,37 @@ struct ufdsSplit
                 while (atoms != 0)
                 {
                     const size_t bitIndex = std::countr_zero(atoms);
-                    addTouchedAtom(wordIndex * atomWordBits + bitIndex);
+                    visitor(wordIndex * atomWordBits + bitIndex);
                     atoms &= atoms - 1;
                 }
             }
         }
+    }
+
+public:
+    /**
+     * @brief Append connected components containing at least two edges
+     *
+     * @param fragmentList Receives fragments from a one-word edge domain
+     */
+    PARALLELASSEMBLYCPP_NOINLINE void splitSmallWithBuffers(
+        vector<assemblyFragment> &fragmentList
+    )
+    {
+        componentMaskWords.clear();
+        auto addTouchedAtom = [&](size_t index) {
+            find(index);
+            const int root = elements[index].parent;
+            int32_t &component = elements[root].component;
+            if (component == -1)
+            {
+                component = static_cast<int32_t>(componentMaskWords.size());
+                componentMaskWords.push_back(0);
+            }
+            componentMaskWords[component] |=
+                uint64_t{1} << elements[index].val;
+        };
+        forEachTouchedAtom(addTouchedAtom);
         for (const IntegerPair &extra : extraVals)
         {
             const size_t root = find(extra.first);
@@ -412,49 +421,7 @@ struct ufdsSplit
             }
             setComponentEdge(component, elements[index].val);
         };
-        uint64_t atoms = touchedAtomWords[0];
-        while (atoms != 0)
-        {
-            const size_t bitIndex = std::countr_zero(atoms);
-            addTouchedAtom(bitIndex);
-            atoms &= atoms - 1;
-        }
-        uint64_t activeWords = touchedAtomWordMask & ~uint64_t{1};
-        while (activeWords != 0)
-        {
-            const size_t wordIndex = std::countr_zero(activeWords);
-            atoms = touchedAtomWords[wordIndex];
-            while (atoms != 0)
-            {
-                const size_t bitIndex = std::countr_zero(atoms);
-                addTouchedAtom(wordIndex * atomWordBits + bitIndex);
-                atoms &= atoms - 1;
-            }
-            activeWords &= activeWords - 1;
-        }
-        if (!touchedWideAtomWordIndices.empty()) [[unlikely]]
-        {
-            if (!is_sorted(
-                touchedWideAtomWordIndices.begin(),
-                touchedWideAtomWordIndices.end()
-            ))
-            {
-                sort(
-                    touchedWideAtomWordIndices.begin(),
-                    touchedWideAtomWordIndices.end()
-                );
-            }
-            for (const size_t wordIndex : touchedWideAtomWordIndices)
-            {
-                atoms = wideTouchedAtomWords[wordIndex - inlineAtomWordCount];
-                while (atoms != 0)
-                {
-                    const size_t bitIndex = std::countr_zero(atoms);
-                    addTouchedAtom(wordIndex * atomWordBits + bitIndex);
-                    atoms &= atoms - 1;
-                }
-            }
-        }
+        forEachTouchedAtom(addTouchedAtom);
         for (const IntegerPair &extra : extraVals)
         {
             const size_t root = find(extra.first);
@@ -508,49 +475,7 @@ struct ufdsSplit
             }
             setComponentEdge(component, elements[index].val);
         };
-        uint64_t atoms = touchedAtomWords[0];
-        while (atoms != 0)
-        {
-            const size_t bitIndex = std::countr_zero(atoms);
-            addTouchedAtom(bitIndex);
-            atoms &= atoms - 1;
-        }
-        uint64_t activeWords = touchedAtomWordMask & ~uint64_t{1};
-        while (activeWords != 0)
-        {
-            const size_t wordIndex = std::countr_zero(activeWords);
-            atoms = touchedAtomWords[wordIndex];
-            while (atoms != 0)
-            {
-                const size_t bitIndex = std::countr_zero(atoms);
-                addTouchedAtom(wordIndex * atomWordBits + bitIndex);
-                atoms &= atoms - 1;
-            }
-            activeWords &= activeWords - 1;
-        }
-        if (!touchedWideAtomWordIndices.empty()) [[unlikely]]
-        {
-            if (!is_sorted(
-                touchedWideAtomWordIndices.begin(),
-                touchedWideAtomWordIndices.end()
-            ))
-            {
-                sort(
-                    touchedWideAtomWordIndices.begin(),
-                    touchedWideAtomWordIndices.end()
-                );
-            }
-            for (const size_t wordIndex : touchedWideAtomWordIndices)
-            {
-                atoms = wideTouchedAtomWords[wordIndex - inlineAtomWordCount];
-                while (atoms != 0)
-                {
-                    const size_t bitIndex = std::countr_zero(atoms);
-                    addTouchedAtom(wordIndex * atomWordBits + bitIndex);
-                    atoms &= atoms - 1;
-                }
-            }
-        }
+        forEachTouchedAtom(addTouchedAtom);
         for (size_t i = 0; i < extraVals.size(); i++)
         {
             const size_t root = find(extraVals[i].first);

@@ -180,42 +180,10 @@ def configure_placement(
 def make_runs(
     arguments: argparse.Namespace, topology: cpu_topology.CpuTopology
 ) -> list[HybridRun]:
-    build = arguments.build_dir.expanduser().resolve()
     output = arguments.output_dir.expanduser().resolve()
-    common = [
-        "--baseline-executable",
-        str(paclitaxel_scaling.executable_path(build, "ParallelAssemblyCpp")),
-        "--baseline-parallel",
-        "off",
-        "--executable",
-        str(paclitaxel_scaling.executable_path(build, "ParallelAssemblyCppHybrid")),
-        "--candidate-parallel",
-        "on",
-        "--suite",
-        "profile",
-        "--case",
-        "paclitaxel",
-        "--runs",
-        str(arguments.runs),
-        "--warmup",
-        str(arguments.warmup),
-        "--timeout",
-        str(arguments.timeout),
-    ]
-    for role in ("baseline", "candidate"):
-        for setting in ("OMP_DYNAMIC=FALSE", "OMP_PROC_BIND=close"):
-            common.extend((f"--{role}-env", setting))
-    baseline_places = (
-        f"{{{topology.cpu_order[0]}}}" if topology.cpu_order else "threads"
+    common = paclitaxel_scaling.paired_paclitaxel_arguments(
+        arguments, topology, "ParallelAssemblyCppHybrid"
     )
-    for setting in (
-        "OMP_NUM_THREADS=1",
-        "OMP_THREAD_LIMIT=1",
-        f"OMP_PLACES={baseline_places}",
-    ):
-        common.extend(("--baseline-env", setting))
-    if arguments.baseline_launcher:
-        common.extend(("--baseline-launcher", shlex.join(arguments.baseline_launcher)))
     runs = []
     for layout in arguments.layouts:
         report = output / f"hybrid-{layout}.json"
@@ -264,23 +232,14 @@ def save_scaling_plot(
             "o-",
             label=label,
         )
-    max_workers = max(run.layout.workers for run in runs)
-    speedup_axis.plot([1, max_workers], [1, max_workers], "--", label="Ideal scaling")
-    speedup_axis.axhline(1, color="gray", linewidth=0.8, linestyle=":")
-    speedup_axis.set_ylabel("Wall-time speedup (serial / hybrid)")
-    efficiency_axis.axhline(100, color="gray", linestyle="--", label="Ideal efficiency")
-    efficiency_axis.set_ylabel("Parallel efficiency (%)")
-    counts = sorted({run.layout.workers for run in runs})
-    for axis in (speedup_axis, efficiency_axis):
-        axis.set_xlabel("Total workers (MPI ranks x OpenMP threads)")
-        axis.set_xlim(1, max_workers + 0.5)
-        axis.set_ylim(bottom=0)
-        if len(counts) <= 16:
-            axis.set_xticks(counts)
-        axis.grid(True, alpha=0.25)
-        axis.legend(fontsize="small")
-    figure.savefig(path, format="png", dpi=160)
-    figure.savefig(path.with_suffix(".pdf"), format="pdf")
+    paclitaxel_scaling.finish_scaling_plot(
+        figure,
+        (speedup_axis, efficiency_axis),
+        sorted({run.layout.workers for run in runs}),
+        path,
+        xlabel="Total workers (MPI ranks x OpenMP threads)",
+        speedup_label="Wall-time speedup (serial / hybrid)",
+    )
 
 
 def topology_report(

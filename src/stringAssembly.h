@@ -32,6 +32,7 @@
 #endif
 
 #include "additionChainBounds.h"
+#include "clockTicks.h"
 #include "stringEncoding.h"
 #include "stringRepair.h"
 
@@ -467,24 +468,7 @@ class Search
 
     [[nodiscard]] unsigned long long elapsedTicks() const noexcept
     {
-        const std::clock_t now = std::clock();
-        const std::clock_t error = static_cast<std::clock_t>(-1);
-        if (now == error || started_ == error) return 0;
-
-        using UnsignedClock = std::make_unsigned_t<std::clock_t>;
-        const UnsignedClock elapsed =
-            static_cast<UnsignedClock>(now) -
-            static_cast<UnsignedClock>(started_);
-        if constexpr (sizeof(UnsignedClock) > sizeof(unsigned long long))
-        {
-            if (
-                elapsed >
-                static_cast<UnsignedClock>(
-                    std::numeric_limits<unsigned long long>::max()
-                )
-            ) return std::numeric_limits<unsigned long long>::max();
-        }
-        return static_cast<unsigned long long>(elapsed);
+        return assembly_clock::budgetTicks(started_, std::clock());
     }
 
     bool shouldStop()
@@ -972,6 +956,35 @@ class Search
         return result;
     }
 
+    /** Explore one match using this worker's canonical IDs, cache and pathway. */
+    void exploreMatching(
+        const ValidMatching &matching,
+        const std::vector<std::vector<Interval>> &remnantIntervals,
+        int parentDuplicatedSymbols
+    )
+    {
+        AssemblyState next = fragment(matching, remnantIntervals);
+        next.duplicatedSymbols =
+            parentDuplicatedSymbols + matching.fragmentLength - 1;
+
+        const int lowerBound =
+            static_cast<int>(original_.size()) -
+            next.duplicatedSymbols - 1 - lempelZivDuplicateBound(next);
+        if (lowerBound >= pruningIndex()) return;
+
+        std::vector<int> key = stateKey(next);
+        const auto existing = states_.find(key);
+        if (
+            existing != states_.end() &&
+            existing->second >= next.duplicatedSymbols
+        ) return;
+
+        states_.insert_or_assign(std::move(key), next.duplicatedSymbols);
+        currentPath_.push_back({matching.first, matching.second});
+        recurse(next, false);
+        currentPath_.pop_back();
+    }
+
     void recurse(AssemblyState &state, bool initial)
     {
         if (shouldStop()) return;
@@ -998,35 +1011,11 @@ class Search
                 while (matchings.next(matching))
                 {
                     if (shouldStop()) return;
-                    AssemblyState next = fragment(
+                    exploreMatching(
                         matching,
-                        enumeration.remnantIntervals
+                        enumeration.remnantIntervals,
+                        state.duplicatedSymbols
                     );
-                    next.duplicatedSymbols =
-                        state.duplicatedSymbols + matching.fragmentLength - 1;
-
-                    const int lowerBound =
-                        static_cast<int>(original_.size()) -
-                        next.duplicatedSymbols - 1 -
-                        lempelZivDuplicateBound(next);
-                    if (lowerBound >= pruningIndex()) continue;
-
-                    std::vector<int> key = stateKey(next);
-                    const PathwayStep step{matching.first, matching.second};
-                    const auto existing = states_.find(key);
-                    if (
-                        existing == states_.end() ||
-                        next.duplicatedSymbols > existing->second
-                    )
-                    {
-                        states_.insert_or_assign(
-                            std::move(key),
-                            next.duplicatedSymbols
-                        );
-                        currentPath_.push_back(step);
-                        recurse(next, false);
-                        currentPath_.pop_back();
-                    }
                 }
             }
         }
@@ -1109,22 +1098,7 @@ class Search
                     if (worker.shouldStop()) break;
                     ValidMatching matching;
                     if (!acquireJob(worker, matching)) break;
-                    AssemblyState next = worker.fragment(matching, enumeration.remnantIntervals);
-                    next.duplicatedSymbols = matching.fragmentLength - 1;
-                    const int lowerBound = static_cast<int>(original_.size()) -
-                        next.duplicatedSymbols - 1 - worker.lempelZivDuplicateBound(next);
-                    if (lowerBound >= worker.pruningIndex()) continue;
-
-                    std::vector<int> key = worker.stateKey(next);
-                    const auto existing = worker.states_.find(key);
-                    if (
-                        existing != worker.states_.end() &&
-                        existing->second >= next.duplicatedSymbols
-                    ) continue;
-                    worker.states_.insert_or_assign(std::move(key), next.duplicatedSymbols);
-                    worker.currentPath_.push_back({matching.first, matching.second});
-                    worker.recurse(next, false);
-                    worker.currentPath_.pop_back();
+                    worker.exploreMatching(matching, enumeration.remnantIntervals, 0);
                 }
                 Result &result = results[static_cast<size_t>(workerIndex)];
                 result.assemblyIndex = worker.bestAssemblyIndex_;

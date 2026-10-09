@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import re
 import statistics
@@ -15,10 +14,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-PAIRED_COMPARISON_ORDER = (
-    "baseline/candidate on odd rounds, candidate/baseline on even rounds"
-)
-ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+if __package__:
+    from . import report_reader
+else:
+    import report_reader
+
+PAIRED_COMPARISON_ORDER = report_reader.PAIRED_COMPARISON_ORDER
 MPI_RANK_FLAGS = frozenset(("-n", "-np", "--n", "--np", "--ntasks"))
 MPI_COMPACT_RANK_PATTERN = re.compile(r"^-(?:n|np)([0-9]+)$")
 MPI_EQUALS_RANK_PATTERN = re.compile(r"^--(?:n|np|ntasks)=([0-9]+)$")
@@ -41,11 +42,7 @@ class CorpusIdentity:
     inputs: tuple[tuple[str, str], ...]
 
 
-@dataclass(frozen=True)
-class ExecutionIdentity:
-    launcher: tuple[str, ...]
-    arguments: tuple[str, ...]
-    environment: tuple[tuple[str, str], ...]
+ExecutionIdentity = report_reader.ExecutionIdentity
 
 
 @dataclass(frozen=True)
@@ -65,6 +62,19 @@ class ScalingResult:
     cases: tuple[CaseScaling, ...]
     suite_speedup: float
     pathways_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class CaseWallSamples:
+    name: str
+    baseline: tuple[float, ...]
+    candidate: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class ValidatedScalingReport:
+    result: ScalingResult
+    cases: tuple[CaseWallSamples, ...]
 
 
 @dataclass(frozen=True)
@@ -132,50 +142,9 @@ def positive_number_at(
 
 
 def execution_identity(
-    document: dict[str, object],
-    role: str,
-    path: Path,
+    document: dict[str, object], role: str, path: Path
 ) -> ExecutionIdentity:
-    execution = document.get("execution")
-    if execution is None:
-        # Early schema-v2 reports always launched both roles directly.
-        return ExecutionIdentity((), (), ())
-    if not isinstance(execution, dict):
-        raise ScalingError(f"invalid execution configurations in {path}")
-    config = execution.get(role)
-    if not isinstance(config, dict):
-        raise ScalingError(f"missing {role} execution configuration in {path}")
-
-    launcher = config.get("launcher")
-    if not isinstance(launcher, list) or any(
-        not isinstance(argument, str) or not argument for argument in launcher
-    ):
-        raise ScalingError(f"invalid {role} launcher configuration in {path}")
-    arguments = config.get("arguments", [])
-    if not isinstance(arguments, list) or any(
-        not isinstance(argument, str) or not argument or "\x00" in argument
-        for argument in arguments
-    ):
-        raise ScalingError(f"invalid {role} arguments configuration in {path}")
-    environment = config.get("environment")
-    if not isinstance(environment, dict):
-        raise ScalingError(f"invalid {role} environment configuration in {path}")
-
-    normalized_environment: list[tuple[str, str]] = []
-    for key, value in environment.items():
-        if (
-            not isinstance(key, str)
-            or ENVIRONMENT_KEY_PATTERN.fullmatch(key) is None
-            or not isinstance(value, str)
-            or "\x00" in value
-        ):
-            raise ScalingError(f"invalid {role} environment configuration in {path}")
-        normalized_environment.append((key, value))
-    return ExecutionIdentity(
-        tuple(launcher),
-        tuple(arguments),
-        tuple(sorted(normalized_environment)),
-    )
+    return report_reader.execution_identity(document, role, path, ScalingError)
 
 
 def validate_recorded_parallel_arguments(
@@ -274,21 +243,7 @@ def execution_worker_count(execution: ExecutionIdentity, context: str) -> int:
 
 
 def load_result(path: Path) -> dict[str, object]:
-    try:
-        with path.open(encoding="utf-8") as stream:
-            document: object = json.load(stream)
-    except (OSError, json.JSONDecodeError) as error:
-        raise ScalingError(
-            f"could not read benchmark report {path}: {error}"
-        ) from error
-    if not isinstance(document, dict):
-        raise ScalingError(f"invalid benchmark report {path}: expected an object")
-    schema_version = document.get("schema_version")
-    if type(schema_version) is not int or schema_version != 2:
-        raise ScalingError(
-            f"invalid benchmark report {path}: expected schema_version 2"
-        )
-    return document
+    return report_reader.load_result(path, ScalingError)
 
 
 def corpus_identity(document: dict[str, object], path: Path) -> CorpusIdentity:
@@ -300,23 +255,11 @@ def corpus_identity(document: dict[str, object], path: Path) -> CorpusIdentity:
         ("manifest", "sha256"),
         f"manifest SHA-256 in {path}",
     )
-    inputs = corpus.get("inputs")
-    if not isinstance(inputs, list) or not inputs:
+    fingerprints = report_reader.corpus_input_fingerprints(
+        corpus, path, string_at, ScalingError
+    )
+    if not fingerprints:
         raise ScalingError(f"missing corpus input fingerprints in {path}")
-
-    fingerprints: dict[str, str] = {}
-    for index, entry in enumerate(inputs):
-        if not isinstance(entry, dict):
-            raise ScalingError(f"invalid corpus input fingerprint {index} in {path}")
-        name = string_at(entry, ("name",), f"corpus input {index} name in {path}")
-        sha256 = string_at(
-            entry,
-            ("sha256",),
-            f"corpus input {name!r} SHA-256 in {path}",
-        )
-        if name in fingerprints:
-            raise ScalingError(f"duplicate corpus input fingerprint {name!r} in {path}")
-        fingerprints[name] = sha256
     return CorpusIdentity(manifest_sha256, tuple(sorted(fingerprints.items())))
 
 
@@ -388,7 +331,13 @@ def require_recorded_median(
 
 
 def evaluate_report(spec: TopologySpec) -> ScalingResult:
-    document = load_result(spec.path)
+    return evaluate_document(load_result(spec.path), spec).result
+
+
+def evaluate_document(
+    document: dict[str, object], spec: TopologySpec
+) -> ValidatedScalingReport:
+    """Validate paired evidence once, retaining raw samples for report consumers."""
     pathways_enabled = document.get("pathways_enabled", False)
     if type(pathways_enabled) is not bool:
         raise ScalingError(f"invalid pathways_enabled setting in {spec.path}")
@@ -459,7 +408,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         raise ScalingError(f"missing benchmark cases in {spec.path}")
 
     case_speedups: list[CaseScaling] = []
-    wall_samples: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
+    wall_samples: list[CaseWallSamples] = []
     seen_names: set[str] = set()
     for index, case_result in enumerate(case_results):
         if not isinstance(case_result, dict):
@@ -502,7 +451,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
             f"paired wall median for {name!r} in {spec.path}",
         )
         case_speedups.append(CaseScaling(name, speedup))
-        wall_samples.append((baseline_samples, candidate_samples))
+        wall_samples.append(CaseWallSamples(name, baseline_samples, candidate_samples))
 
     corpus_names = {name for name, _ in corpus.inputs}
     if seen_names != corpus_names:
@@ -513,10 +462,10 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
     round_ratios: list[float] = []
     for round_index in range(runs):
         baseline_total = sum(
-            sample_pair[0][round_index] for sample_pair in wall_samples
+            sample_pair.baseline[round_index] for sample_pair in wall_samples
         )
         candidate_total = sum(
-            sample_pair[1][round_index] for sample_pair in wall_samples
+            sample_pair.candidate[round_index] for sample_pair in wall_samples
         )
         if not math.isfinite(baseline_total) or not math.isfinite(candidate_total):
             raise ScalingError(f"non-finite suite round total in {spec.path}")
@@ -528,7 +477,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         suite_speedup,
         f"suite paired round-total wall median in {spec.path}",
     )
-    return ScalingResult(
+    result = ScalingResult(
         spec,
         suite,
         corpus,
@@ -539,6 +488,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         suite_speedup,
         pathways_enabled,
     )
+    return ValidatedScalingReport(result, tuple(wall_samples))
 
 
 def evaluate_specs(specs: Sequence[TopologySpec]) -> list[ScalingResult]:

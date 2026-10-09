@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from benchmarks import benchmark, summarize_sol
 
@@ -80,6 +81,46 @@ class SummarizeSolTests(unittest.TestCase):
             ),
         )
         return path
+
+    def test_parallel_summary_reads_and_validates_each_sample_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self.write_report(root, parallel=True)
+            checker = summarize_sol.check_parallel_scaling
+            with (
+                mock.patch.object(
+                    checker, "load_result", wraps=checker.load_result
+                ) as load,
+                mock.patch.object(
+                    checker, "parse_wall_samples", wraps=checker.parse_wall_samples
+                ) as parse,
+            ):
+                rows = summarize_sol.report_rows(path, root, topology="omp")
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(load.call_count, 1)
+            self.assertEqual(parse.call_count, 4)  # Two cases, two roles.
+
+    def test_parallel_summary_preserves_sequential_float_accumulation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self.write_report(root, parallel=True)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            third = json.loads(json.dumps(document["cases"][1]))
+            third["name"] = "gamma"
+            document["cases"].append(third)
+            document["corpus"]["inputs"].append({"name": "gamma", "sha256": "gamma"})
+            for case, wall in zip(document["cases"], (1e16, 1.0, 1.0), strict=True):
+                for role in ("baseline", "candidate"):
+                    for sample in case[role]["measurements"]:
+                        sample["wall_seconds"] = wall
+                case["comparison"]["paired_wall_speedup"]["median"] = 1.0
+            document["comparison"]["paired_round_wall_speedup"]["median"] = 1.0
+            path.write_text(json.dumps(document), encoding="utf-8")
+            suite = summarize_sol.report_rows(path, root, topology="omp")[-1]
+            # Adding each small case in order rounds it away, matching old CSVs.
+            self.assertEqual(suite["wall_median_seconds"], 1e16)
+            self.assertEqual(suite["baseline_wall_median_seconds"], 1e16)
+            self.assertEqual(suite["paired_speedup"], 1.0)
 
     def read_summary(self, root: Path) -> list[dict[str, str]]:
         with (root / "summary.csv").open(encoding="utf-8", newline="") as stream:

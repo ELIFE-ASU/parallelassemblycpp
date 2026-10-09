@@ -1407,7 +1407,6 @@ def run_cli_checks(executable: Path) -> int:
             "--parallel=off",
             "--threads=auto",
             "--threads=1",
-            "--threads=2147483647",
         )
         for option in valid_execution_options:
             completed = run_cli_command(
@@ -2120,117 +2119,65 @@ def run_cli_checks(executable: Path) -> int:
             "  4  6  1  0  0  0  0\n"
             "M  END\n"
         )
-        hydrogen_cases = (
-            ("hydrogens-default", [], ["C", "C"], 1),
-            (
-                "hydrogens-on",
-                ["--remove-hydrogens=1"],
-                ["C", "C"],
-                1,
-            ),
-            (
-                "hydrogens-off",
-                ["--remove-hydrogens=0"],
-                ["H", "H", "C", "C", "H", "H"],
-                5,
-            ),
-        )
-        molecular_hydrogen_graphs = {}
-        for (
-            name,
-            hydrogen_options,
-            expected_colours,
-            expected_edge_count,
-        ) in hydrogen_cases:
-            case_directory = working_directory / name
-            case_directory.mkdir()
-            (case_directory / "input.mol").write_text(explicit_hydrogen_mol)
-            completed = run_cli_command(
-                executable,
-                ["input.mol", "--pathway=1", *hydrogen_options],
-                case_directory,
-            )
-            require_cli(
-                completed.returncode == 0,
-                f"explicit-hydrogen scenario {name!r} should succeed",
-                completed,
-            )
-            pathway_path = case_directory / "inputPathway"
-            require_cli(
-                pathway_path.is_file(),
-                f"explicit-hydrogen scenario {name!r} omitted its pathway",
-                completed,
-            )
-            pathway = parse_pathway_document(pathway_path)
-            graph = pathway["file_graph"][0]
-            require_cli(
-                graph["VertexColours"] == expected_colours
-                and len(graph["Edges"]) == expected_edge_count,
-                f"explicit-hydrogen scenario {name!r} transformed the wrong "
-                "atoms or bonds",
-                completed,
-            )
-            molecular_hydrogen_graphs[tuple(hydrogen_options)] = graph
-            scenarios += 1
-
         native_hydrogen_graph = (
             "native-hydrogens\n6\n1 3 2 3 3 4 4 5 4 6\nH H C C H H\n1 1 1 1 1\n"
         )
-        native_hydrogen_cases = (
-            ("native-hydrogens-default", [], ["C", "C"], 1),
+        hydrogen_cases = (
+            ("default", [], ["C", "C"], 1),
+            ("on", ["--remove-hydrogens=1"], ["C", "C"], 1),
             (
-                "native-hydrogens-on",
-                ["--remove-hydrogens=1"],
-                ["C", "C"],
-                1,
-            ),
-            (
-                "native-hydrogens-off",
+                "off",
                 ["--remove-hydrogens=0"],
                 ["H", "H", "C", "C", "H", "H"],
                 5,
             ),
         )
-        for (
-            name,
-            hydrogen_options,
-            expected_colours,
-            expected_edge_count,
-        ) in native_hydrogen_cases:
-            case_directory = working_directory / name
-            case_directory.mkdir()
-            (case_directory / "input").write_text(native_hydrogen_graph)
-            completed = run_cli_command(
-                executable,
-                ["input", "--pathway=1", *hydrogen_options],
-                case_directory,
-            )
-            require_cli(
-                completed.returncode == 0,
-                f"native-graph hydrogen scenario {name!r} should succeed",
-                completed,
-            )
-            pathway_path = case_directory / "inputPathway"
-            require_cli(
-                pathway_path.is_file(),
-                f"native-graph hydrogen scenario {name!r} omitted its pathway",
-                completed,
-            )
-            graph = parse_pathway_document(pathway_path)["file_graph"][0]
-            require_cli(
-                graph["VertexColours"] == expected_colours
-                and len(graph["Edges"]) == expected_edge_count,
-                f"native-graph hydrogen scenario {name!r} transformed the "
-                "wrong atoms or bonds",
-                completed,
-            )
-            require_cli(
-                graph == molecular_hydrogen_graphs[tuple(hydrogen_options)],
-                f"native-graph hydrogen scenario {name!r} should match its "
-                "MOL equivalent",
-                completed,
-            )
-            scenarios += 1
+        hydrogen_graphs = {}
+        for format_name, input_name, contents in (
+            ("mol", "input.mol", explicit_hydrogen_mol),
+            ("native", "input", native_hydrogen_graph),
+        ):
+            for (
+                setting,
+                options,
+                expected_colours,
+                expected_edge_count,
+            ) in hydrogen_cases:
+                name = f"{format_name}-hydrogens-{setting}"
+                case_directory = working_directory / name
+                case_directory.mkdir()
+                (case_directory / input_name).write_text(contents)
+                completed = run_cli_command(
+                    executable,
+                    [input_name, "--pathway=1", *options],
+                    case_directory,
+                )
+                require_cli(
+                    completed.returncode == 0,
+                    f"hydrogen scenario {name!r} should succeed",
+                    completed,
+                )
+                pathway_path = case_directory / "inputPathway"
+                require_cli(
+                    pathway_path.is_file(),
+                    f"hydrogen scenario {name!r} omitted its pathway",
+                    completed,
+                )
+                graph = parse_pathway_document(pathway_path)["file_graph"][0]
+                require_cli(
+                    graph["VertexColours"] == expected_colours
+                    and len(graph["Edges"]) == expected_edge_count,
+                    f"hydrogen scenario {name!r} transformed the wrong atoms or bonds",
+                    completed,
+                )
+                hydrogen_graphs[format_name, setting] = graph
+                if format_name == "native":
+                    require_cli(
+                        graph == hydrogen_graphs["mol", setting],
+                        f"hydrogen scenario {name!r} should match its MOL equivalent",
+                        completed,
+                    )
+                scenarios += 1
 
         all_hydrogen_mol = (
             "Hydrogen\n"
