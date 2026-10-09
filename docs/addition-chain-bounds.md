@@ -186,7 +186,7 @@ reversal exactly the graph-isomorphism rule for these paths. This supplies
 independent answers for deeper retained-fragment cases without the factorial
 vertex-permutation cost of the general graph oracle.
 
-The full graph corpus contains 1,598 inputs and performs 6,392 exact calculations
+The full graph corpus contains 1,604 inputs and performs 6,416 exact calculations
 across hydrogen-removal and disconnected-compensation settings. Scalar table
 entries through 256 are independently checked, and tiny vector targets are
 compared with an independent breadth-first search. String tests check exact

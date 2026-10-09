@@ -180,6 +180,48 @@ def run(probe: Path, *, full: bool = False) -> dict:
         rng.shuffle(edges)
         add((tuple(atoms), tuple(edges)), "permuted_graphs")
 
+    # Reuse across components needs at least six atoms, so the exhaustive and
+    # random corpora above reach it only by chance. Each graph below repeats a
+    # motif as a separate component: the best pathway copies one component
+    # onto another, and compensation must remove exactly the phantom joins
+    # between the components that the solver counts.
+    path_pair = (
+        ("C",) * 6,
+        ((0, 1, 1), (1, 2, 1), (3, 4, 1), (4, 5, 1)),
+    )
+    triangle_pair = (
+        ("C",) * 6,
+        ((0, 1, 1), (1, 2, 1), (0, 2, 1), (3, 4, 1), (4, 5, 1), (3, 5, 1)),
+    )
+    path_triple = (
+        ("C",) * 9,
+        ((0, 1, 1), (1, 2, 1), (3, 4, 1), (4, 5, 1), (6, 7, 1), (7, 8, 1)),
+    )
+    # The longer path contains two copies of the shorter component.
+    nested_paths = (
+        ("C",) * 8,
+        ((0, 1, 1), (1, 2, 1), (2, 3, 1), (3, 4, 1), (5, 6, 1), (6, 7, 1)),
+    )
+    labelled_pair = (
+        ("C", "N", "O", "C", "N", "O"),
+        ((0, 1, 2), (1, 2, 1), (3, 4, 2), (4, 5, 1)),
+    )
+    # Hydrogen removal turns one component into an isolated atom and deletes
+    # another entirely, changing the component count used by compensation.
+    hydrogen_components = (
+        ("C", "C", "C", "C", "N", "H", "H", "H"),
+        ((0, 1, 1), (1, 2, 1), (2, 3, 1), (4, 5, 1), (6, 7, 1)),
+    )
+    for graph in (
+        path_pair,
+        triangle_pair,
+        path_triple,
+        nested_paths,
+        labelled_pair,
+        hydrogen_components,
+    ):
+        add(graph, "isomorphic_components")
+
     # Labelled paths with a repeated motif and a unique bond exercise the
     # whole-input count before unique-type pruning and retained-class bounds.
     for kinds in ((1, 2), (1, 2, 3), (1, 1, 2), (1, 2, 3, 4)):

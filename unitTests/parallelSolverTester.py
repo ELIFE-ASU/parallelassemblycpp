@@ -132,6 +132,9 @@ PARITY_CASES = (
     # default hydrogen removal leaves 31 processed edges from 32 input bonds.
     CaseSpec("amino-acid-scale-04c", 31, 1),
 )
+# Compensation subtracts the three joins between the four bonded components
+# after the search, so every execution mode must report the same reduction.
+COMPENSATED_PARITY_CASE = ("amino-acid-scale-04c", 3)
 TELEMETRY_CASE_NAMES = {
     "mask-boundary-path-129b",
     "amino-acid-scale-04c",
@@ -317,6 +320,7 @@ def run_solver(
     telemetry: bool = False,
     automatic_threads: bool = False,
     parallel_mode: str | None = None,
+    extra_arguments: Sequence[str] = (),
 ) -> tuple[int, dict[str, Any] | None]:
     environment = os.environ.copy()
     if topology is not None:
@@ -370,6 +374,7 @@ def run_solver(
             )
         if telemetry:
             solver_arguments.append("--telemetry=1")
+        solver_arguments.extend(extra_arguments)
         if topology is not None and topology.rank_count > 1:
             require(mpiexec is not None, f"{topology.mode}: mpiexec is required")
             arguments = [
@@ -1313,6 +1318,22 @@ def run_parity_suite(
             len({index for indices in observed.values() for index in indices}) == 1,
             f"{case.name}: serial/OpenMP index mismatch: {observed}",
         )
+        if case.name == COMPENSATED_PARITY_CASE[0]:
+            compensated = case.expected_index - COMPENSATED_PARITY_CASE[1]
+            for label, executable, topology in configurations:
+                index = run_solver(
+                    executable,
+                    case,
+                    timeout,
+                    topology=topology,
+                    extra_arguments=("--compensate-disjoint=1",),
+                )[0]
+                runs += 1
+                require(
+                    index == compensated,
+                    f"{case.name}: {label} compensated index {index}, expected "
+                    f"{compensated}",
+                )
         print(f"PASS parity {case.name}: index {case.expected_index}")
     runs += run_invalid_lease_configuration_suite(openmp, cases[0], timeout)
     return runs
@@ -1877,6 +1898,24 @@ def run_distributed_parity_suite(
             f"{case.name}: {target.label} index {parallel_index} does not match "
             f"serial index {serial_index}",
         )
+        if case.name == COMPENSATED_PARITY_CASE[0]:
+            compensated = case.expected_index - COMPENSATED_PARITY_CASE[1]
+            compensated_index, _ = run_solver(
+                target.executable,
+                case,
+                timeout,
+                topology=target.topology,
+                mpiexec=target.mpiexec,
+                numproc_flag=target.numproc_flag,
+                branch_lease_size=target.branch_lease_size,
+                extra_arguments=("--compensate-disjoint=1",),
+            )
+            runs += 1
+            require(
+                compensated_index == compensated,
+                f"{case.name}: {target.label} compensated index "
+                f"{compensated_index}, expected {compensated}",
+            )
         print(f"PASS parity {case.name}: {target.label} index {case.expected_index}")
     return runs
 

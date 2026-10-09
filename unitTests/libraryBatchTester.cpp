@@ -236,6 +236,43 @@ int main(int argc, char **argv)
         )
     ) return 1;
 
+    // Exact search applies the same compensation after its internal bound
+    // comparison, agrees with the bound on isomorphic components, and must
+    // not leak the option into a later default calculation.
+    const std::string isomorphicComponents =
+        "two triangles\n6\n1 2 2 3 1 3 4 5 5 6 4 6\nC C C C C C\n1 1 1 1 1 1\n";
+    parallelassemblycpp::CalculationOptions exactCompensatedOptions;
+    exactCompensatedOptions.compensateDisjoint = true;
+    std::istringstream exactCompensatedStream(isomorphicComponents);
+    const auto exactCompensated = parallelassemblycpp::calculateGraph(
+        exactCompensatedStream, exactCompensatedOptions
+    );
+    std::istringstream exactDefaultStream(isomorphicComponents);
+    const auto exactDefault = parallelassemblycpp::calculateGraph(
+        exactDefaultStream
+    );
+    std::istringstream boundIsomorphicStream(isomorphicComponents);
+    const auto boundIsomorphic = parallelassemblycpp::calculateGraph(
+        boundIsomorphicStream, boundOptions
+    );
+    if (
+        !require(
+            exactCompensated.succeeded && !exactCompensated.upperBoundOnly &&
+                exactCompensated.assemblyIndex == 2,
+            "exact compensated index should drop the join between components"
+        ) ||
+        !require(
+            exactDefault.succeeded && !exactDefault.upperBoundOnly &&
+                exactDefault.assemblyIndex == 3,
+            "disjoint compensation leaked into a default exact calculation"
+        ) ||
+        !require(
+            boundIsomorphic.succeeded && boundIsomorphic.upperBoundOnly &&
+                boundIsomorphic.assemblyIndex == 2,
+            "compensated bound should match exact search on isomorphic components"
+        )
+    ) return 1;
+
     boundOptions.runtimeTicks = 0;
     const auto invalidBoundBudget = parallelassemblycpp::calculate(argv[3], boundOptions);
     const auto exactAfterBound = parallelassemblycpp::calculate(argv[3]);

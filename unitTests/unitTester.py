@@ -387,6 +387,40 @@ def read_last_intermediate_index(path: Path) -> int | None:
     return int(rows[-1][1])
 
 
+def replay_pathway_index(document: dict[str, object]) -> int | None:
+    """Return the uncompensated index implied by a graph pathway document.
+
+    Each duplicate copies a fragment and saves one join per copied edge after
+    the first. The replay fails when a copy overlaps another copy, the remnant,
+    or a removed edge, or when those parts do not partition the input graph.
+    """
+    graph = document["file_graph"][0]
+    edges = {tuple(edge) for edge in graph["Edges"]}
+    copies: set[tuple[int, ...]] = set()
+    savings = 0
+    for duplicate in document["duplicates"]:
+        left = {tuple(edge) for edge in duplicate["Left"]}
+        right = {tuple(edge) for edge in duplicate["Right"]}
+        if (
+            len(left) != len(right)
+            or len(left) < 2
+            or left & right
+            or copies & right
+            or not (left | right) <= edges
+        ):
+            return None
+        copies |= right
+        savings += len(right) - 1
+    remnant = {
+        tuple(edge) for fragment in document["remnant"] for edge in fragment["Edges"]
+    }
+    removed = {tuple(edge) for edge in document["removed_edges"]}
+    partitioned = len(remnant) + len(copies) + len(removed) == len(edges)
+    if not partitioned or remnant | copies | removed != edges:
+        return None
+    return len(edges) - 1 - savings
+
+
 def make_mask_capacity_graph(component_sizes: Sequence[int]) -> str:
     """Build a bounded-work native graph whose final atom appears in edge zero."""
     atom_colours: list[str] = []
@@ -2310,6 +2344,138 @@ def run_cli_checks(executable: Path) -> int:
                 completed,
             )
             scenarios += 1
+
+        # Cross-component reuse: the only duplicate copies one triangle onto
+        # its isomorphic twin, both algorithms agree, and compensation removes
+        # the single phantom join without changing the recovered pathway.
+        isomorphic_components = (
+            "two triangles\n6\n1 2 2 3 1 3 4 5 5 6 4 6\nC C C C C C\n1 1 1 1 1 1\n"
+        )
+        triangles = {
+            frozenset({(0, 1), (0, 2), (1, 2)}),
+            frozenset({(3, 4), (3, 5), (4, 5)}),
+        }
+        isomorphic_pathways: dict[str, dict[str, object]] = {}
+        for algorithm, compensation, expected_index in (
+            ("full", "0", 3),
+            ("full", "1", 2),
+            ("re-pair", "0", 3),
+            ("re-pair", "1", 2),
+        ):
+            name = f"isomorphic-components-{algorithm}-{compensation}"
+            case_directory = working_directory / name
+            case_directory.mkdir()
+            (case_directory / "input").write_text(isomorphic_components)
+            completed = run_cli_command(
+                executable,
+                [
+                    "input",
+                    f"--algorithm={algorithm}",
+                    f"--compensate-disjoint={compensation}",
+                    "--pathway=1",
+                ],
+                case_directory,
+            )
+            require_cli(
+                completed.returncode == 0,
+                f"isomorphic-component scenario {name!r} should succeed",
+                completed,
+            )
+            require_cli(
+                read_first_line_assembly_index(case_directory / "inputOut")
+                == expected_index,
+                f"isomorphic-component scenario {name!r} returned the wrong index",
+                completed,
+            )
+            if algorithm == "full":
+                pathway = parse_pathway_document(case_directory / "inputPathway")
+                require_cli(
+                    replay_pathway_index(pathway) == 3,
+                    f"isomorphic-component scenario {name!r} pathway does not "
+                    "replay to the uncompensated index",
+                    completed,
+                )
+                copied = [
+                    {
+                        frozenset(tuple(edge) for edge in duplicate["Left"]),
+                        frozenset(tuple(edge) for edge in duplicate["Right"]),
+                    }
+                    for duplicate in pathway["duplicates"]
+                ]
+                require_cli(
+                    copied == [triangles],
+                    f"isomorphic-component scenario {name!r} should copy one "
+                    "whole component onto the other",
+                    completed,
+                )
+                isomorphic_pathways[compensation] = pathway
+            scenarios += 1
+        require_cli(
+            isomorphic_pathways["0"] == isomorphic_pathways["1"],
+            "disjoint compensation should not change the recovered pathway",
+        )
+
+        # Reviewed disconnected molecules: hydrogen removal leaves two bonded
+        # components in each, so compensation subtracts one from the manifest
+        # index, leaves the pathway unchanged, and the pathway replays to the
+        # uncompensated index.
+        _, manifest_cases = load_manifest(DEFAULT_MANIFEST)
+        manifest_indices = {case.name: case.expected for case in manifest_cases}
+        for fixture in ("2609", "4692", "4953", "7362", "8812", "9071"):
+            manifest_index = manifest_indices[fixture]
+            fixture_pathways: dict[str, dict[str, object]] = {}
+            for compensation in ("0", "1"):
+                name = f"disconnected-fixture-{fixture}-{compensation}"
+                case_directory = working_directory / name
+                case_directory.mkdir()
+                shutil.copy2(
+                    TEST_DIRECTORY / f"{fixture}.mol",
+                    case_directory / "input.mol",
+                )
+                completed = run_cli_command(
+                    executable,
+                    [
+                        "input.mol",
+                        f"--compensate-disjoint={compensation}",
+                        "--pathway=1",
+                        "--write-intermediate-mas=1",
+                    ],
+                    case_directory,
+                )
+                expected_index = manifest_index - int(compensation)
+                require_cli(
+                    completed.returncode == 0,
+                    f"disconnected fixture scenario {name!r} should succeed",
+                    completed,
+                )
+                require_cli(
+                    read_first_line_assembly_index(case_directory / "inputOut")
+                    == expected_index,
+                    f"disconnected fixture scenario {name!r} returned the wrong "
+                    "final index",
+                    completed,
+                )
+                require_cli(
+                    read_last_intermediate_index(
+                        case_directory / "inputIntermediateMAs"
+                    )
+                    == expected_index,
+                    f"disconnected fixture scenario {name!r} returned the wrong "
+                    "intermediate index",
+                    completed,
+                )
+                fixture_pathways[compensation] = parse_pathway_document(
+                    case_directory / "inputPathway"
+                )
+                scenarios += 1
+            require_cli(
+                fixture_pathways["0"] == fixture_pathways["1"],
+                f"disjoint compensation changed the pathway of fixture {fixture}",
+            )
+            require_cli(
+                replay_pathway_index(fixture_pathways["0"]) == manifest_index,
+                f"the pathway of fixture {fixture} does not replay to its index",
+            )
 
         for enum_limit, expect_limit_status in ((1, True), (2, False)):
             case_directory = working_directory / f"enum-boundary-{enum_limit}"

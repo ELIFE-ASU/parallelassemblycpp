@@ -87,16 +87,17 @@ python3 unitTests/unitTester.py --build --pathways-only --verbose
 | Area | Checks |
 | --- | --- |
 | Core graph search | Active-word masks and their lifetimes, transposition tables, tree and cyclic canonicalization, cancellation polling, matching-bound refresh, fragmentation metadata, task transfer, MOL/SDF and native graph parsing, and pathway generation. Telemetry variants exercise the cache and bound-refresh counters. |
-| Addition-chain bounds | Exhaustive certification of the scalar table, independent vector-chain oracle, bounded-search exhaustion, cache isolation, and exact graph parity against independent graph and labelled-path oracles, including preprocessing and disconnected compensation. |
-| CLI and manifest | Reviewed assembly indices and golden pathways; canonical and legacy flags; invalid values and duplicate aliases; input/output failures and unusual filenames; disabled-output preservation; limits; Linux memory reporting; string records, incompatible options, and malformed UTF-8 diagnostics. |
+| Addition-chain bounds | Exhaustive certification of the scalar table, independent vector-chain oracle, bounded-search exhaustion, cache isolation, and exact graph parity against independent graph and labelled-path oracles, including preprocessing, disconnected compensation, and reuse across isomorphic components. |
+| CLI and manifest | Reviewed assembly indices and golden pathways, including the disconnected molecule 2609; canonical and legacy flags; invalid values and duplicate aliases; input/output failures and unusual filenames; disabled-output preservation; limits; Linux memory reporting; string records, incompatible options, and malformed UTF-8 diagnostics. Disconnected graphs cover cross-component reuse in both algorithms and six reviewed two-component molecules, whose compensated indices drop by one while their pathways stay unchanged and replay to the uncompensated index. |
 | Exact string search | Independent exhaustive short-string oracle, fragment-boundary pathway replay, interval merging, remnants, reversal, cancellation, target-index stopping, JSON escaping, and Unicode scalar/encoding boundaries. Independently replayed Re-Pair seeds cover nested, reversed, Unicode, and randomized constructions, optimal witness retention, and improvement of suboptimal seeds. |
 | Re-Pair bounds | Independent graph and string certificate replay and small-instance exact oracles; deterministic choices, overlaps, Unicode and invalid encodings; CLI algorithm selectors, certificate formats, output failures, and heuristic status. Graph full-search checks verify that zero runtime retains the trivial initial bound without a graph Re-Pair prepass. |
-| Public library | Exact and Re-Pair graph/string calls, file and stream inputs, batch recovery, budgets, and repeated calls without leaking calculation state or creating output files. |
+| Public library | Exact and Re-Pair graph/string calls, file and stream inputs, batch recovery, budgets, disjoint compensation in both graph modes, and repeated calls without leaking calculation state or creating output files. |
 | Tooling | Fixture audit, repository text policy, benchmark runner unit tests, and benchmark corpus validation. |
 
 [parallelSolverTester.py](parallelSolverTester.py) repeats serial/OpenMP
 calculations with 1, 2, and 4 workers. Cases cover the 63/64/65 and 127/128/129
-edge-mask boundaries and a disconnected molecule. Telemetry checks cover
+edge-mask boundaries and a disconnected molecule, which also runs with
+disjoint compensation in every mode. Telemetry checks cover
 single-branch and chunked leases, adaptive task donation and tail refills,
 worker aggregation, and complete branch coverage. MPI and hybrid variants also
 exercise distributed work and refill reductions;
