@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import os
@@ -23,27 +22,37 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __package__:
+    from . import benchmark
+else:
+    import benchmark
+
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "benchmarks" / "cases.tsv"
 
 
 def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return benchmark.file_sha256(path)
 
 
 def load_cases(names: list[str]) -> list[dict]:
-    with MANIFEST.open(encoding="utf-8", newline="") as stream:
-        cases = list(csv.DictReader(stream, delimiter="\t"))
-    unknown = set(names) - {case["name"] for case in cases}
+    _, cases = benchmark.load_manifest(MANIFEST)
+    unknown = set(names) - {case.name for case in cases}
     if unknown:
         raise ValueError(f"unknown cases: {', '.join(sorted(unknown))}")
-    selected = [case for case in cases if not names or case["name"] in names]
-    for case in selected:
-        path = (MANIFEST.parent / case["input"]).resolve(strict=True)
-        case["input"] = str(path.relative_to(ROOT))
-        case["input_sha256"] = sha256(path)
-        case["expected_assembly_index"] = int(case["expected_assembly_index"])
-    return selected
+    return [
+        {
+            "name": case.name,
+            "input": str(case.source.relative_to(ROOT)),
+            "input_sha256": sha256(case.source),
+            "expected_assembly_index": case.expected_assembly_index,
+            "expectation": case.expectation,
+            "suites": ",".join(case.suites),
+            "workload": case.workload,
+        }
+        for case in cases
+        if not names or case.name in names
+    ]
 
 
 def parse_events(output: str | bytes | None) -> dict:

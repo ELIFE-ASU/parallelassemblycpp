@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,39 @@ class GraphRepairSpeedTests(unittest.TestCase):
             "expected_assembly_index": 3,
             "expectation": "reviewed",
         }
+
+    def test_manifest_adapter_preserves_report_fields_and_validates_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "sample.mol"
+            source.write_text("fixture", encoding="utf-8")
+            manifest = root / "cases.tsv"
+            header = "\t".join(speed.benchmark.MANIFEST_HEADER) + "\n"
+            row = "sample\tsample.mol\t7\tprovisional\tquick,full\tfixture\n"
+            manifest.write_text(header + row, encoding="utf-8")
+            with (
+                patch.object(speed, "ROOT", root),
+                patch.object(speed, "MANIFEST", manifest),
+            ):
+                self.assertEqual(
+                    speed.load_cases([]),
+                    [
+                        {
+                            "name": "sample",
+                            "input": "sample.mol",
+                            "expected_assembly_index": 7,
+                            "expectation": "provisional",
+                            "suites": "quick,full",
+                            "workload": "fixture",
+                            "input_sha256": speed.benchmark.file_sha256(source),
+                        }
+                    ],
+                )
+                manifest.write_text(header + row + row, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    speed.benchmark.BenchmarkError, "duplicate benchmark name"
+                ):
+                    speed.load_cases([])
 
     def sample(self, method: str, *, run: int = 0, seconds: float = 1) -> dict:
         return {
