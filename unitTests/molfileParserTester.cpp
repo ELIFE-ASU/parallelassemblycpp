@@ -168,109 +168,25 @@ int main(int argc, char **argv)
     assert(diagnostics.str().find("Graph: 5 atoms, 4 bonds") != string::npos);
 
     verbose = false;
-    string invalidBond = validMolfile;
-    const size_t invalidBondPosition = invalidBond.find("  4  5  1");
-    assert(invalidBondPosition != string::npos);
-    invalidBond.replace(invalidBondPosition, 9, "  4  6  1");
-    bool rejected = false;
-    try
-    {
-        static_cast<void>(parse(invalidBond));
-    }
-    catch (const runtime_error &error)
-    {
-        rejected = string(error.what()).find(
-            "bond endpoint is outside the atom range"
-        ) != string::npos;
-    }
-    assert(rejected);
-
-    string selfBond = validMolfile;
-    const size_t selfBondPosition = selfBond.find("  4  5  1");
-    assert(selfBondPosition != string::npos);
-    selfBond.replace(selfBondPosition, 9, "  4  4  1");
-    rejected = false;
-    try
-    {
-        static_cast<void>(parse(selfBond));
-    }
-    catch (const runtime_error &error)
-    {
-        rejected = string(error.what()).find("self-loop") != string::npos;
-    }
-    assert(rejected);
-
-    string zeroOrderBond = validMolfile;
-    const size_t zeroOrderPosition = zeroOrderBond.find("  4  5  1");
-    assert(zeroOrderPosition != string::npos);
-    zeroOrderBond.replace(zeroOrderPosition, 9, "  4  5  0");
-    molGraph zeroOrderDestination;
-    string zeroOrderSentinel = "zero-order-sentinel";
-    zeroOrderDestination.addAtom(zeroOrderSentinel);
-    istringstream zeroOrderInput(zeroOrderBond);
-    rejected = false;
-    try
-    {
-        molfileParser(zeroOrderInput, zeroOrderDestination);
-    }
-    catch (const runtime_error &error)
-    {
-        rejected = string(error.what()).find(
-            "zero-order bonds are not supported"
-        ) != string::npos;
-    }
-    assert(rejected);
-    assert(zeroOrderDestination.atoms.size() == 1);
-    assert(
-        zeroOrderDestination.atoms.front().atomType == zeroOrderSentinel
+    expectRejected(
+        withLastBond("  4  6  1"),
+        "bond endpoint is outside the atom range"
     );
-    assert(zeroOrderDestination.totalBonds == 0);
-
-    string negativeBondOrder = validMolfile;
-    const size_t negativeBondPosition = negativeBondOrder.find("  4  5  1");
-    assert(negativeBondPosition != string::npos);
-    negativeBondOrder.replace(negativeBondPosition, 9, "  4  5 -1");
-    rejected = false;
-    try
-    {
-        static_cast<void>(parse(negativeBondOrder));
-    }
-    catch (const runtime_error &error)
-    {
-        rejected = string(error.what()).find(
-            "bond order must be nonnegative"
-        ) != string::npos;
-    }
-    assert(rejected);
-
-    molGraph unchanged;
-    string sentinel = "sentinel";
-    unchanged.addAtom(sentinel);
-    istringstream invalidInput(invalidBond);
-    try
-    {
-        molfileParser(invalidInput, unchanged);
-    }
-    catch (const runtime_error &)
-    {
-    }
-    assert(unchanged.atoms.size() == 1);
-    assert(unchanged.atoms.front().atomType == sentinel);
+    expectRejected(withLastBond("  4  4  1"), "self-loop");
+    expectRejected(
+        withLastBond("  4  5  0"),
+        "zero-order bonds are not supported"
+    );
+    expectRejected(
+        withLastBond("  4  5 -1"),
+        "bond order must be nonnegative"
+    );
 
     string unsupportedVersion = validMolfile;
     const size_t version = unsupportedVersion.find("V2000");
     assert(version != string::npos);
     unsupportedVersion.replace(version, 5, "V3000");
-    rejected = false;
-    try
-    {
-        static_cast<void>(parse(unsupportedVersion));
-    }
-    catch (const runtime_error &error)
-    {
-        rejected = string(error.what()).find("expected a V2000") != string::npos;
-    }
-    assert(rejected);
+    expectRejected(unsupportedVersion, "expected a V2000");
 
     // A repeated bond line used to build a parallel edge, so the reported
     // index described a multigraph the input never meant to declare.

@@ -54,6 +54,42 @@ std::string numberedBlocks(size_t blockLength)
         repeated('2', blockLength);
 }
 
+/** Enumerate all lengths, with the first symbol as the least significant digit. */
+template<typename Check>
+void forEachString(
+    const std::string &alphabet,
+    size_t maximumLength,
+    const Check &check
+)
+{
+    size_t combinationCount = 1;
+    for (size_t length = 0; length <= maximumLength; length++)
+    {
+        if (length > 0) combinationCount *= alphabet.size();
+        for (size_t encoded = 0; encoded < combinationCount; encoded++)
+        {
+            size_t remaining = encoded;
+            std::string input(length, alphabet.front());
+            for (char &symbol : input)
+            {
+                symbol = alphabet[remaining % alphabet.size()];
+                remaining /= alphabet.size();
+            }
+            check(input);
+        }
+    }
+}
+
+struct RemoveFile
+{
+    std::filesystem::path path;
+    ~RemoveFile()
+    {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+    }
+};
+
 std::string intervalListText(const std::vector<Interval> &intervals)
 {
     std::ostringstream output;
@@ -802,27 +838,12 @@ void testParallelSearch()
     for (const bool acceptReversed : {false, true})
     {
         ReferenceSearch reference(acceptReversed);
-        const auto checkAlphabet = [&](const std::string &alphabet, size_t maximumLength)
+        const auto checkInput = [&](const std::string &input)
         {
-            size_t combinationCount = 1;
-            for (size_t length = 0; length <= maximumLength; length++)
-            {
-                if (length > 0) combinationCount *= alphabet.size();
-                for (size_t encoded = 0; encoded < combinationCount; encoded++)
-                {
-                    size_t remaining = encoded;
-                    std::string input(length, alphabet.front());
-                    for (char &symbol : input)
-                    {
-                        symbol = alphabet[remaining % alphabet.size()];
-                        remaining /= alphabet.size();
-                    }
-                    check(input, 2, acceptReversed, &reference);
-                }
-            }
+            check(input, 2, acceptReversed, &reference);
         };
-        checkAlphabet("ab", 7);
-        checkAlphabet("abc", 5);
+        forEachString("ab", 7, checkInput);
+        forEachString("abc", 5, checkInput);
 
         const std::vector<std::string> inputs{
             "abcdef", "abcxcba", "ababcdcd", "abcababc",
@@ -997,35 +1018,16 @@ void testExhaustiveShortStrings()
     ReferenceSearch orientationSensitiveReference(false);
     ReferenceSearch orientationIndependentReference(true);
 
-    const auto checkAlphabet = [&] (
-        const std::string &alphabet,
-        size_t maximumLength
-    )
+    const auto checkInput = [&](const std::string &input)
     {
-        size_t combinationCount = 1;
-        for (size_t length = 0; length <= maximumLength; length++)
-        {
-            if (length > 0) combinationCount *= alphabet.size();
-            for (size_t encoded = 0; encoded < combinationCount; encoded++)
-            {
-                size_t remaining = encoded;
-                std::string input(length, alphabet.front());
-                for (char &symbol : input)
-                {
-                    symbol = alphabet[remaining % alphabet.size()];
-                    remaining /= alphabet.size();
-                }
-                requireMatchesReference(
-                    input,
-                    orientationSensitiveReference,
-                    orientationIndependentReference
-                );
-            }
-        }
+        requireMatchesReference(
+            input,
+            orientationSensitiveReference,
+            orientationIndependentReference
+        );
     };
-
-    checkAlphabet("ab", 8);
-    checkAlphabet("abc", 6);
+    forEachString("ab", 8, checkInput);
+    forEachString("abc", 6, checkInput);
 }
 
 void testIntervalUtilities()
@@ -1806,15 +1808,7 @@ void testNonAsciiJsonOutput()
         std::filesystem::temp_directory_path() /
         ("parallelassemblycpp-string-pathway-invalid-" +
             std::to_string(nonce) + ".json");
-    struct RemoveFile
-    {
-        std::filesystem::path path;
-        ~RemoveFile()
-        {
-            std::error_code ignored;
-            std::filesystem::remove(path, ignored);
-        }
-    } cleanup{outputPath};
+    RemoveFile cleanup{outputPath};
 
     // Split so the hex escape cannot swallow the following characters.
     const std::string invalidInput = "AB\xff" "AB";
@@ -1973,15 +1967,7 @@ void testUnicodeStrings()
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path outputPath = std::filesystem::temp_directory_path() /
         ("parallelassemblycpp-string-unicode-" + std::to_string(nonce) + ".json");
-    struct RemoveFile
-    {
-        std::filesystem::path path;
-        ~RemoveFile()
-        {
-            std::error_code ignored;
-            std::filesystem::remove(path, ignored);
-        }
-    } cleanup{outputPath};
+    RemoveFile cleanup{outputPath};
     for (const auto &[input, ascii] : cases)
     {
         static_cast<void>(ascii);
@@ -2064,15 +2050,7 @@ void testJsonAndPathwayOutput()
         ("parallelassemblycpp-string-pathway-multi-step-" +
             std::to_string(nonce) + ".json");
 
-    struct RemoveFile
-    {
-        std::filesystem::path path;
-        ~RemoveFile()
-        {
-            std::error_code ignored;
-            std::filesystem::remove(path, ignored);
-        }
-    } cleanup{outputPath}, multiStepCleanup{multiStepOutputPath};
+    RemoveFile cleanup{outputPath}, multiStepCleanup{multiStepOutputPath};
 
     std::string error;
     require(

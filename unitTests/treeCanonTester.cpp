@@ -40,66 +40,10 @@ constexpr int ceilLog2(int value)
 #include "../src/molGraph.h"
 #include "../src/treeCanon.h"
 
-using edgeSpec = tuple<int, int, short>;
+#include "graphTestFixtures.h"
 
-molGraph makeTree(
-    const vector<string> &labels,
-    const vector<edgeSpec> &edges,
-    const vector<int> &oldToNew = {},
-    bool reverseEdges = false
-)
-{
-    assert(labels.size() <= static_cast<size_t>(numeric_limits<int>::max()));
-    vector<int> permutation = oldToNew;
-    if (permutation.empty())
-    {
-        permutation.resize(labels.size());
-        for (size_t index = 0; index < labels.size(); index++)
-            permutation[index] = static_cast<int>(index);
-    }
-    assert(permutation.size() == labels.size());
-
-    vector<unsigned char> seen(labels.size(), 0);
-    vector<string> permutedLabels(labels.size());
-    for (size_t oldIndex = 0; oldIndex < labels.size(); oldIndex++)
-    {
-        const int replacement = permutation[oldIndex];
-        assert(replacement >= 0);
-        const size_t replacementIndex = static_cast<size_t>(replacement);
-        assert(replacementIndex < labels.size());
-        assert(seen[replacementIndex] == 0);
-        seen[replacementIndex] = 1;
-        permutedLabels[replacementIndex] = labels[oldIndex];
-    }
-
-    molGraph result;
-    for (string &label : permutedLabels) result.addAtom(label);
-    const auto addEdge = [&](const edgeSpec &edge)
-    {
-        const auto [left, right, bondType] = edge;
-        assert(left >= 0);
-        assert(right >= 0);
-        const size_t leftIndex = static_cast<size_t>(left);
-        const size_t rightIndex = static_cast<size_t>(right);
-        assert(leftIndex < permutation.size());
-        assert(rightIndex < permutation.size());
-        result.addBond(
-            permutation[leftIndex],
-            permutation[rightIndex],
-            bondType
-        );
-    };
-    if (reverseEdges)
-    {
-        for (auto edge = edges.rbegin(); edge != edges.rend(); ++edge)
-            addEdge(*edge);
-    }
-    else
-    {
-        for (const edgeSpec &edge : edges) addEdge(edge);
-    }
-    return result;
-}
+using graphTestFixtures::edgeSpec;
+using graphTestFixtures::makeGraph;
 
 treeCanonForm canonicalForm(molGraph &tree)
 {
@@ -125,13 +69,13 @@ vector<int> reversePermutation(size_t vertexCount)
 
 void testCentroidForms()
 {
-    molGraph singleton = makeTree({"C"}, {});
+    molGraph singleton = makeGraph({"C"}, {});
     clearTreeCanonInterner();
     const treeCanonForm singletonForm = canonicalForm(singleton);
     assert(!singletonForm.empty());
     assert(singletonForm.second == 0);
 
-    molGraph pair = makeTree({"C", "N"}, {{0, 1, 2}});
+    molGraph pair = makeGraph({"C", "N"}, {{0, 1, 2}});
     clearTreeCanonInterner();
     const treeCanonForm pairForm = canonicalForm(pair);
     assert(!pairForm.empty());
@@ -148,15 +92,15 @@ void testLabelsAndPermutation()
     };
     const vector<int> permutation{5, 1, 7, 0, 6, 3, 2, 4};
     assert(equivalentTrees(
-        makeTree(labels, edges),
-        makeTree(labels, edges, permutation, true)
+        makeGraph(labels, edges),
+        makeGraph(labels, edges, permutation, true)
     ));
 
     vector<string> movedAtom = labels;
     swap(movedAtom[2], movedAtom[3]);
     assert(!equivalentTrees(
-        makeTree(labels, edges),
-        makeTree(movedAtom, edges)
+        makeGraph(labels, edges),
+        makeGraph(movedAtom, edges)
     ));
 }
 
@@ -170,21 +114,21 @@ void testBondPlacement()
         {0, 1, 1}, {1, 2, 2}, {2, 3, 1}, {3, 4, 1}
     };
     assert(!equivalentTrees(
-        makeTree(labels, terminalDouble),
-        makeTree(labels, centralDouble)
+        makeGraph(labels, terminalDouble),
+        makeGraph(labels, centralDouble)
     ));
 }
 
 void testWideBondLabels()
 {
-    molGraph lowLabel = makeTree({"C", "N"}, {{0, 1, 1}});
-    molGraph highLabel = makeTree({"C", "N"}, {{0, 1, 257}});
+    molGraph lowLabel = makeGraph({"C", "N"}, {{0, 1, 1}});
+    molGraph highLabel = makeGraph({"C", "N"}, {{0, 1, 257}});
     assert(!equivalentTrees(lowLabel, highLabel));
 
     clearTreeCanonInterner();
     assert(canonicalForm(highLabel).centralBond == 257);
 
-    molGraph uniqueEdges = makeTree(
+    molGraph uniqueEdges = makeGraph(
         {"C", "N", "C", "N"},
         {{0, 1, 1}, {2, 3, 257}}
     );
@@ -206,8 +150,8 @@ void testSameDegreeNonIsomorphs()
         {0, 4, 1}, {1, 5, 1}, {1, 6, 1}
     };
     assert(!equivalentTrees(
-        makeTree(labels, adjacentBranches),
-        makeTree(labels, separatedBranches)
+        makeGraph(labels, adjacentBranches),
+        makeGraph(labels, separatedBranches)
     ));
 }
 
@@ -228,8 +172,8 @@ void testLongPaths()
             );
         }
         assert(equivalentTrees(
-            makeTree(labels, edges),
-            makeTree(labels, edges, reversePermutation(nodeCount), true)
+            makeGraph(labels, edges),
+            makeGraph(labels, edges, reversePermutation(nodeCount), true)
         ));
     }
 }
@@ -254,28 +198,28 @@ void testHighDegreeTree()
     for (size_t node = 0; node < nodeCount; node++)
         permutation[node] = static_cast<int>((node * 173) % nodeCount);
     assert(equivalentTrees(
-        makeTree(labels, edges),
-        makeTree(labels, edges, permutation, true)
+        makeGraph(labels, edges),
+        makeGraph(labels, edges, permutation, true)
     ));
 }
 
 void testUnsupportedGraphsFallBack()
 {
-    molGraph cycle = makeTree(
+    molGraph cycle = makeGraph(
         {"C", "C", "C"},
         {{0, 1, 1}, {1, 2, 1}, {2, 0, 1}}
     );
     clearTreeCanonInterner();
     assert(canonicalForm(cycle).empty());
 
-    molGraph forest = makeTree(
+    molGraph forest = makeGraph(
         {"C", "C", "C", "C"},
         {{0, 1, 1}, {1, 2, 1}}
     );
     clearTreeCanonInterner();
     assert(canonicalForm(forest).empty());
 
-    molGraph sentinel = makeTree(
+    molGraph sentinel = makeGraph(
         {"C", "X", "C"},
         {{0, 1, 1}, {1, 2, 1}}
     );

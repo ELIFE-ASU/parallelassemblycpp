@@ -45,7 +45,10 @@ constexpr int ceilLog2(int value)
 #include "../src/cyclicCanon.h"
 #include "../src/graphHashes.h"
 
-using edgeSpec = std::tuple<int, int, short>;
+#include "graphTestFixtures.h"
+
+using graphTestFixtures::edgeSpec;
+using graphTestFixtures::makeGraph;
 
 struct namedGraph
 {
@@ -80,70 +83,22 @@ vector<int> shuffledPermutation(size_t vertexCount, uint32_t seed)
     return permutation;
 }
 
-molGraph makeGraph(
-    const vector<string> &labels,
-    const vector<edgeSpec> &edges,
-    const vector<int> &oldToNew = {},
-    bool reverseEdges = false
-)
+vector<edgeSpec> triangularPrismEdges()
 {
-    require(
-        labels.size() <= static_cast<size_t>(numeric_limits<int>::max()),
-        "graph is too large for integer vertex IDs"
-    );
-    vector<int> permutation = oldToNew;
-    if (permutation.empty())
-    {
-        permutation.resize(labels.size());
-        iota(permutation.begin(), permutation.end(), 0);
-    }
-    require(permutation.size() == labels.size(), "invalid permutation size");
-
-    vector<unsigned char> seen(labels.size(), 0);
-    vector<string> permutedLabels(labels.size());
-    for (size_t oldIndex = 0; oldIndex < labels.size(); oldIndex++)
-    {
-        const int replacement = permutation[oldIndex];
-        const size_t replacementIndex = static_cast<size_t>(replacement);
-        require(
-            replacement >= 0 &&
-                replacementIndex < labels.size() &&
-                !seen[replacementIndex],
-            "permutation is not a bijection"
-        );
-        seen[replacementIndex] = 1;
-        permutedLabels[replacementIndex] = labels[oldIndex];
-    }
-
-    molGraph result;
-    for (string &label : permutedLabels) result.addAtom(label);
-    const auto addOne = [&](const edgeSpec &edge)
-    {
-        const auto [left, right, bondType] = edge;
-        const size_t leftIndex = static_cast<size_t>(left);
-        const size_t rightIndex = static_cast<size_t>(right);
-        require(
-            left >= 0 && right >= 0 &&
-                leftIndex < permutation.size() &&
-                rightIndex < permutation.size(),
-            "edge endpoint is outside the graph"
-        );
-        result.addBond(
-            permutation[leftIndex],
-            permutation[rightIndex],
-            bondType
-        );
+    return {
+        {0, 1, 1}, {1, 2, 1}, {2, 0, 1},
+        {3, 4, 1}, {4, 5, 1}, {5, 3, 1},
+        {0, 3, 1}, {1, 4, 1}, {2, 5, 1}
     };
-    if (reverseEdges)
-    {
-        for (auto edge = edges.rbegin(); edge != edges.rend(); ++edge)
-            addOne(*edge);
-    }
-    else
-    {
-        for (const edgeSpec &edge : edges) addOne(edge);
-    }
-    return result;
+}
+
+vector<edgeSpec> completeBipartite33Edges()
+{
+    vector<edgeSpec> edges;
+    for (int left = 0; left < 3; left++)
+        for (int right = 3; right < 6; right++)
+            edges.emplace_back(left, right, 1);
+    return edges;
 }
 
 /**
@@ -157,31 +112,15 @@ molGraph makeSharedRegistryCollisionGraph()
     vector<string> labels(24, "C");
     vector<edgeSpec> edges;
     edges.reserve(36);
-    const auto addCompleteBipartite = [&](int base)
+    const auto appendCopy = [&](int base, const vector<edgeSpec> &component)
     {
-        for (int left = 0; left < 3; ++left)
-        {
-            for (int right = 3; right < 6; ++right)
-                edges.emplace_back(base + left, base + right, 1);
-        }
+        for (const auto &[left, right, bondType] : component)
+            edges.emplace_back(base + left, base + right, bondType);
     };
-    const auto addTriangularPrism = [&](int base)
-    {
-        edges.emplace_back(base, base + 1, 1);
-        edges.emplace_back(base + 1, base + 2, 1);
-        edges.emplace_back(base + 2, base, 1);
-        edges.emplace_back(base + 3, base + 4, 1);
-        edges.emplace_back(base + 4, base + 5, 1);
-        edges.emplace_back(base + 5, base + 3, 1);
-        edges.emplace_back(base, base + 3, 1);
-        edges.emplace_back(base + 1, base + 4, 1);
-        edges.emplace_back(base + 2, base + 5, 1);
-    };
-
-    addCompleteBipartite(0);
-    addCompleteBipartite(6);
-    addTriangularPrism(12);
-    addTriangularPrism(18);
+    for (const int base : {0, 6})
+        appendCopy(base, completeBipartite33Edges());
+    for (const int base : {12, 18})
+        appendCopy(base, triangularPrismEdges());
     return makeGraph(labels, edges);
 }
 
@@ -435,24 +374,6 @@ vector<edgeSpec> cycleEdges(int vertexCount, short bondType = 1)
     edges.reserve(static_cast<size_t>(vertexCount));
     for (int vertex = 0; vertex < vertexCount; vertex++)
         edges.emplace_back(vertex, (vertex + 1) % vertexCount, bondType);
-    return edges;
-}
-
-vector<edgeSpec> triangularPrismEdges()
-{
-    return {
-        {0, 1, 1}, {1, 2, 1}, {2, 0, 1},
-        {3, 4, 1}, {4, 5, 1}, {5, 3, 1},
-        {0, 3, 1}, {1, 4, 1}, {2, 5, 1}
-    };
-}
-
-vector<edgeSpec> completeBipartite33Edges()
-{
-    vector<edgeSpec> edges;
-    for (int left = 0; left < 3; left++)
-        for (int right = 3; right < 6; right++)
-            edges.emplace_back(left, right, 1);
     return edges;
 }
 
