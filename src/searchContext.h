@@ -473,6 +473,34 @@ inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTaskBuffersReused = 0;
 inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::size_t searchTasksRejectedAsTooSmall = 0;
 inline PARALLELASSEMBLYCPP_SEARCH_LOCAL std::uint64_t searchTaskMinimumWorkUnits = 0;
 
+/** Reset only worker scheduler statistics, before a run and after capture. */
+inline void resetSearchSchedulerStatistics()
+{
+    searchDepthTwoTasksSpawned = 0;
+    searchDepthTwoTasksExecuted = 0;
+    searchDeeperTasksSpawned = 0;
+    searchDeeperTasksExecuted = 0;
+    searchTaskStealAttempts = 0;
+    searchTaskSteals = 0;
+    searchLocalTaskExecutions = 0;
+    searchSchedulerIdleWaits = 0;
+    searchSchedulerIdleNanoseconds = 0;
+    searchDeepRefillActivations = 0;
+    searchTaskQueueHighWatermark = 0;
+    searchMaximumTaskDepthExecuted = 0;
+#ifdef ASSEMBLY_ENABLE_TELEMETRY
+    searchProactiveTailRefills = 0;
+#endif
+    searchWarmStartBranches = 0;
+    searchTaskSerializationNanoseconds = 0;
+    searchTaskExecutionNanoseconds = 0;
+    searchTasksImmediatelyPruned = 0;
+    searchTaskBuffersCreated = 0;
+    searchTaskBuffersReused = 0;
+    searchTasksRejectedAsTooSmall = 0;
+    searchTaskMinimumWorkUnits = 0;
+}
+
 /** Keep independent scheduler ownership domains off the same cache line. */
 template<typename Value>
 struct alignas(schedulerCacheLineBytes) schedulerAtomicValue

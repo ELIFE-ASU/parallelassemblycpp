@@ -232,6 +232,19 @@ bool isPrimaryProcess()
 #endif
 }
 
+/** Keep every rank on the same input, configuration or error-handling phase. */
+bool allRanksSucceeded(bool localSuccess)
+{
+#if defined(PARALLELASSEMBLYCPP_USE_MPI)
+    const int local = localSuccess ? 1 : 0;
+    int all = 0;
+    MPI_Allreduce(&local, &all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    return all != 0;
+#else
+    return localSuccess;
+#endif
+}
+
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
 
 struct ParallelReplicaResult
@@ -321,17 +334,7 @@ bool configuredParallelBranchLeaseSize(size_t &leaseSize)
     else if (configured != nullptr) valid = false;
 
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    const int localValid = valid ? 1 : 0;
-    int allValid = localValid;
-    MPI_Allreduce(
-        &localValid,
-        &allValid,
-        1,
-        MPI_INT,
-        MPI_MIN,
-        MPI_COMM_WORLD
-    );
-    if (allValid == 0)
+    if (!allRanksSucceeded(valid))
     {
         if (isPrimaryProcess())
             cerr << "error: PARALLELASSEMBLYCPP_BRANCH_LEASE_SIZE must be a positive "
@@ -1378,18 +1381,7 @@ ParallelSearchResult runParallelSearch(
         preparationError = "unknown parallel root preparation failure";
         preparationSucceeded = 0;
     }
-#if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    int allPreparationsSucceeded = preparationSucceeded;
-    MPI_Allreduce(
-        &preparationSucceeded,
-        &allPreparationsSucceeded,
-        1,
-        MPI_INT,
-        MPI_MIN,
-        MPI_COMM_WORLD
-    );
-    preparationSucceeded = allPreparationsSucceeded;
-#endif
+    preparationSucceeded = allRanksSucceeded(preparationSucceeded != 0);
     if (preparationSucceeded == 0)
     {
         if (isPrimaryProcess())
@@ -1583,18 +1575,9 @@ ParallelSearchResult runParallelSearch(
         preparationError = "unknown parallel scheduler preparation failure";
         schedulerPreparationSucceeded = 0;
     }
-#if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    int allSchedulersPrepared = schedulerPreparationSucceeded;
-    MPI_Allreduce(
-        &schedulerPreparationSucceeded,
-        &allSchedulersPrepared,
-        1,
-        MPI_INT,
-        MPI_MIN,
-        MPI_COMM_WORLD
+    schedulerPreparationSucceeded = allRanksSucceeded(
+        schedulerPreparationSucceeded != 0
     );
-    schedulerPreparationSucceeded = allSchedulersPrepared;
-#endif
     if (schedulerPreparationSucceeded == 0)
     {
         if (isPrimaryProcess())
@@ -1641,29 +1624,7 @@ ParallelSearchResult runParallelSearch(
             : nullptr;
         sharedAssemblyIndex = &processBest;
         suppressSearchOutput = true;
-        searchDepthTwoTasksSpawned = 0;
-        searchDepthTwoTasksExecuted = 0;
-        searchDeeperTasksSpawned = 0;
-        searchDeeperTasksExecuted = 0;
-        searchTaskStealAttempts = 0;
-        searchTaskSteals = 0;
-        searchLocalTaskExecutions = 0;
-        searchSchedulerIdleWaits = 0;
-        searchSchedulerIdleNanoseconds = 0;
-        searchDeepRefillActivations = 0;
-        searchTaskQueueHighWatermark = 0;
-        searchMaximumTaskDepthExecuted = 0;
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-        searchProactiveTailRefills = 0;
-#endif
-        searchWarmStartBranches = 0;
-        searchTaskSerializationNanoseconds = 0;
-        searchTaskExecutionNanoseconds = 0;
-        searchTasksImmediatelyPruned = 0;
-        searchTaskBuffersCreated = 0;
-        searchTaskBuffersReused = 0;
-        searchTasksRejectedAsTooSmall = 0;
-        searchTaskMinimumWorkUnits = 0;
+        resetSearchSchedulerStatistics();
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         uint64_t workerStartedNanoseconds = 0;
         if (searchTelemetryEnabled)
@@ -1824,29 +1785,7 @@ ParallelSearchResult runParallelSearch(
         searchBranchLeaseSize = 1;
         searchBranchLeaseCount = 0;
         searchBranchAssignmentCount = 0;
-        searchDepthTwoTasksSpawned = 0;
-        searchDepthTwoTasksExecuted = 0;
-        searchDeeperTasksSpawned = 0;
-        searchDeeperTasksExecuted = 0;
-        searchTaskStealAttempts = 0;
-        searchTaskSteals = 0;
-        searchLocalTaskExecutions = 0;
-        searchSchedulerIdleWaits = 0;
-        searchSchedulerIdleNanoseconds = 0;
-        searchDeepRefillActivations = 0;
-        searchTaskQueueHighWatermark = 0;
-        searchMaximumTaskDepthExecuted = 0;
-#ifdef ASSEMBLY_ENABLE_TELEMETRY
-        searchProactiveTailRefills = 0;
-#endif
-        searchWarmStartBranches = 0;
-        searchTaskSerializationNanoseconds = 0;
-        searchTaskExecutionNanoseconds = 0;
-        searchTasksImmediatelyPruned = 0;
-        searchTaskBuffersCreated = 0;
-        searchTaskBuffersReused = 0;
-        searchTasksRejectedAsTooSmall = 0;
-        searchTaskMinimumWorkUnits = 0;
+        resetSearchSchedulerStatistics();
     };
 
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP)
@@ -2249,16 +2188,9 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
                 fallbackReason
             ) ? 1 : 0;
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
-        int allThreadConfigurationsValid = localThreadConfigurationValid;
-        MPI_Allreduce(
-            &localThreadConfigurationValid,
-            &allThreadConfigurationsValid,
-            1,
-            MPI_INT,
-            MPI_MIN,
-            MPI_COMM_WORLD
+        localThreadConfigurationValid = allRanksSucceeded(
+            localThreadConfigurationValid != 0
         );
-        localThreadConfigurationValid = allThreadConfigurationsValid;
         if (
             localThreadConfigurationValid == 0 &&
             fallbackReason.empty()
@@ -2324,19 +2256,6 @@ bool runConfiguredSearch(molGraph &graph, ofstream &output)
     return succeeded != 0;
 #else
     return improvedBnB(graph, output);
-#endif
-}
-
-/** Keep every rank on the same string-input and error-handling phase. */
-bool stringPhaseSucceeded(bool localSuccess)
-{
-#if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    const int local = localSuccess ? 1 : 0;
-    int all = 0;
-    MPI_Allreduce(&local, &all, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    return all != 0;
-#else
-    return localSuccess;
 #endif
 }
 
@@ -2427,7 +2346,7 @@ bool mergeDistributedStringResult(
     {
         allocated = false;
     }
-    if (!stringPhaseSucceeded(allocated)) return false;
+    if (!allRanksSucceeded(allocated)) return false;
     for (int index = 0; index < stepCount; index++)
     {
         array<int, 4> intervals{};
@@ -2482,7 +2401,7 @@ bool stringAssemblyCalculator(const string &input)
         {
 #if defined(PARALLELASSEMBLYCPP_USE_OPENMP) || defined(PARALLELASSEMBLYCPP_USE_MPI)
             const bool configured = configuredLocalParallelThreadCount(localThreads, reason);
-            if (!stringPhaseSucceeded(configured))
+            if (!allRanksSucceeded(configured))
             {
                 if (reason.empty())
                     reason = "could not configure string workers on another MPI rank";
@@ -2490,7 +2409,7 @@ bool stringAssemblyCalculator(const string &input)
             else
             {
                 reason = parallelCompatibilityFallbackReason(localThreads);
-                useParallel = stringPhaseSucceeded(reason.empty());
+                useParallel = allRanksSucceeded(reason.empty());
                 if (!useParallel && reason.empty())
                     reason = "parallel string execution is unavailable on another MPI rank";
             }
@@ -2539,7 +2458,7 @@ bool stringAssemblyCalculator(const string &input)
             }
         }
     }
-    if (!stringPhaseSucceeded(ready)) return false;
+    if (!allRanksSucceeded(ready)) return false;
 
     bool succeeded = true;
     size_t lineIndex = 0;
@@ -2586,7 +2505,7 @@ bool stringAssemblyCalculator(const string &input)
             bool allocated = true;
             try { value.resize(static_cast<size_t>(length)); }
             catch (const std::exception &) { allocated = false; }
-            if (!stringPhaseSucceeded(allocated))
+            if (!allRanksSucceeded(allocated))
             {
                 if (isPrimaryProcess()) cerr << "error: could not allocate string input\n";
                 succeeded = false;
@@ -2640,7 +2559,7 @@ bool stringAssemblyCalculator(const string &input)
             error = exception.what();
             calculated = false;
         }
-        if (!stringPhaseSucceeded(calculated))
+        if (!allRanksSucceeded(calculated))
         {
             if (isPrimaryProcess())
                 cerr << "error: string calculation failed on line " << lineIndex + 1
@@ -2693,7 +2612,7 @@ bool stringAssemblyCalculator(const string &input)
                     calculated = false;
                 }
             }
-            if (!stringPhaseSucceeded(calculated))
+            if (!allRanksSucceeded(calculated))
             {
                 succeeded = false;
                 break;
@@ -2751,7 +2670,7 @@ bool stringAssemblyCalculator(const string &input)
                 written = false;
             }
         }
-        if (!stringPhaseSucceeded(written))
+        if (!allRanksSucceeded(written))
         {
             succeeded = false;
             break;
@@ -2777,7 +2696,7 @@ bool stringAssemblyCalculator(const string &input)
             succeeded = false;
         }
     }
-    return stringPhaseSucceeded(succeeded);
+    return allRanksSucceeded(succeeded);
 }
 
 /**
@@ -2815,17 +2734,8 @@ bool assemblyCalculator(const string &input)
     ) ? 1 : 0;
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
     verbose = configuredVerbose;
-    int allInputsLoaded = inputLoaded;
-    MPI_Allreduce(
-        &inputLoaded,
-        &allInputsLoaded,
-        1,
-        MPI_INT,
-        MPI_MIN,
-        MPI_COMM_WORLD
-    );
-    inputLoaded = allInputsLoaded;
 #endif
+    inputLoaded = allRanksSucceeded(inputLoaded != 0);
     if (!inputLoaded)
     {
         if (isPrimaryProcess())
@@ -3244,16 +3154,7 @@ int main(int argc, char** argv)
     }
 
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
-    int allArgumentsValid = argumentsValid;
-    MPI_Allreduce(
-        &argumentsValid,
-        &allArgumentsValid,
-        1,
-        MPI_INT,
-        MPI_MIN,
-        MPI_COMM_WORLD
-    );
-    if (allArgumentsValid == 0)
+    if (!allRanksSucceeded(argumentsValid != 0))
     {
         if (isPrimaryProcess())
         {
