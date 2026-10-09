@@ -9,7 +9,6 @@ import math
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -22,6 +21,11 @@ if TYPE_CHECKING:
 
 TEST_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = TEST_DIRECTORY.parent
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from tools.process_utils import run_command as run_process_command  # noqa: E402
+
 DEFAULT_MANIFEST = REPOSITORY_ROOT / "benchmarks" / "cases.tsv"
 SKIP_RETURN_CODE = 77
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
@@ -292,52 +296,13 @@ def format_completed(completed: subprocess.CompletedProcess[str]) -> str:
     )
 
 
-def terminate_command(process: subprocess.Popen[str]) -> None:
-    killed_group = False
-    if os.name == "posix":
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-            killed_group = True
-        except ProcessLookupError:
-            killed_group = True
-        except OSError:
-            pass
-    if not killed_group:
-        process.kill()
-
-
 def run_command(
     arguments: Sequence[str],
     working_directory: Path,
     environment: Mapping[str, str],
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    popen_arguments: dict[str, object] = {
-        "cwd": working_directory,
-        "env": environment,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-    }
-    if os.name == "posix":
-        popen_arguments["start_new_session"] = True
-    process = subprocess.Popen(arguments, **popen_arguments)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        terminate_command(process)
-        stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
-            arguments,
-            error.timeout,
-            output=stdout,
-            stderr=stderr,
-        ) from error
-    except BaseException:
-        terminate_command(process)
-        process.communicate()
-        raise
-    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+    return run_process_command(arguments, working_directory, timeout, environment)
 
 
 def run_solver(
