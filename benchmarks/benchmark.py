@@ -60,7 +60,7 @@ PARALLEL_MODES = ("auto", "on", "off")
 CASE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ASSEMBLY_INDEX_PATTERN = re.compile(r"has assembly index:\s*(-?\d+)")
 CLOCK_TICKS_PATTERN = re.compile(r"^time elapsed:\s*(\d+)\s*$", re.MULTILINE)
-ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENVIRONMENT_KEY_PATTERN = report_reader.ENVIRONMENT_KEY_PATTERN
 MOLFILE_SUFFIXES = (".mol", ".sdf")
 SEARCH_TELEMETRY_PHASES = frozenset(
     (

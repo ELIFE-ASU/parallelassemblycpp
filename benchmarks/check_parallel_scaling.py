@@ -44,6 +44,7 @@ class CorpusIdentity:
 
 ExecutionIdentity = report_reader.ExecutionIdentity
 
+
 @dataclass(frozen=True)
 class CaseScaling:
     name: str
@@ -61,6 +62,19 @@ class ScalingResult:
     cases: tuple[CaseScaling, ...]
     suite_speedup: float
     pathways_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class CaseWallSamples:
+    name: str
+    baseline: tuple[float, ...]
+    candidate: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class ValidatedScalingReport:
+    result: ScalingResult
+    cases: tuple[CaseWallSamples, ...]
 
 
 @dataclass(frozen=True)
@@ -241,23 +255,11 @@ def corpus_identity(document: dict[str, object], path: Path) -> CorpusIdentity:
         ("manifest", "sha256"),
         f"manifest SHA-256 in {path}",
     )
-    inputs = corpus.get("inputs")
-    if not isinstance(inputs, list) or not inputs:
+    fingerprints = report_reader.corpus_input_fingerprints(
+        corpus, path, string_at, ScalingError
+    )
+    if not fingerprints:
         raise ScalingError(f"missing corpus input fingerprints in {path}")
-
-    fingerprints: dict[str, str] = {}
-    for index, entry in enumerate(inputs):
-        if not isinstance(entry, dict):
-            raise ScalingError(f"invalid corpus input fingerprint {index} in {path}")
-        name = string_at(entry, ("name",), f"corpus input {index} name in {path}")
-        sha256 = string_at(
-            entry,
-            ("sha256",),
-            f"corpus input {name!r} SHA-256 in {path}",
-        )
-        if name in fingerprints:
-            raise ScalingError(f"duplicate corpus input fingerprint {name!r} in {path}")
-        fingerprints[name] = sha256
     return CorpusIdentity(manifest_sha256, tuple(sorted(fingerprints.items())))
 
 
@@ -329,7 +331,13 @@ def require_recorded_median(
 
 
 def evaluate_report(spec: TopologySpec) -> ScalingResult:
-    document = load_result(spec.path)
+    return evaluate_document(load_result(spec.path), spec).result
+
+
+def evaluate_document(
+    document: dict[str, object], spec: TopologySpec
+) -> ValidatedScalingReport:
+    """Validate paired evidence once, retaining raw samples for report consumers."""
     pathways_enabled = document.get("pathways_enabled", False)
     if type(pathways_enabled) is not bool:
         raise ScalingError(f"invalid pathways_enabled setting in {spec.path}")
@@ -400,7 +408,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         raise ScalingError(f"missing benchmark cases in {spec.path}")
 
     case_speedups: list[CaseScaling] = []
-    wall_samples: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
+    wall_samples: list[CaseWallSamples] = []
     seen_names: set[str] = set()
     for index, case_result in enumerate(case_results):
         if not isinstance(case_result, dict):
@@ -443,7 +451,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
             f"paired wall median for {name!r} in {spec.path}",
         )
         case_speedups.append(CaseScaling(name, speedup))
-        wall_samples.append((baseline_samples, candidate_samples))
+        wall_samples.append(CaseWallSamples(name, baseline_samples, candidate_samples))
 
     corpus_names = {name for name, _ in corpus.inputs}
     if seen_names != corpus_names:
@@ -454,10 +462,10 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
     round_ratios: list[float] = []
     for round_index in range(runs):
         baseline_total = sum(
-            sample_pair[0][round_index] for sample_pair in wall_samples
+            sample_pair.baseline[round_index] for sample_pair in wall_samples
         )
         candidate_total = sum(
-            sample_pair[1][round_index] for sample_pair in wall_samples
+            sample_pair.candidate[round_index] for sample_pair in wall_samples
         )
         if not math.isfinite(baseline_total) or not math.isfinite(candidate_total):
             raise ScalingError(f"non-finite suite round total in {spec.path}")
@@ -469,7 +477,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         suite_speedup,
         f"suite paired round-total wall median in {spec.path}",
     )
-    return ScalingResult(
+    result = ScalingResult(
         spec,
         suite,
         corpus,
@@ -480,6 +488,7 @@ def evaluate_report(spec: TopologySpec) -> ScalingResult:
         suite_speedup,
         pathways_enabled,
     )
+    return ValidatedScalingReport(result, tuple(wall_samples))
 
 
 def evaluate_specs(specs: Sequence[TopologySpec]) -> list[ScalingResult]:

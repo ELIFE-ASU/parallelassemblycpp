@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 ENVIRONMENT_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -24,7 +25,6 @@ class ExecutionIdentity:
     launcher: tuple[str, ...]
     arguments: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
-
 
 
 def execution_identity(
@@ -75,7 +75,6 @@ def execution_identity(
     )
 
 
-
 def load_result(path: Path, error_type: type[RuntimeError]) -> dict[str, object]:
     try:
         with path.open(encoding="utf-8") as stream:
@@ -88,3 +87,27 @@ def load_result(path: Path, error_type: type[RuntimeError]) -> dict[str, object]
     if type(schema_version) is not int or schema_version != 2:
         raise error_type(f"invalid benchmark report {path}: expected schema_version 2")
     return document
+
+
+def corpus_input_fingerprints(
+    corpus: dict[str, object],
+    path: Path,
+    read_string: Callable[[object, Sequence[str], str], str],
+    error_type: type[RuntimeError],
+) -> dict[str, str]:
+    """Read unique input fingerprints using the caller's string normalization."""
+    inputs = corpus.get("inputs")
+    if not isinstance(inputs, list):
+        raise error_type(f"missing corpus input fingerprints in {path}")
+    fingerprints: dict[str, str] = {}
+    for index, entry in enumerate(inputs):
+        if not isinstance(entry, dict):
+            raise error_type(f"invalid corpus input fingerprint {index} in {path}")
+        name = read_string(entry, ("name",), f"corpus input {index} name in {path}")
+        sha256 = read_string(
+            entry, ("sha256",), f"corpus input {name!r} SHA-256 in {path}"
+        )
+        if name in fingerprints:
+            raise error_type(f"duplicate corpus input fingerprint {name!r} in {path}")
+        fingerprints[name] = sha256
+    return fingerprints

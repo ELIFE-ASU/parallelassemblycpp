@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from dataclasses import dataclass
@@ -83,11 +84,16 @@ def execution_identity(
 
 def load_result(path: Path) -> dict[str, object]:
     try:
-        return report_reader.load_result(path.expanduser(), GateError)
-    except GateError as error:
-        # Keep this gate's historical diagnostic for a non-object document.
-        message = str(error).replace("expected an object", "expected a JSON object")
-        raise GateError(message) from error
+        with path.expanduser().open(encoding="utf-8") as stream:
+            document: object = json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError(f"could not read benchmark report {path}: {error}") from error
+    if not isinstance(document, dict):
+        raise GateError(f"invalid benchmark report {path}: expected a JSON object")
+    schema_version = document.get("schema_version")
+    if type(schema_version) is not int or schema_version != 2:
+        raise GateError(f"invalid benchmark report {path}: expected schema_version 2")
+    return document
 
 
 def validate_corpus_identity(
@@ -110,22 +116,9 @@ def validate_corpus_identity(
     if recorded_manifest_sha256 != expected_manifest.get("sha256"):
         raise GateError(f"stale benchmark manifest fingerprint in {path}")
 
-    recorded_inputs = corpus.get("inputs")
-    if not isinstance(recorded_inputs, list):
-        raise GateError(f"missing corpus input fingerprints in {path}")
-    recorded_by_name: dict[str, str] = {}
-    for index, entry in enumerate(recorded_inputs):
-        if not isinstance(entry, dict):
-            raise GateError(f"invalid corpus input fingerprint {index} in {path}")
-        name = string_at(entry, ("name",), f"corpus input {index} name in {path}")
-        sha256 = string_at(
-            entry,
-            ("sha256",),
-            f"corpus input {name!r} SHA-256 in {path}",
-        )
-        if name in recorded_by_name:
-            raise GateError(f"duplicate corpus input fingerprint {name!r} in {path}")
-        recorded_by_name[name] = sha256
+    recorded_by_name = report_reader.corpus_input_fingerprints(
+        corpus, path, string_at, GateError
+    )
 
     expected_inputs = expected.get("inputs")
     if not isinstance(expected_inputs, list):
