@@ -19,3 +19,7 @@ memUsage
 /unitTests/*MAs
 /unitTests/*Out
 /unitTests/*Pathway
+
+# Local coding-agent instructions, not part of the repository
+CLAUDE.md
+AGENTS.md
