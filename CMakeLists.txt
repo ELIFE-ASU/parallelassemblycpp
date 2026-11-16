@@ -485,11 +485,19 @@ function(parallelassemblycpp_configure_target target)
           )
         endif()
       endif()
+    elseif(MSVC)
+      # MSVC has no -march equivalent. /arch:AVX2 is the closest baseline: it
+      # covers the AVX2, FMA, BMI1/BMI2, LZCNT, F16C, and MOVBE features that
+      # define x86-64-v3, and it enables POPCNT codegen, so -mpopcnt needs no
+      # counterpart. The flag is applied unprobed because MSVC only warns
+      # (D9002) on an unrecognized /arch: value rather than failing, which
+      # check_cxx_compiler_flag cannot distinguish from success.
+      target_compile_options(${target} PRIVATE /arch:AVX2)
     else()
       message(
         FATAL_ERROR
-        "PARALLELASSEMBLYCPP_X86_64_V3 is supported only by GCC-compatible and "
-        "Clang-compatible compilers"
+        "PARALLELASSEMBLYCPP_X86_64_V3 is supported only by GCC-compatible, "
+        "Clang-compatible, and MSVC compilers"
       )
     endif()
   endif()

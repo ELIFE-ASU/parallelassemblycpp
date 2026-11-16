@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../assemblyCpp/assemblycpp-v5-release"
+		}
+	],
+	"settings": {}
+}
