@@ -21,6 +21,8 @@ enum class InputFlag
     verboseFlag,
     compensateDisjoint,
     upperBound,
+    repairIterations,
+    repairSeed,
     memoryReport,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     telemetry,
@@ -137,6 +139,14 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
             "0",
             "Subtract one for each processed component after the first (graph inputs only).",
             {"compensateDisjoint", "disjointCompensation"}
+        },
+        {
+            InputFlag::repairIterations, "repair-iterations", "COUNT", "1",
+            "Graph Re-Pair passes, including the deterministic first pass.", {}
+        },
+        {
+            InputFlag::repairSeed, "repair-seed", "N", "0",
+            "Random seed for additional graph Re-Pair passes.", {}
         },
         {
             InputFlag::upperBound,
@@ -326,6 +336,19 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             disjointCompensation = parseBooleanFlag(definition, value);
             break;
 
+        case InputFlag::repairIterations:
+        {
+            const auto count = parseUnsignedFlag(definition, value);
+            if (count == 0 || count > std::numeric_limits<int>::max())
+                throw std::invalid_argument("--repair-iterations must be a positive int");
+            graphRepairIterations = static_cast<int>(count);
+            break;
+        }
+
+        case InputFlag::repairSeed:
+            graphRepairSeed = parseUnsignedFlag(definition, value);
+            break;
+
         case InputFlag::upperBound:
             if (value != "graph-repair")
                 throw std::invalid_argument(
@@ -442,6 +465,10 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
     }
     if (!parsed.showHelp)
     {
+        if ((seenFlags.contains(static_cast<int>(InputFlag::repairIterations)) ||
+             seenFlags.contains(static_cast<int>(InputFlag::repairSeed))) &&
+            (stringAssemblyMode || !graphRepairUpperBound))
+            throw std::invalid_argument("--repair-iterations and --repair-seed require graph Re-Pair");
         if (graphRepairUpperBound)
         {
             const string boundOption =

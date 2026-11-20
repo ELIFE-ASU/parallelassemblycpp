@@ -170,6 +170,8 @@ bool writeIntermediateAssemblyIndices = false;
 bool stringAssemblyMode = false;
 bool acceptReversedStrings = false;
 bool graphRepairUpperBound = false;
+int graphRepairIterations = 1;
+std::uint64_t graphRepairSeed = 0;
 
 /** User policy for selecting the parallel search implementation. */
 enum class parallelMode

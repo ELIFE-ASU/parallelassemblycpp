@@ -979,6 +979,11 @@ if(BUILD_TESTING)
     parallelassemblycpp_pathway_generator_tests
     unitTests/pathwayGeneratorTester.cpp
   )
+  parallelassemblycpp_add_unit_test(
+    maximum-matching
+    parallelassemblycpp_maximum_matching_tests
+    unitTests/maximumMatchingTester.cpp
+  )
   add_executable(parallelassemblycpp_graph_repair_probe unitTests/graphRepairProbe.cpp)
   parallelassemblycpp_configure_test_target(parallelassemblycpp_graph_repair_probe)
   add_executable(

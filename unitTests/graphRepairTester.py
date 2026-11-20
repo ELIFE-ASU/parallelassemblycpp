@@ -413,8 +413,7 @@ def run(
             )
             expected = exact((tuple(graph[0]), tuple(graph[1])))
             check(graph, "random_labelled_graphs", expected)
-            # Renumbering can change a greedy packing; feasibility and the
-            # exact lower comparator must survive it, not necessarily its score.
+            # Renumbering can break ties differently among maximum packings.
             permutation = list(range(size))
             rng.shuffle(permutation)
             atoms = [""] * size

@@ -42,6 +42,11 @@ bounded-search fallback, and performance experiments.
 
 ## Ports from assemblycfg
 
+Maximum-cardinality occurrence matching and random
+depth-first graph passes follow the assemblycfg algorithms. The graph port
+retains the C++ canonical labelling and writes the bond order of the winning
+pass in its certificate. [Upstream snapshot](https://github.com/ELIFE-ASU/assemblycfg/tree/4332dc2caf0e878e24c52081993608959c51ad71)
+
 For directed strings, the LZ bound counts the fewest phrases that spell the
 target from left to right. Each phrase is one scalar or a copy contained
 entirely in the already constructed prefix. Expanding each binary grammar rule
@@ -52,7 +57,7 @@ Exact search combines this bound with the addition-chain floor. Reversal-aware
 search uses its orientation-aware pruning rules. [Upstream LZ implementation](https://github.com/ELIFE-ASU/assemblycfg/blob/4332dc2caf0e878e24c52081993608959c51ad71/assemblycfg/lz.py)
 
 The scalar chain table through 9,999 and the Olivos vector bound come from the
-assemblycfg revision linked below. The port uses the package's in-process vector search.
+same revision. The port uses the package's in-process vector search.
 [Upstream code and data](https://github.com/ELIFE-ASU/assemblycfg/tree/4332dc2caf0e878e24c52081993608959c51ad71/assemblycfg) · [MIT notice](assemblycfg-license.md)
 
 ## Compared with the original AssemblyCpp v5

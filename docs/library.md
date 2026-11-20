@@ -75,6 +75,10 @@ must still be positive but does not limit this mode. Exact calls retain the
 default `upperBoundOnly == false` (runtime or enumeration limits can still
 prevent an exact proof).
 
+Set `graphRepairIterations` and `graphRepairSeed` on graph Re-Pair options to
+vary the bond order across passes and return the shortest construction found.
+The defaults are one pass and seed zero.
+
 `calculateString` and `calculateStringBatch` accept literal UTF-8 strings without
 creating files. They use `StringCalculationOptions`: `acceptReversed` enables
 reversal equivalence, `runtimeTicks` limits exact search, and `rePairUpperBound`

@@ -5,9 +5,12 @@
 #include <iterator>
 #include <map>
 #include <ostream>
+#include <random>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "maximumMatching.h"
 
 /**
  * GraphRePair-inspired molecular assembly upper bound.
@@ -55,6 +58,8 @@ struct Result
     int remainingFragments = 0;
     int components = 0;
     bool compensateDisjoint = false;
+    // Physical edge indices in the witness refer to this pass's order.
+    std::vector<MoleculeEdge> bondOrder;
     std::vector<Fragment> terminals;
     std::vector<Rule> rules;
     std::vector<Fragment> residual;
@@ -96,18 +101,42 @@ inline std::vector<int> merge(const std::vector<int> &left,
     return result;
 }
 
-inline bool incident(const std::vector<int> &left,
-                     const std::vector<int> &right)
+// Map just this product's active tokens to a compact conflict graph. Retain
+// the original greedy witnesses whenever their cardinality is already maximal
+// by the vertex-count bound. Return witnesses in discovery order in both cases.
+inline std::vector<Pair> disjointOccurrences(const std::vector<Pair> &pairs,
+                                             std::vector<std::size_t> &local)
 {
-    std::size_t i = 0;
-    std::size_t j = 0;
-    while (i < left.size() && j < right.size())
+    const auto unassigned = local.size();
+    for (const auto &pair : pairs) local[pair.first] = local[pair.second] = unassigned;
+    std::size_t count = 0;
+    for (const auto &pair : pairs)
+        for (const auto token : {pair.first, pair.second})
+            if (local[token] == unassigned) local[token] = count++;
+
+    std::vector<std::size_t> mate(count, count);
+    std::vector<Pair> selected;
+    for (const auto &pair : pairs)
     {
-        if (left[i] == right[j]) return true;
-        if (left[i] < right[j]) ++i;
-        else ++j;
+        const auto left = local[pair.first], right = local[pair.second];
+        if (mate[left] != count || mate[right] != count) continue;
+        mate[left] = right;
+        mate[right] = left;
+        selected.push_back(pair);
     }
-    return false;
+    if (selected.size() == count / 2) return selected;
+
+    std::vector<std::vector<std::size_t>> neighbors(count);
+    for (const auto &pair : pairs)
+    {
+        neighbors[local[pair.first]].push_back(local[pair.second]);
+        neighbors[local[pair.second]].push_back(local[pair.first]);
+    }
+    mate = assembly_matching::MaximumMatching(neighbors, std::move(mate)).run();
+    selected.clear();
+    for (const auto &pair : pairs)
+        if (mate[local[pair.first]] == local[pair.second]) selected.push_back(pair);
+    return selected;
 }
 
 /** Local graph construction retains every atom and bond label exactly. */
@@ -143,16 +172,13 @@ inline int componentCount(const molGraph &graph)
         [](const atom &vertex) { return vertex.bonds.empty(); }
     ));
 }
-} // namespace implementation
 
-/** Calculate a constructive bound without enumerating all connected subgraphs. */
-inline Result calculate(const molGraph &graph, bool compensateDisjoint = false)
+inline Result compress(const molGraph &graph, const std::vector<MoleculeEdge> &edges,
+                       bool compensateDisjoint)
 {
-    using namespace implementation;
     Result result;
     result.compensateDisjoint = compensateDisjoint;
     result.components = componentCount(graph);
-    const auto edges = graph.writeEdgeList();
     if (edges.empty()) return result;
     const int adjustment = compensateDisjoint ? result.components : 1;
     result.trivialUpperBound = static_cast<int>(edges.size()) - adjustment;
@@ -182,13 +208,26 @@ inline Result calculate(const molGraph &graph, bool compensateDisjoint = false)
     {
         CanonicalMap groupIds;
         std::vector<Group> groups;
+        std::vector<std::vector<std::size_t>> atVertex(graph.atoms.size());
+        for (std::size_t i = 0; i < active.size(); ++i)
+            for (int vertex : tokens[active[i]].vertices)
+                atVertex[static_cast<std::size_t>(vertex)].push_back(i);
+        std::vector<std::size_t> visited(active.size(), active.size()), neighbors;
         for (std::size_t i = 0; i < active.size(); ++i)
         {
-            for (std::size_t j = i + 1; j < active.size(); ++j)
+            const auto first = active[i];
+            neighbors.clear();
+            for (int vertex : tokens[first].vertices)
+                for (auto j : atVertex[static_cast<std::size_t>(vertex)])
+                    if (j > i && visited[j] != i)
+                    {
+                        visited[j] = i;
+                        neighbors.push_back(j);
+                    }
+            std::sort(neighbors.begin(), neighbors.end());
+            for (auto j : neighbors)
             {
-                const auto first = active[i];
                 const auto second = active[j];
-                if (!incident(tokens[first].vertices, tokens[second].vertices)) continue;
                 const auto pairId = std::minmax(first, second);
                 auto cached = pairKeys.find(pairId);
                 if (cached == pairKeys.end())
@@ -210,23 +249,18 @@ inline Result calculate(const molGraph &graph, bool compensateDisjoint = false)
             }
         }
 
-        // Greedy edge-disjoint occurrence selection. Overlap at vertices is
-        // permitted; overlap at tokens (and hence physical bonds) is not.
+        std::vector<std::size_t> local(tokens.size());
         int bestSaving = 0;
         int bestGroup = -1;
         std::vector<Pair> bestPairs;
         for (std::size_t groupId = 0; groupId < groups.size(); ++groupId)
         {
-            std::vector<bool> used(tokens.size(), false);
-            std::vector<Pair> selected;
-            for (const auto &occurrence : groups[groupId].occurrences)
-            {
-                if (used[occurrence.first] || used[occurrence.second]) continue;
-                used[occurrence.first] = used[occurrence.second] = true;
-                selected.push_back(occurrence);
-            }
-            const int saving = static_cast<int>(selected.size()) -
-                (groups[groupId].symbol == -1 ? 1 : 0);
+            const auto &group = groups[groupId];
+            const int cost = group.symbol == -1 ? 1 : 0;
+            if (group.occurrences.size() <= static_cast<std::size_t>(bestSaving + cost))
+                continue;
+            auto selected = disjointOccurrences(group.occurrences, local);
+            const int saving = static_cast<int>(selected.size()) - cost;
             if (saving > bestSaving)
             {
                 bestSaving = saving;
@@ -274,6 +308,69 @@ inline Result calculate(const molGraph &graph, bool compensateDisjoint = false)
     return result;
 }
 
+// Random depth-first bond order, including ring closures and all components.
+inline std::vector<MoleculeEdge> randomBondOrder(
+    const molGraph &graph, const std::vector<MoleculeEdge> &edges, std::mt19937_64 &rng)
+{
+    std::vector<std::vector<std::size_t>> atVertex(graph.atoms.size());
+    for (std::size_t i = 0; i < edges.size(); ++i)
+    {
+        atVertex[edges[i].sourceAtomIndex].push_back(i);
+        atVertex[edges[i].targetAtomIndex].push_back(i);
+    }
+    std::vector<std::size_t> roots(graph.atoms.size());
+    std::iota(roots.begin(), roots.end(), std::size_t{0});
+    std::shuffle(roots.begin(), roots.end(), rng);
+    for (auto &incident : atVertex) std::shuffle(incident.begin(), incident.end(), rng);
+    std::vector<MoleculeEdge> ordered;
+    ordered.reserve(edges.size());
+    std::vector<bool> used(edges.size());
+    std::vector<std::size_t> stack;
+    for (auto root : roots)
+    {
+        stack.push_back(root);
+        while (!stack.empty())
+        {
+            const auto vertex = stack.back();
+            auto &incident = atVertex[vertex];
+            if (incident.empty()) { stack.pop_back(); continue; }
+            const auto id = incident.back();
+            incident.pop_back();
+            if (used[id]) continue;
+            used[id] = true;
+            const auto &edge = edges[id];
+            ordered.push_back(edge);
+            stack.push_back(static_cast<std::size_t>(edge.sourceAtomIndex) == vertex
+                ? edge.targetAtomIndex : edge.sourceAtomIndex);
+        }
+    }
+    return ordered;
+}
+} // namespace implementation
+
+/** Each additional pass varies bond order. Keep the first shortest witness. */
+inline Result calculate(const molGraph &graph, bool compensateDisjoint = false,
+                        int iterations = 1, std::uint64_t seed = 0)
+{
+    if (iterations < 1) throw std::invalid_argument("Re-Pair iterations must be positive");
+    auto edges = graph.writeEdgeList();
+    auto best = implementation::compress(graph, edges, compensateDisjoint);
+    std::mt19937_64 rng(seed);
+    for (int i = 1; i < iterations && best.upperBound > 0; ++i)
+    {
+        if (interruptionRequested()) break;
+        auto order = implementation::randomBondOrder(graph, edges, rng);
+        auto candidate = implementation::compress(graph, order, compensateDisjoint);
+        if (candidate.upperBound < best.upperBound)
+        {
+            candidate.bondOrder = std::move(order);
+            best = std::move(candidate);
+        }
+    }
+    if (best.bondOrder.empty()) best.bondOrder = std::move(edges);
+    return best;
+}
+
 /** A replayable certificate: edge IDs refer to the listed original graph. */
 inline void writeJson(const Result &result, const molGraph &graph, std::ostream &output)
 {
@@ -312,7 +409,7 @@ inline void writeJson(const Result &result, const molGraph &graph, std::ostream 
             graph.atoms[i].atomType, output);
     }
     output << "],\"edges\":[";
-    const auto edges = graph.writeEdgeList();
+    const auto &edges = result.bondOrder;
     for (std::size_t i = 0; i < edges.size(); ++i)
     {
         if (i != 0) output << ',';

@@ -11,6 +11,8 @@ import pathlib
 import subprocess
 import tempfile
 
+from graphRepairTester import validate_certificate
+
 
 def run_case(
     executable: pathlib.Path,
@@ -106,6 +108,60 @@ def run_case(
     return stable_output, certificate
 
 
+def test_random_passes(executable: pathlib.Path, root: pathlib.Path) -> None:
+    # The middle two bonds of this four-bond chain are visited first. Taking
+    # them greedily blocks both outer pairs and would yield a bound of three.
+    chain = root / "center-first.graph"
+    chain.write_text(
+        "chain\n5\n1 2 1 3 2 4 3 5\nC C C C C\n1 1 1 1\n", encoding="utf-8"
+    )
+    subprocess.run(
+        [str(executable), str(chain), "--algorithm=re-pair"],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    proof = json.loads(pathlib.Path(f"{chain}Pathway").read_text(encoding="ascii"))
+    assert validate_certificate(proof) == 2
+
+    source = root / "branched.graph"
+    bonds = [(7, 8), (8, 3), (8, 9), (3, 10), (9, 1), (8, 2), (7, 6), (2, 5), (6, 4)]
+    source.write_text(
+        "branched\n10\n"
+        + " ".join(str(v) for edge in bonds for v in edge)
+        + "\n"
+        + "C C C C C C C C C C\n1 1 1 1 1 1 1 1 1\n",
+        encoding="utf-8",
+    )
+
+    def certificate(passes: int) -> dict:
+        subprocess.run(
+            [
+                str(executable),
+                str(source),
+                "--algorithm=re-pair",
+                "--repair-seed=17",
+                f"--repair-iterations={passes}",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        result = json.loads(
+            pathlib.Path(f"{source}Pathway").read_text(encoding="ascii")
+        )
+        assert validate_certificate(result) == result["upper_bound"]
+        assert {tuple(sorted((a + 1, b + 1))) for a, b, _ in result["edges"]} == {
+            tuple(sorted(pair)) for pair in bonds
+        }
+        return result
+
+    single = certificate(1)
+    multiple = certificate(12)
+    assert multiple["upper_bound"] <= single["upper_bound"]
+    assert certificate(12) == multiple
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("executable", type=pathlib.Path)
@@ -123,6 +179,24 @@ def main() -> None:
     assert "--algorithm=<full|re-pair>" in help_result.stdout
     with tempfile.TemporaryDirectory(prefix="graph-repair-cli-") as temporary:
         root = pathlib.Path(temporary)
+        test_random_passes(executable, root)
+        run_case(
+            executable, root, "passes-exact", ["--repair-iterations=2"], succeeds=False
+        )
+        run_case(
+            executable,
+            root,
+            "zero-passes",
+            ["--algorithm=re-pair", "--repair-iterations=0"],
+            succeeds=False,
+        )
+        run_case(
+            executable,
+            root,
+            "seed-strings",
+            ["--algorithm=re-pair", "--run-strings=1", "--repair-seed=0"],
+            succeeds=False,
+        )
         bound = ["--upper-bound=graph-repair"]
         algorithm = ["--algorithm=re-pair"]
         legacy_result = run_case(executable, root, "legacy-bound", bound)

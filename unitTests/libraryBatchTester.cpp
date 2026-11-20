@@ -312,6 +312,8 @@ int main(int argc, char **argv)
         "C C C C C C C C C\n1 1 1 1 1 1 1 1\n";
     parallelassemblycpp::CalculationOptions chainBoundOptions;
     chainBoundOptions.graphRepairUpperBound = true;
+    chainBoundOptions.graphRepairIterations = 3;
+    chainBoundOptions.graphRepairSeed = 41;
     std::istringstream fastChainStream(eightBondChain);
     const auto fastChain = parallelassemblycpp::calculateGraph(
         fastChainStream, chainBoundOptions

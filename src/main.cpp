@@ -26,6 +26,7 @@
 #include <new>
 #include <numeric>
 #include <optional>
+#include <random>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -468,7 +469,7 @@ string parallelCompatibilityFallbackReason(int localThreads)
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
 bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
 {
-    constexpr size_t optionCount = 15;
+    constexpr size_t optionCount = 17;
     const array<unsigned long long, optionCount> local = {
         arguments.showHelp ? 1ULL : 0ULL,
         static_cast<unsigned long long>(maximumEnumerationCount),
@@ -484,6 +485,8 @@ bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
         memoryReportEnabled ? 1ULL : 0ULL,
         writeIntermediateAssemblyIndices ? 1ULL : 0ULL,
         graphRepairUpperBound ? 1ULL : 0ULL,
+        static_cast<unsigned long long>(graphRepairIterations),
+        graphRepairSeed,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         searchTelemetryEnabled ? 1ULL : 0ULL
 #else
@@ -2115,7 +2118,7 @@ bool runGraphRepairUpperBound(const molGraph &graph, ofstream &output)
     runtimeLimitReached = false;
     enumerationLimitReached = false;
     const graphRepair::Result result = graphRepair::calculate(
-        graph, disjointCompensation
+        graph, disjointCompensation, graphRepairIterations, graphRepairSeed
     );
     lastCalculatedAssemblyIndex = result.upperBound;
     output << result.upperBound << '\n'
@@ -2854,6 +2857,8 @@ class LibraryOptionScope
     bool previousCompensateDisjoint = disjointCompensation;
     bool previousVerbose = verbose;
     bool previousGraphRepairUpperBound = graphRepairUpperBound;
+    int previousRepairIterations = graphRepairIterations;
+    std::uint64_t previousRepairSeed = graphRepairSeed;
     bool previousMemoryReport = memoryReportEnabled;
     bool previousWriteIntermediateAssemblyIndices =
         writeIntermediateAssemblyIndices;
@@ -2868,6 +2873,8 @@ public:
         disjointCompensation = options.compensateDisjoint;
         verbose = options.verbose;
         graphRepairUpperBound = options.graphRepairUpperBound;
+        graphRepairIterations = options.graphRepairIterations;
+        graphRepairSeed = options.graphRepairSeed;
         memoryReportEnabled = false;
         writeIntermediateAssemblyIndices = false;
     }
@@ -2881,6 +2888,8 @@ public:
         disjointCompensation = previousCompensateDisjoint;
         verbose = previousVerbose;
         graphRepairUpperBound = previousGraphRepairUpperBound;
+        graphRepairIterations = previousRepairIterations;
+        graphRepairSeed = previousRepairSeed;
         memoryReportEnabled = previousMemoryReport;
         writeIntermediateAssemblyIndices =
             previousWriteIntermediateAssemblyIndices;
@@ -2910,7 +2919,7 @@ parallelassemblycpp::CalculationResult calculateLoadedMolecule(
     {
         startTime = clock();
         const graphRepair::Result bound = graphRepair::calculate(
-            graph, disjointCompensation
+            graph, disjointCompensation, graphRepairIterations, graphRepairSeed
         );
         result.assemblyIndex = bound.upperBound;
         result.clockTicks = elapsedClockTicks();
@@ -2940,6 +2949,13 @@ bool validLibraryOptions(
         options.runtimeTicks != std::numeric_limits<std::uint64_t>::max())
     {
         error = "runtimeTicks must be unlimited for graphRepairUpperBound";
+        return false;
+    }
+    if (options.graphRepairIterations < 1 ||
+        (!options.graphRepairUpperBound &&
+         (options.graphRepairIterations != 1 || options.graphRepairSeed != 0)))
+    {
+        error = "graphRepairIterations must be positive and custom passes require graphRepairUpperBound";
         return false;
     }
     if (options.enumerationLimit >= 1) return true;
