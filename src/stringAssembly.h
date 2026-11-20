@@ -35,6 +35,7 @@
 #include "clockTicks.h"
 #include "stringEncoding.h"
 #include "stringRepair.h"
+#include "stringLz.h"
 
 namespace parallelassemblycpp::detail::stringAssembly
 {
@@ -1194,6 +1195,21 @@ class Search
                 assemblyLowerBound_ = bounds.lowerBound(
                     std::move(counts), bestAssemblyIndex_
                 );
+            }
+            if (!options_.acceptReversed && !optimumReached())
+            {
+                const stringRepair::implementation::Cancellation cancellation(
+                    [this] { return shouldStop(); }
+                );
+                try
+                {
+                    assemblyLowerBound_ = std::max(assemblyLowerBound_,
+                        directedLzLowerBound(original_, [&] { cancellation.tick(); }));
+                }
+                catch (const stringRepair::implementation::Cancelled &)
+                {
+                    return;
+                }
             }
         }
         if (shouldStop()) return;

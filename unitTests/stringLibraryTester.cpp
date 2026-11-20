@@ -1,5 +1,6 @@
 #include "parallelassemblycpp.h"
 
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,26 @@ void require(bool condition, const char *message)
 {
     if (!condition) throw std::runtime_error(message);
 }
+
+// Enumerate every legal nonoverlapping prefix copy independently of the
+// production automaton. Prefix lengths here are bytes for this ASCII oracle.
+int referenceLz(const std::string &input)
+{
+    std::vector<int> cost(input.size() + 1);
+    cost[0] = -1;
+    for (std::size_t end = 1; end <= input.size(); ++end)
+    {
+        cost[end] = cost[end - 1] + 1;
+        for (std::size_t start = 1; start < end; ++start)
+        {
+            const auto length = end - start;
+            const auto first = input.find(input.substr(start, length));
+            if (first + length <= start) cost[end] = std::min(cost[end], cost[start] + 1);
+        }
+    }
+    return cost.back();
+}
+
 }
 
 int main()
@@ -64,6 +85,14 @@ int main()
                     !recovered.upperBoundOnly && recovered.assemblyIndex == 3,
                     "limited call contaminated a later exact calculation");
         }
+        for (int bits = 1; bits < 2048; ++bits)
+        {
+            std::string word;
+            for (int value = bits; value > 1; value /= 2) word += (value % 2 ? 'a' : 'b');
+            require(stringLzLowerBound(word) == referenceLz(word), "LZ prefix oracle disagrees");
+        }
+        require(stringLzLowerBound("abracadabra") == 7, "incorrect directed LZ bound");
+        require(stringLzLowerBound("\xc3\xa9\xc3\xa9") == 1, "LZ must count Unicode scalars");
         require(calculateStringBatch({}).empty(), "empty batch failed");
         std::cout << "string library checks passed\n";
     }

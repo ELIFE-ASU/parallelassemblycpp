@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <istream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -148,6 +149,11 @@ PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateString(
     std::string_view input,
     const StringCalculationOptions& options = {}
 );
+
+/** Certified non-overlapping LZ lower bound for a directed UTF-8 string.
+ * Empty input returns -1. Malformed UTF-8 throws std::invalid_argument.
+ */
+PARALLELASSEMBLYCPP_PUBLIC int stringLzLowerBound(std::string_view input);
 
 /** Calculate literal strings in order, continuing after individual failures. */
 PARALLELASSEMBLYCPP_PUBLIC std::vector<CalculationResult> calculateStringBatch(

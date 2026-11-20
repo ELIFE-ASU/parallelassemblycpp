@@ -42,6 +42,15 @@ bounded-search fallback, and performance experiments.
 
 ## Ports from assemblycfg
 
+For directed strings, the LZ bound counts the fewest phrases that spell the
+target from left to right. Each phrase is one scalar or a copy contained
+entirely in the already constructed prefix. Expanding each binary grammar rule
+only on first use leaves at most one more phrase than the number of joins.
+A suffix automaton finds the longest available phrase at each step. Starting
+the next phrase farther along can only enlarge the prefix available for copying.
+Exact search combines this bound with the addition-chain floor. Reversal-aware
+search uses its orientation-aware pruning rules. [Upstream LZ implementation](https://github.com/ELIFE-ASU/assemblycfg/blob/4332dc2caf0e878e24c52081993608959c51ad71/assemblycfg/lz.py)
+
 The scalar chain table through 9,999 and the Olivos vector bound come from the
 assemblycfg revision linked below. The port uses the package's in-process vector search.
 [Upstream code and data](https://github.com/ELIFE-ASU/assemblycfg/tree/4332dc2caf0e878e24c52081993608959c51ad71/assemblycfg) · [MIT notice](assemblycfg-license.md)

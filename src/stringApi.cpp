@@ -10,6 +10,11 @@
 namespace parallelassemblycpp
 {
 
+int stringLzLowerBound(std::string_view input)
+{
+    return detail::directedLzLowerBound(detail::stringEncoding::decodeInput(input), [] {});
+}
+
 CalculationResult calculateString(
     std::string_view input,
     const StringCalculationOptions &options

@@ -90,3 +90,11 @@ options.rePairUpperBound = true;
 const auto bound = parallelassemblycpp::calculateString("abababab", options);
 // bound.assemblyIndex == 3; bound.upperBoundOnly == true
 ```
+
+`stringLzLowerBound` computes a lower bound on directed string assembly in
+expected linear time. It returns `-1` for an empty string and throws
+`std::invalid_argument` for malformed UTF-8.
+
+```cpp
+int floor = parallelassemblycpp::stringLzLowerBound("abracadabra"); // 7
+```
