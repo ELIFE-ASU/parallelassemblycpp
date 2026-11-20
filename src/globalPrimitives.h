@@ -172,6 +172,7 @@ bool acceptReversedStrings = false;
 bool graphRepairUpperBound = false;
 int graphRepairIterations = 1;
 std::uint64_t graphRepairSeed = 0;
+bool jointStrings = false;
 
 /** User policy for selecting the parallel search implementation. */
 enum class parallelMode

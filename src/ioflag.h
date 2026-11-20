@@ -23,6 +23,7 @@ enum class InputFlag
     upperBound,
     repairIterations,
     repairSeed,
+    jointStringsFlag,
     memoryReport,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
     telemetry,
@@ -147,6 +148,10 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
         {
             InputFlag::repairSeed, "repair-seed", "N", "0",
             "Random seed for additional graph Re-Pair passes.", {}
+        },
+        {
+            InputFlag::jointStringsFlag, "joint-strings", "0|1", "0",
+            "Build one shared Re-Pair grammar for all input lines.", {}
         },
         {
             InputFlag::upperBound,
@@ -349,6 +354,10 @@ void applyInputFlag(const InputFlagDefinition& definition, const string& value)
             graphRepairSeed = parseUnsignedFlag(definition, value);
             break;
 
+        case InputFlag::jointStringsFlag:
+            jointStrings = parseBooleanFlag(definition, value);
+            break;
+
         case InputFlag::upperBound:
             if (value != "graph-repair")
                 throw std::invalid_argument(
@@ -465,6 +474,8 @@ CommandLineArguments parseCommandLine(int argc, char** argv)
     }
     if (!parsed.showHelp)
     {
+        if (jointStrings && (!stringAssemblyMode || !graphRepairUpperBound))
+            throw std::invalid_argument("--joint-strings=1 requires --run-strings=1 and --algorithm=re-pair");
         if ((seenFlags.contains(static_cast<int>(InputFlag::repairIterations)) ||
              seenFlags.contains(static_cast<int>(InputFlag::repairSeed))) &&
             (stringAssemblyMode || !graphRepairUpperBound))

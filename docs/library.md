@@ -95,10 +95,14 @@ const auto bound = parallelassemblycpp::calculateString("abababab", options);
 // bound.assemblyIndex == 3; bound.upperBoundOnly == true
 ```
 
+`calculateJointStringRepair` returns one constructive upper bound for the
+whole collection. Its optional second argument enables reversal equivalence.
 `stringLzLowerBound` computes a lower bound on directed string assembly in
 expected linear time. It returns `-1` for an empty string and throws
 `std::invalid_argument` for malformed UTF-8.
 
 ```cpp
+auto joint = parallelassemblycpp::calculateJointStringRepair({"aaaa", "bbbbcaa"});
+// joint.assemblyIndex == 6, joint.upperBoundOnly == true
 int floor = parallelassemblycpp::stringLzLowerBound("abracadabra"); // 7
 ```

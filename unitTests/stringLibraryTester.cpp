@@ -93,6 +93,15 @@ int main()
         }
         require(stringLzLowerBound("abracadabra") == 7, "incorrect directed LZ bound");
         require(stringLzLowerBound("\xc3\xa9\xc3\xa9") == 1, "LZ must count Unicode scalars");
+        const auto joint = calculateJointStringRepair({"aaaa", "bbbbcaa"});
+        require(joint.succeeded && joint.upperBoundOnly && joint.assemblyIndex == 6,
+                "incorrect shared Re-Pair bound");
+        const auto reversedJoint = calculateJointStringRepair({"abc", "", "cba"}, true);
+        require(reversedJoint.succeeded && reversedJoint.assemblyIndex == 2,
+                "reversed targets did not share their construction");
+        require(calculateJointStringRepair({}).assemblyIndex == 0, "empty joint cost");
+        require(!calculateJointStringRepair({"ab", std::string("\xff", 1)}).succeeded,
+                "joint calculation accepted invalid UTF-8");
         require(calculateStringBatch({}).empty(), "empty batch failed");
         std::cout << "string library checks passed\n";
     }

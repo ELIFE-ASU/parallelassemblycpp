@@ -64,6 +64,7 @@ ParallelAssemblyCpp --help
 | Molecular Re-Pair upper bound | `ParallelAssemblyCpp molecule.mol --algorithm=re-pair` |
 | Exact string assembly, one UTF-8 string per line | `ParallelAssemblyCpp strings.txt --run-strings=1` |
 | String Re-Pair upper bound | `ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair` |
+| Joint Re-Pair bound for all lines | `ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair --joint-strings=1` |
 | Exact string assembly with reversal equivalence | `ParallelAssemblyCpp strings.txt --run-strings=1 --accept-palindromes=1` |
 
 Use the executable's build path until it is installed on `PATH`. Options use
@@ -78,7 +79,7 @@ use Unicode code points without normalization.
 Results go beside the input: `INPUTOut` contains the index and timing, and
 `INPUTPathway` contains graph pathway JSON. MOL/SDF suffixes are removed from
 the output stem. String pathways are named `INPUT_0_Pathway`, `INPUT_1_Pathway`,
-and so on. Re-running the same input overwrites these outputs. A successful
+and so on. Joint string mode writes a single `INPUTPathway`. Re-running the same input overwrites these outputs. A successful
 exit alone does not prove minimality: check the result's status for limits,
 interruption, or heuristic mode. See the [output and exit-code reference](docs/cli.md#outputs).
 
@@ -130,9 +131,9 @@ target_link_libraries(my_program PRIVATE ParallelAssemblyCpp::Library)
 ```
 
 Include `<parallelassemblycpp.h>` to call `calculate`, `calculateMolfile`,
-`calculateGraph`, `calculateBatch`, `calculateString`, or
-`calculateStringBatch`. These return indices and status fields without creating
-output files; the library does not return pathway JSON. Calls are serial and
+`calculateGraph`, `calculateBatch`, `calculateString`, `calculateStringBatch`,
+or `calculateJointStringRepair`. These return indices and status fields without
+creating output files; the library does not return pathway JSON. Calls are serial and
 use process-global state, so use separate processes for concurrent work.
 See the [library guide](docs/library.md) for a complete consumer example,
 options, and result semantics.

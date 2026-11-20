@@ -469,7 +469,7 @@ string parallelCompatibilityFallbackReason(int localThreads)
 #if defined(PARALLELASSEMBLYCPP_USE_MPI)
 bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
 {
-    constexpr size_t optionCount = 17;
+    constexpr size_t optionCount = 18;
     const array<unsigned long long, optionCount> local = {
         arguments.showHelp ? 1ULL : 0ULL,
         static_cast<unsigned long long>(maximumEnumerationCount),
@@ -487,6 +487,7 @@ bool mpiCommandLineOptionsAgree(const CommandLineArguments &arguments)
         graphRepairUpperBound ? 1ULL : 0ULL,
         static_cast<unsigned long long>(graphRepairIterations),
         graphRepairSeed,
+        jointStrings ? 1ULL : 0ULL,
 #ifdef ASSEMBLY_ENABLE_TELEMETRY
         searchTelemetryEnabled ? 1ULL : 0ULL
 #else
@@ -2375,6 +2376,54 @@ bool mergeDistributedStringResult(
 }
 #endif
 
+// Strip CR only when getline consumed an LF. A final bare CR is a scalar.
+bool readStringLine(ifstream &input, string &line)
+{
+    if (!getline(input, line))
+    {
+        if (input.bad()) throw std::runtime_error("could not read input file");
+        return false;
+    }
+    if (!input.eof() && !line.empty() && line.back() == '\r') line.pop_back();
+    if (line.size() >= static_cast<size_t>(numeric_limits<int>::max()))
+        throw std::invalid_argument("string is too long to index");
+    return true;
+}
+
+void writeJointStringBound(const string &input, ifstream &source, ofstream &output)
+{
+    namespace repair = parallelassemblycpp::detail::stringRepair;
+    vector<string> lines;
+    string line;
+    while (readStringLine(source, line))
+    {
+        if (verbose) cout << line << '\n';
+        lines.push_back(std::move(line));
+    }
+    startTime = clock();
+    const auto joint = repair::calculateJoint(lines, acceptReversedStrings);
+    const auto ticks = elapsedClockTicks();
+    output << "joint assembly upper bound: " << joint.grammar.upperBound << '\n'
+           << "status: heuristic upper bound (minimum not proven)\n"
+           << "trivial upper bound: " << joint.grammar.trivialUpperBound << '\n'
+           << "string-repair rules: " << joint.grammar.ruleCount << '\n'
+           << "remaining fragments: " << joint.grammar.remainingFragments << '\n'
+           << "time elapsed: " << ticks << '\n';
+    if (pathwayOutputEnabled)
+    {
+        const auto name = input + "Pathway";
+        error_code error;
+        if (filesystem::equivalent(input, name, error) ||
+            filesystem::equivalent(input + "Out", name, error))
+            throw std::runtime_error("joint pathway file overlaps input or output file");
+        ofstream pathway(name);
+        if (!pathway.is_open()) throw std::runtime_error("could not open pathway file '" + name + "'");
+        repair::writeJointJson(joint, lines, pathway);
+        pathway.close();
+        if (!pathway) throw std::runtime_error("could not write pathway file '" + name + "'");
+    }
+}
+
 /** Calculate lines in input order with exact search or a serial Re-Pair bound. */
 bool stringAssemblyCalculator(const string &input)
 {
@@ -2464,6 +2513,24 @@ bool stringAssemblyCalculator(const string &input)
     if (!allRanksSucceeded(ready)) return false;
 
     bool succeeded = true;
+    if (jointStrings)
+    {
+        if (isPrimaryProcess())
+        {
+            try
+            {
+                writeJointStringBound(input, inputFile, outputFile);
+                outputFile.close();
+                if (!outputFile) throw std::runtime_error("could not write output file '" + outputName + "'");
+            }
+            catch (const std::exception &exception)
+            {
+                cerr << "error: " << exception.what() << '\n';
+                succeeded = false;
+            }
+        }
+        return allRanksSucceeded(succeeded);
+    }
     size_t lineIndex = 0;
     for (;;)
     {
@@ -2473,17 +2540,7 @@ bool stringAssemblyCalculator(const string &input)
         {
             try
             {
-                if (getline(inputFile, value))
-                {
-                    // Only an LF-delimited record can end in a CRLF separator.
-                    if (!inputFile.eof() && !value.empty() && value.back() == '\r')
-                        value.pop_back();
-                    if (value.size() >= static_cast<size_t>(numeric_limits<int>::max()))
-                        throw std::invalid_argument("string is too long to index");
-                    lineStatus = 1;
-                }
-                else if (inputFile.bad())
-                    throw std::runtime_error("could not read input file");
+                lineStatus = readStringLine(inputFile, value) ? 1 : 0;
             }
             catch (const std::exception &exception)
             {

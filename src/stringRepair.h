@@ -10,6 +10,7 @@
 #include <map>
 #include <ostream>
 #include <queue>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -504,7 +505,8 @@ class Compressor
 
 public:
     Compressor(const std::u32string &input, bool acceptReversed,
-               std::function<bool()> cancellationRequested = {}):
+               std::function<bool()> cancellationRequested = {},
+               std::span<const int> targetEnds = {}):
         cancellation_(std::move(cancellationRequested)),
         substrings_(input, acceptReversed, cancellation_),
         active_(input.size(), cancellation_)
@@ -522,6 +524,16 @@ public:
             const int position = static_cast<int>(i);
             tokens_.push_back({{entry->second, false, position, 1}, position - 1,
                 i + 1 < input.size() ? position + 1 : -1, -1});
+        }
+        // All targets share substring ranks and productions, but each has
+        // its own token list. No candidate pair may cross a target boundary.
+        for (int end : targetEnds)
+        {
+            if (end > 0 && static_cast<std::size_t>(end) < tokens_.size())
+            {
+                tokens_[static_cast<std::size_t>(end - 1)].next = -1;
+                tokens_[static_cast<std::size_t>(end)].previous = -1;
+            }
         }
         for (std::size_t i = 0; i + 1 < input.size(); ++i)
         {
@@ -549,11 +561,12 @@ public:
                 replacePair(position, symbol);
             }
         }
-        for (int position = tokens_.empty() ? -1 : 0; position >= 0;
-             position = tokens_[static_cast<std::size_t>(position)].next)
+        for (std::size_t position = 0; position < tokens_.size(); )
         {
             cancellation_.tick();
-            result_.residual.push_back(tokens_[static_cast<std::size_t>(position)].fragment);
+            const auto &fragment = tokens_[position].fragment;
+            result_.residual.push_back(fragment);
+            position += static_cast<std::size_t>(fragment.length);
         }
         cancellation_.poll();
         result_.ruleCount = static_cast<int>(result_.rules.size());
@@ -574,21 +587,43 @@ inline Result calculate(std::string_view input, bool acceptReversed = false)
     return implementation::Compressor(decoded, acceptReversed).run();
 }
 
-/**
- * Write an ASCII JSON certificate for a result belonging to input. Expanding
- * terminals and topologically ordered rules, orienting residual references,
- * and concatenating them reconstructs input without consulting this algorithm.
- */
-inline void writeJson(const Result &result, std::string_view input, std::ostream &output)
+struct JointResult
 {
-    const auto decoded = stringEncoding::decodeInput(input);
-    output << "{\"schema\":\"string-repair-assembly-v1\",\"upper_bound\":" << result.upperBound
-           << ",\"trivial_upper_bound\":" << result.trivialUpperBound
-           << ",\"rule_count\":" << result.ruleCount
-           << ",\"remaining_fragments\":" << result.remainingFragments
-           << ",\"accept_reversed\":" << (result.acceptReversed ? "true" : "false")
-           << ",\"length\":" << decoded.size() << ",\"input\":";
-    stringEncoding::writeJsonString(input, output);
+    Result grammar;
+    std::vector<int> targetEnds;
+};
+
+inline JointResult calculateJoint(const std::vector<std::string> &inputs, bool acceptReversed)
+{
+    JointResult result;
+    std::u32string scalars;
+    int nonempty = 0;
+    for (const auto &input : inputs)
+    {
+        std::u32string decoded;
+        try { decoded = stringEncoding::decodeInput(input); }
+        catch (const std::invalid_argument &exception)
+        {
+            throw std::invalid_argument("target " + std::to_string(result.targetEnds.size() + 1)
+                + ": " + exception.what());
+        }
+        if (decoded.size() >= static_cast<std::size_t>(std::numeric_limits<int>::max()) - scalars.size())
+            throw std::invalid_argument("joint string input is too long to index");
+        scalars += decoded;
+        result.targetEnds.push_back(static_cast<int>(scalars.size()));
+        if (!decoded.empty()) ++nonempty;
+    }
+    result.grammar = implementation::Compressor(
+        scalars, acceptReversed, {}, result.targetEnds
+    ).run();
+    // Each nonempty target with r residual fragments needs r-1 final joins.
+    result.grammar.upperBound = result.grammar.ruleCount + result.grammar.remainingFragments - nonempty;
+    result.grammar.trivialUpperBound = static_cast<int>(scalars.size()) - nonempty;
+    return result;
+}
+
+inline void writeDictionary(const Result &result, std::ostream &output)
+{
     output << ",\"terminals\":[";
     for (std::size_t i = 0; i < result.terminals.size(); ++i)
     {
@@ -608,14 +643,69 @@ inline void writeJson(const Result &result, std::string_view input, std::ostream
                << ",\"right_reversed\":" << (rule.rightReversed ? "true" : "false")
                << ",\"length\":" << rule.length << '}';
     }
-    output << "],\"residual\":[";
+    output << ']';
+}
+
+inline void writeFragment(const Fragment &fragment, int start, std::ostream &output)
+{
+    output << "{\"symbol\":" << fragment.symbol
+           << ",\"reversed\":" << (fragment.reversed ? "true" : "false")
+           << ",\"offset\":" << (fragment.offset - start) << ",\"length\":" << fragment.length << '}';
+}
+
+/**
+ * Write an ASCII JSON certificate for a result belonging to input. Expanding
+ * terminals and topologically ordered rules, orienting residual references,
+ * and concatenating them reconstructs input without consulting this algorithm.
+ */
+inline void writeJson(const Result &result, std::string_view input, std::ostream &output)
+{
+    const auto decoded = stringEncoding::decodeInput(input);
+    output << "{\"schema\":\"string-repair-assembly-v1\",\"upper_bound\":" << result.upperBound
+           << ",\"trivial_upper_bound\":" << result.trivialUpperBound
+           << ",\"rule_count\":" << result.ruleCount
+           << ",\"remaining_fragments\":" << result.remainingFragments
+           << ",\"accept_reversed\":" << (result.acceptReversed ? "true" : "false")
+           << ",\"length\":" << decoded.size() << ",\"input\":";
+    stringEncoding::writeJsonString(input, output);
+    writeDictionary(result, output);
+    output << ",\"residual\":[";
     for (std::size_t i = 0; i < result.residual.size(); ++i)
     {
         if (i != 0) output << ',';
-        const auto &fragment = result.residual[i];
-        output << "{\"symbol\":" << fragment.symbol
-               << ",\"reversed\":" << (fragment.reversed ? "true" : "false")
-               << ",\"offset\":" << fragment.offset << ",\"length\":" << fragment.length << '}';
+        writeFragment(result.residual[i], 0, output);
+    }
+    output << "]}";
+}
+
+inline void writeJointJson(const JointResult &result, const std::vector<std::string> &inputs,
+                           std::ostream &output)
+{
+    const auto &grammar = result.grammar;
+    output << "{\"schema\":\"joint-string-repair-assembly-v1\",\"upper_bound\":" << grammar.upperBound
+           << ",\"trivial_upper_bound\":" << grammar.trivialUpperBound
+           << ",\"rule_count\":" << grammar.ruleCount
+           << ",\"remaining_fragments\":" << grammar.remainingFragments
+           << ",\"accept_reversed\":" << (grammar.acceptReversed ? "true" : "false");
+    writeDictionary(grammar, output);
+    output << ",\"targets\":[";
+    std::size_t index = 0;
+    int start = 0;
+    for (std::size_t i = 0; i < inputs.size(); ++i)
+    {
+        if (i != 0) output << ',';
+        const int end = result.targetEnds[i];
+        output << "{\"input\":";
+        stringEncoding::writeJsonString(inputs[i], output);
+        output << ",\"length\":" << end - start << ",\"residual\":[";
+        while (index < grammar.residual.size() && grammar.residual[index].offset < end)
+        {
+            const auto &fragment = grammar.residual[index++];
+            if (fragment.offset != start) output << ',';
+            writeFragment(fragment, start, output);
+        }
+        output << "]}";
+        start = end;
     }
     output << "]}";
 }

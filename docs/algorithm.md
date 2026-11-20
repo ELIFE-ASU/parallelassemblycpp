@@ -42,7 +42,7 @@ bounded-search fallback, and performance experiments.
 
 ## Ports from assemblycfg
 
-Maximum-cardinality occurrence matching and random
+Joint string Re-Pair, maximum-cardinality occurrence matching and random
 depth-first graph passes follow the assemblycfg algorithms. The graph port
 retains the C++ canonical labelling and writes the bond order of the winning
 pass in its certificate. [Upstream snapshot](https://github.com/ELIFE-ASU/assemblycfg/tree/4332dc2caf0e878e24c52081993608959c51ad71)

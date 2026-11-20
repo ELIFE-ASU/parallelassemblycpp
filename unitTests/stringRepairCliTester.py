@@ -34,9 +34,19 @@ def replay(document: dict[str, Any], original: str, reversed_mode: bool) -> int:
         == len(document["rules"]) + len(document["residual"]) - 1
     )
     assert document["upper_bound"] <= len(original) - 1
+    expansions = expand_dictionary(document, original, reversed_mode)
+    replay_fragments(document["residual"], original, expansions, reversed_mode)
+    return int(document["upper_bound"])
+
+
+def expand_dictionary(
+    document: dict[str, Any], alphabet_source: str, reversed_mode: bool
+) -> dict[int, str]:
     expansions: dict[int, str] = {}
     terminals = document["terminals"]
-    assert [chr(t["code_point"]) for t in terminals] == list(dict.fromkeys(original))
+    assert [chr(t["code_point"]) for t in terminals] == list(
+        dict.fromkeys(alphabet_source)
+    )
     for terminal in terminals:
         assert terminal["id"] not in expansions
         expansions[terminal["id"]] = chr(terminal["code_point"])
@@ -54,8 +64,17 @@ def replay(document: dict[str, Any], original: str, reversed_mode: bool) -> int:
         assert rule["length"] == len(expansion) > 1
         assert not reversed_mode or expansion <= expansion[::-1]
         expansions[rule["id"]] = expansion
+    return expansions
+
+
+def replay_fragments(
+    residual: list[dict[str, Any]],
+    original: str,
+    expansions: dict[int, str],
+    reversed_mode: bool,
+) -> None:
     recovered = ""
-    for fragment in document["residual"]:
+    for fragment in residual:
         assert fragment["symbol"] in expansions
         assert reversed_mode or not fragment["reversed"]
         expansion = expansions[fragment["symbol"]]
@@ -66,7 +85,6 @@ def replay(document: dict[str, Any], original: str, reversed_mode: bool) -> int:
         assert original[len(recovered) : len(recovered) + len(expansion)] == expansion
         recovered += expansion
     assert recovered == original
-    return int(document["upper_bound"])
 
 
 def test_checker_rejects_mutations(document: dict[str, Any]) -> None:
@@ -257,6 +275,65 @@ def test_pathway_disabled_preserves_file(
     assert "has assembly upper bound: 2" in (directory / "input.txtOut").read_text()
 
 
+def test_joint_strings(executable: pathlib.Path, root: pathlib.Path) -> None:
+    for case, (targets, reversed_mode, expected) in enumerate(
+        [
+            (["aaaa", "bbbbcaa"], False, 6),
+            (["ab", "cd", "ab", "cd"], False, 2),
+            (["é🙂", "", "🙂é", "é🙂"], True, 1),
+            (["ab", "ba"], False, 2),
+            (["a", "b", "a", "b"], False, 0),
+            (["", ""], False, 0),
+            ([], False, 0),
+        ]
+    ):
+        directory = root / f"joint-{case}"
+        directory.mkdir()
+        data = "".join(line + "\r\n" for line in targets)
+        (directory / "input.txt").write_bytes(data.encode("utf-8"))
+        flags = [
+            *FLAGS,
+            "--joint-strings=1",
+            f"--accept-palindromes={int(reversed_mode)}",
+        ]
+        completed = invoke(executable, directory, flags)
+        assert completed.returncode == 0, completed.stderr
+        output = (directory / "input.txtOut").read_text(encoding="utf-8")
+        assert (
+            f"joint assembly upper bound: {expected}\n" in output and STATUS in output
+        )
+        certificate = json.loads(
+            (directory / "input.txtPathway").read_text(encoding="ascii")
+        )
+        assert certificate["schema"] == "joint-string-repair-assembly-v1"
+        assert [target["input"] for target in certificate["targets"]] == targets
+        expansions = expand_dictionary(certificate, "".join(targets), reversed_mode)
+        joins = len(certificate["rules"])
+        for target in certificate["targets"]:
+            assert target["length"] == len(target["input"])
+            replay_fragments(
+                target["residual"], target["input"], expansions, reversed_mode
+            )
+            joins += max(0, len(target["residual"]) - 1)
+        assert certificate["upper_bound"] == joins == expected
+        assert not list(directory.glob("*_Pathway"))
+
+    invalid_options(
+        executable,
+        root,
+        "joint-exact",
+        ["--run-strings=1", "--joint-strings=1"],
+        "--joint-strings",
+    )
+    invalid_options(
+        executable,
+        root,
+        "joint-graph",
+        ["--algorithm=re-pair", "--joint-strings=1"],
+        "--joint-strings",
+    )
+
+
 def test_exact_selection(executable: pathlib.Path, root: pathlib.Path) -> None:
     results = []
     for name, options in (("default", []), ("full", ["--algorithm=full"])):
@@ -319,6 +396,7 @@ def main() -> None:
         root = pathlib.Path(temporary)
         test_pathway_disabled_preserves_file(executable, root)
         test_exact_selection(executable, root)
+        test_joint_strings(executable, root)
         records = [
             "",
             "a",

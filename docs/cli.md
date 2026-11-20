@@ -81,6 +81,7 @@ labels cannot contain whitespace, and explicit `H` vertices are removed unless
 | `--algorithm=<full\|re-pair>` | `full` | Select full exact search or a Re-Pair upper bound for graphs or strings. |
 | `--repair-iterations=<COUNT>` | `1` | Total graph Re-Pair passes. The first uses input order, and subsequent passes use random depth-first bond orders. |
 | `--repair-seed=<N>` | `0` | Unsigned 64-bit seed for additional graph Re-Pair passes. |
+| `--joint-strings=<0\|1>` | `0` | Build one shared grammar for all lines with `--run-strings=1 --algorithm=re-pair`. |
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
 | `--enum-max=<COUNT>` | `50000000` | Limit retained connected masks in the initial graph DAG. |
 | `--pathway=<0\|1>` | `1` | Write the recovered pathway. |
@@ -142,7 +143,7 @@ For a MOL/SDF file, `INPUT` below excludes its recognised suffix.
 | File | Contents |
 | --- | --- |
 | `INPUTOut` | Index or bound, `std::clock` ticks, and status lines for limited, interrupted, or heuristic calculations. |
-| `INPUTPathway` | Graph pathway JSON when `--pathway=1`. |
+| `INPUTPathway` | Graph or joint string pathway JSON when `--pathway=1`. |
 | `INPUT_N_Pathway` | String pathway JSON for zero-based line `N` when `--pathway=1`. |
 | `INPUTIntermediateMAs` | Elapsed ticks followed by the improved index, when `--write-intermediate-mas=1`. |
 | `INPUTTelemetry.json` | Graph search counters when `--telemetry=1` in a telemetry-enabled executable. |
@@ -223,7 +224,7 @@ no joins, and an input with no bonds has bound zero.
 ## String assembly
 
 Pass `--run-strings=1` to select the string algorithm. In this mode `INPUT` is
-opened exactly as supplied and every line is processed as a separate string:
+opened exactly as supplied. The default processes each line independently.
 
 ```bash
 ./build/release/ParallelAssemblyCpp strings.txt --run-strings=1
@@ -309,6 +310,29 @@ The implementation uses collision-free substring ranks and updates adjacent
 occurrences locally, with deterministic frequency selection. Time and space
 are O(n log n) for n Unicode scalars, including substring-rank preprocessing;
 expanded fragments are not repeatedly copied or compared.
+
+### Joint string Re-Pair upper bound
+
+To construct several targets with one set of reusable rules, put one UTF-8
+target on each line and run
+
+```bash
+ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair --joint-strings=1
+```
+
+For targets `aaaa` and `bbbbcaa`, the joint bound is 6. Both use the same
+production for `aa`. Matches stop at line boundaries. Empty targets require
+zero joins, and an empty file gives a joint bound of zero. Reversal equivalence
+is available with `--accept-palindromes=1`.
+
+`INPUTOut` contains one upper bound. With pathway output enabled,
+`INPUTPathway` contains a `joint-string-repair-assembly-v1` certificate.
+Expand the shared terminals and rules once, then concatenate each target's
+oriented residual fragments in order. Offsets are local to each target.
+The cost is the number of shared rules plus `max(0, residual_count - 1)` for
+each target.
+
+### String search provenance
 
 The implementation is adapted from the standard-library string search in
 [AssemblyCPP Public](https://gitlab.com/croningroup/public/assemblycpp-public)

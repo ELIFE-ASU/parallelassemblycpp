@@ -93,7 +93,7 @@ Notes:
 
 Outputs:
   INPUTOut              Index or upper bound, status when needed, and clock ticks.
-  INPUTPathway          Graph pathway JSON (--pathway=1).
+  INPUTPathway          Graph or joint string pathway JSON (--pathway=1).
   INPUT_N_Pathway       String pathway JSON for zero-based line N (--pathway=1).
   INPUTIntermediateMAs  Elapsed ticks then improved index, one pair per line.
 )" ASSEMBLY_TELEMETRY_OUTPUT_HELP R"(  ./memUsage            Linux VmPeak report (--memory-report=1).
@@ -131,6 +131,7 @@ Examples:
   ParallelAssemblyCpp molecule --pathway=0 --enum-max=1000000
   ParallelAssemblyCpp strings.txt --run-strings=1
   ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair
+  ParallelAssemblyCpp strings.txt --run-strings=1 --algorithm=re-pair --joint-strings=1
   ParallelAssemblyCpp --pathway=0 -- -dashed-name.mol
 )";
 }

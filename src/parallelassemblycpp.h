@@ -154,6 +154,13 @@ PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateString(
     const StringCalculationOptions& options = {}
 );
 
+/** Joint constructive Re-Pair upper bound using one grammar for all UTF-8
+ * targets. Empty targets require zero joins. Invalid input fails the call.
+ */
+PARALLELASSEMBLYCPP_PUBLIC CalculationResult calculateJointStringRepair(
+    const std::vector<std::string>& inputs, bool acceptReversed = false
+);
+
 /** Certified non-overlapping LZ lower bound for a directed UTF-8 string.
  * Empty input returns -1. Malformed UTF-8 throws std::invalid_argument.
  */

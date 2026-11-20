@@ -10,6 +10,26 @@
 namespace parallelassemblycpp
 {
 
+CalculationResult calculateJointStringRepair(const std::vector<std::string> &inputs, bool acceptReversed)
+{
+    CalculationResult result;
+    result.input = "<joint strings>";
+    try
+    {
+        const auto started = std::clock();
+        const auto joint = detail::stringRepair::calculateJoint(inputs, acceptReversed);
+        result.assemblyIndex = joint.grammar.upperBound;
+        result.clockTicks = assembly_clock::difference(started, std::clock());
+        result.upperBoundOnly = true;
+        result.succeeded = true;
+    }
+    catch (const std::exception &exception)
+    {
+        result.error = exception.what();
+    }
+    return result;
+}
+
 int stringLzLowerBound(std::string_view input)
 {
     return detail::directedLzLowerBound(detail::stringEncoding::decodeInput(input), [] {});
