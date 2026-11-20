@@ -40,6 +40,12 @@ certify an incumbent or strengthen selected fragment bounds. See the
 [bound derivation and verification](addition-chain-bounds.md) for the proof,
 bounded-search fallback, and performance experiments.
 
+## Ports from assemblycfg
+
+The scalar chain table through 9,999 and the Olivos vector bound come from the
+assemblycfg revision linked below. The port uses the package's in-process vector search.
+[Upstream code and data](https://github.com/ELIFE-ASU/assemblycfg/tree/4332dc2caf0e878e24c52081993608959c51ad71/assemblycfg) · [MIT notice](assemblycfg-license.md)
+
 ## Compared with the original AssemblyCpp v5
 
 This repository and the

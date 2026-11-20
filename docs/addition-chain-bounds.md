@@ -29,11 +29,16 @@ imply equal structures, and a vector chain does not provide a structural
 pathway. Permuting vector coordinates does preserve the relaxed problem, so a
 cache may sort the nonzero counts in its keys.
 
-There is also a cheap support bound. With `d` distinct primitive types, at
-least `d - 1` additions are necessary. Equality leaves exactly a tree with one
-leaf of each type, so its vector is all ones. If any count exceeds one, at
-least `d` additions are necessary. The implementation takes the maximum of
-this bound, the total-count scalar bound, and each coordinate's scalar bound.
+Olivos duality gives a stronger bound on one target with `d` nonzero counts.
+Reverse the construction DAG and propagate multiplicities from its root,
+starting with 1. Each node sums the contributions of its uses. A construction
+with `k` binary joins has `2k` operand edges and `k + d - 1` nonsink nodes,
+each with at least one use. Summing the contributions therefore costs
+`2k - (k + d - 1) = k - d + 1` scalar additions. The resulting scalar chain
+must reach every primitive multiplicity. Consequently `k` is at least `d - 1`
+plus the larger of the longest individual chain lower bound and the number of
+distinct multiplicities greater than one. For example, counts `(255, 1)` need
+at least 11 joins even though their total of 256 takes only eight doublings.
 
 Only a certified lower bound on `l` or `L` may prune structural search. A chain
 found by a heuristic is a constructive upper bound on the relaxed optimum; its
@@ -49,9 +54,8 @@ certificates remain valid across thresholds, although a cache hit may return a
 weaker bound than another search budget or threshold could establish.
 
 The implementation uses an immutable table of exact scalar lengths through
-256 and the logarithmic bound above that range. Vector bounds first take the
-maximum of the total-count scalar bound, each individual coordinate's scalar
-bound, and the support bound above. Targets with total count at most 16 can
+9,999 and the logarithmic bound above that range. Vector bounds first take the
+maximum of the total-count scalar bound and the Olivos bound above. Targets with total count at most 16 can
 additionally use bounded exhaustive search, with a default budget of 4,000 pair
 evaluations per cache miss. Exhausting that budget leaves the last certified
 bound intact; it does not claim to have solved that vector-chain problem. The

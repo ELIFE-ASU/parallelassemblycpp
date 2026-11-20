@@ -175,3 +175,4 @@ proven minima or upper bounds.
 
 ParallelAssemblyCpp is licensed under
 [Creative Commons Attribution-NonCommercial 4.0 International](License.md).
+The assemblycfg portions carry the [upstream MIT license](docs/assemblycfg-license.md).

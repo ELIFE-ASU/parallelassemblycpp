@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "scalarChainLengths.h"
+
 namespace assembly_bounds
 {
 
@@ -30,30 +32,6 @@ inline int ceilLog2(std::uint64_t value) noexcept
     return std::bit_width(value - 1);
 }
 
-// Exact unrestricted scalar addition-chain lengths, indexed by target.
-// The zero entry is the empty-object convention. These constants are verified
-// exhaustively (all earlier-pair sums, not just star chains) by the unit test.
-// Keeping the table immutable avoids startup search and worker-local copies.
-inline constexpr std::array<unsigned char, 257> scalarLengths = {
-    0, 0, 1, 2, 2, 3, 3, 4, 3, 4, 4, 5, 4, 5, 5, 5,
-    4, 5, 5, 6, 5, 6, 6, 6, 5, 6, 6, 6, 6, 7, 6, 7,
-    5, 6, 6, 7, 6, 7, 7, 7, 6, 7, 7, 7, 7, 7, 7, 8,
-    6, 7, 7, 7, 7, 8, 7, 8, 7, 8, 8, 8, 7, 8, 8, 8,
-    6, 7, 7, 8, 7, 8, 8, 9, 7, 8, 8, 8, 8, 8, 8, 9,
-    7, 8, 8, 8, 8, 8, 8, 9, 8, 9, 8, 9, 8, 9, 9, 9,
-    7, 8, 8, 8, 8, 9, 8, 9, 8, 9, 9, 9, 8, 9, 9, 9,
-    8, 9, 9, 9, 9, 9, 9, 9, 8, 9, 9, 9, 9, 9, 9, 10,
-    7, 8, 8, 9, 8, 9, 9, 9, 8, 9, 9, 10, 9, 10, 10, 10,
-    8, 9, 9, 9, 9, 9, 9, 10, 9, 9, 9, 10, 9, 10, 10, 10,
-    8, 9, 9, 9, 9, 9, 9, 10, 9, 10, 9, 10, 9, 10, 10, 10,
-    9, 10, 10, 10, 9, 10, 10, 10, 9, 10, 10, 10, 10, 10, 10, 11,
-    8, 9, 9, 9, 9, 10, 9, 10, 9, 10, 10, 10, 9, 10, 10, 10,
-    9, 10, 10, 10, 10, 10, 10, 10, 9, 10, 10, 10, 10, 10, 10, 11,
-    9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 11, 10, 11, 10, 11,
-    9, 10, 10, 10, 10, 10, 10, 11, 10, 10, 10, 11, 10, 11, 11, 10,
-    8
-};
-
 inline int scalarLowerBound64(std::uint64_t value) noexcept
 {
     return value < scalarLengths.size()
@@ -62,7 +40,7 @@ inline int scalarLowerBound64(std::uint64_t value) noexcept
 
 } // namespace detail
 
-/** A certified lower bound; exact for targets 0 through 256. */
+/** A certified lower bound; exact for targets 0 through 9999. */
 inline int scalarLowerBound(int target) noexcept
 {
     return target <= 1 ? 0 : detail::scalarLowerBound64(
@@ -75,9 +53,9 @@ inline int scalarLowerBound(int target) noexcept
  *
  * Coordinate names are irrelevant, so permutations and inserted zeros share a
  * cache entry. Summing the coordinates maps any vector chain to a scalar chain
- * after redundant values are removed. Connecting k different primitive types
- * requires at least k-1 additions, or k when any coordinate repeats. These
- * are lower bounds, not lengths of heuristic construction paths.
+ * after redundant values are removed. Transposing the construction yields a
+ * scalar chain for all nonzero coordinate counts, shorter by the number of
+ * primitive types minus one (Olivos duality, see docs/addition-chain-bounds.md).
  *
  * Small targets additionally use exhaustive bounded search. A depth contributes
  * a stronger bound only after it has been completely disproved; exhausting the
@@ -126,18 +104,25 @@ public:
         const auto cached = cache_.find(counts);
         if (cached != cache_.end()) return cached->second;
 
-        // With k unit-vector sources and k-1 binary additions, the ancestor
-        // graph has exactly enough edges to be a tree. There can be no shared
-        // operand, so each source contributes once. A repeated coordinate thus
-        // needs at least one further addition. Counts are sorted and nonzero.
-        const int supportBound = static_cast<int>(counts.size()) -
-            (counts.back() == 1 ? 1 : 0);
-        int bound = std::max(detail::scalarLowerBound64(total), supportBound);
-        // Projection onto a single coordinate is also a scalar chain once
-        // zeros and repeated values are removed. Exact scalar lengths are not
-        // monotone, so this can improve on the total-count projection.
+        // Transposing a single-target addition circuit gives a scalar chain
+        // reaching every multiplicity, with (number of sources - 1) fewer
+        // additions. Each distinct non-unit multiplicity needs its own step.
+        int longestChain = 0;
+        int distinctNonUnits = 0;
+        int previous = 1;
         for (const int count : counts)
-            bound = std::max(bound, scalarLowerBound(count));
+        {
+            if (count == previous) continue;
+            ++distinctNonUnits;
+            longestChain = std::max(longestChain, scalarLowerBound(count));
+            previous = count;
+        }
+        const auto dualBound = counts.size() - 1 +
+            static_cast<std::uint64_t>(std::max(longestChain, distinctNonUnits));
+        int bound = static_cast<int>(std::min<std::uint64_t>(
+            std::numeric_limits<int>::max(),
+            std::max<std::uint64_t>(dualBound, detail::scalarLowerBound64(total))
+        ));
 
         if (counts.size() > 1 && total <= maximumExactTotal
             && bound < static_cast<int>(total) - 1 && workLimit_ != 0

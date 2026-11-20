@@ -56,6 +56,8 @@ void testScalarTable()
     assert(assembly_bounds::scalarLowerBound(256) == 8);
     assert(assembly_bounds::scalarLowerBound(257) == 9);
     assert(assembly_bounds::scalarLowerBound(1024) == 10);
+    assert(assembly_bounds::scalarLowerBound(9999) == 16);
+    assert(assembly_bounds::scalarLowerBound(10000) == 14);
     // MSVC 19.43-19.44 /O2 crashes (C1001) constant-folding a literal INT_MAX
     // argument here; a volatile operand keeps the same runtime check.
     volatile int largest = INT_MAX;
@@ -171,15 +173,16 @@ void testThresholdCacheAndSupportBound()
     assert(analyticalOnly.lowerBound({2, 2, 2, 2, 2}) == 5);
     assert(analyticalOnly.lowerBound({1, 1, 1, 1, 2}) == 5);
     assert(analyticalOnly.lowerBound({1, 1, 1, 1, 1}) == 4);
+    assert(analyticalOnly.lowerBound({1, 3}) == 3);
+    assert(analyticalOnly.lowerBound({1, 2, 3, 4, 5, 6}) == 10);
     assembly_bounds::VectorBoundCache thresholded;
     assert(thresholded.lowerBound({2, 2, 2, 2, 2}, 5) == 5);
-    assert(thresholded.lowerBound({1, 3}, 2) == 2);
-    // Cache entries are certificates, not promises to exhaust a new threshold.
-    assert(thresholded.lowerBound({3, 1}) == 2);
-    assert(thresholded.lowerBound({3, 1}, 3) == 2);
+    assert(thresholded.lowerBound({7, 8}, 5) == 5);
+    // A stopped query can cache a weaker certificate than full refinement.
+    assert(thresholded.lowerBound({8, 7}, 6) == 5);
     thresholded.clear();
-    assert(thresholded.lowerBound({3, 1}, 3) == 3);
-    assert(thresholded.lowerBound({3, 1}, 2) == 3);
+    assert(thresholded.lowerBound({8, 7}, 6) == 6);
+    assert(thresholded.lowerBound({7, 8}, 5) == 6);
 }
 
 void testVectorExamplesAndCanonicalCache()
@@ -203,7 +206,7 @@ void testVectorExamplesAndCanonicalCache()
     // can exceed int even though each count is a valid int.
     assert(cache.lowerBound({INT_MAX, INT_MAX}) == 32);
     assert(cache.lowerBound(Vector(300, 1)) == 299);
-    assert(cache.lowerBound({255, 1}) == 10); // total=256 would only give 8.
+    assert(cache.lowerBound({255, 1}) == 11); // l(255) + one extra source.
 
     bool rejected = false;
     try { static_cast<void>(cache.lowerBound({2, -1})); }
