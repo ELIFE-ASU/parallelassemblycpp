@@ -49,7 +49,7 @@ struct CalculationOptions
      * Requires unlimited runtimeTicks; enumerationLimit is validated but unused.
      */
     bool graphRepairUpperBound = false;
-    /** Graph Re-Pair passes including the deterministic first pass. */
+    /** Maximum graph Re-Pair passes including the deterministic first pass. */
     int graphRepairIterations = 1;
     /** Seed for the additional random depth-first passes. */
     std::uint64_t graphRepairSeed = 0;

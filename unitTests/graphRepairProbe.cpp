@@ -52,6 +52,9 @@ int main(int argc, char **argv)
                 throw runtime_error("certificate is not a JSON object");
             cout << document.substr(0, closingBrace) << ",\"input\":";
             printJsonString(files ? line : "native graph", cout);
+            if (!files)
+                cout << ",\"retry_lower_bound\":"
+                     << graphRepair::implementation::retryLowerBound(result, molecule.totalBonds);
             cout << ",\"elapsed_seconds\":" << seconds << '}' << endl;
         }
         catch (const exception &error)

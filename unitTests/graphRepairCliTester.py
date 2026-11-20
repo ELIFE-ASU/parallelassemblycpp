@@ -123,6 +123,22 @@ def test_random_passes(executable: pathlib.Path, root: pathlib.Path) -> None:
     )
     proof = json.loads(pathlib.Path(f"{chain}Pathway").read_text(encoding="ascii"))
     assert validate_certificate(proof) == 2
+    # Once cost two meets the four-bond lower bound, even this pass limit
+    # must return immediately with the deterministic first certificate.
+    subprocess.run(
+        [
+            str(executable),
+            str(chain),
+            "--algorithm=re-pair",
+            "--repair-iterations=2147483647",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert (
+        json.loads(pathlib.Path(f"{chain}Pathway").read_text(encoding="ascii")) == proof
+    )
 
     source = root / "branched.graph"
     bonds = [(7, 8), (8, 3), (8, 9), (3, 10), (9, 1), (8, 2), (7, 6), (2, 5), (6, 4)]

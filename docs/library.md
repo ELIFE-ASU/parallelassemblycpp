@@ -77,6 +77,8 @@ prevent an exact proof).
 
 Set `graphRepairIterations` and `graphRepairSeed` on graph Re-Pair options to
 vary the bond order across passes and return the shortest construction found.
+The iteration limit includes the first pass. Retries finish early when the
+construction reaches the lower bound for its bond counts.
 The defaults are one pass and seed zero.
 
 `calculateString` and `calculateStringBatch` accept literal UTF-8 strings without

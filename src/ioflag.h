@@ -143,7 +143,7 @@ const vector<InputFlagDefinition>& inputFlagDefinitions()
         },
         {
             InputFlag::repairIterations, "repair-iterations", "COUNT", "1",
-            "Graph Re-Pair passes, including the deterministic first pass.", {}
+            "Maximum graph Re-Pair passes, including the deterministic first pass.", {}
         },
         {
             InputFlag::repairSeed, "repair-seed", "N", "0",

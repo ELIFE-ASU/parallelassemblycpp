@@ -79,7 +79,7 @@ labels cannot contain whitespace, and explicit `H` vertices are removed unless
 | `-h`, `--help` | — | Show command help. |
 | `--` | — | Stop parsing options; read every later argument as `INPUT`. |
 | `--algorithm=<full\|re-pair>` | `full` | Select full exact search or a Re-Pair upper bound for graphs or strings. |
-| `--repair-iterations=<COUNT>` | `1` | Total graph Re-Pair passes. The first uses input order, and subsequent passes use random depth-first bond orders. |
+| `--repair-iterations=<COUNT>` | `1` | Maximum graph Re-Pair passes. The first uses input order, and subsequent passes use random depth-first bond orders. |
 | `--repair-seed=<N>` | `0` | Unsigned 64-bit seed for additional graph Re-Pair passes. |
 | `--joint-strings=<0\|1>` | `0` | Build one shared grammar for all lines with `--run-strings=1 --algorithm=re-pair`. |
 | `--runtime=<TICKS>` | Unlimited | Stop after the given `std::clock` budget. |
@@ -200,7 +200,9 @@ Its bound counts the binary joins needed to build the reusable fragments and
 assemble the remaining graph. For each candidate product, maximum matching finds
 the largest set of occurrences sharing no active fragment. With
 `--repair-iterations=12 --repair-seed=17`, the solver keeps the shortest
-certificate across the input order and eleven random depth-first orders.
+certificate across the input order and up to eleven random depth-first orders.
+Retries stop when the best construction reaches the addition-chain lower bound
+for its bond counts. Disconnected-component compensation applies to both bounds.
 Atom labels, bond orders, and all attachment
 vertices are retained. Explicit hydrogen removal follows the usual
 `--remove-hydrogens` setting.

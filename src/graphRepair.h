@@ -309,6 +309,33 @@ inline Result compress(const molGraph &graph, const std::vector<MoleculeEdge> &e
     return result;
 }
 
+// A change of bond order cannot beat the addition-chain floor for this input.
+// Apply the same component adjustment as the witnessed upper bound.
+inline int retryLowerBound(const Result &firstPass, int bondCount)
+{
+    const int componentJoins = firstPass.compensateDisjoint
+        ? std::max(0, firstPass.components - 1) : 0;
+    const int incumbent = firstPass.upperBound + componentJoins;
+    int floor = assembly_bounds::scalarLowerBound(bondCount);
+    if (assembly_bounds::vectorBoundsEnabled && floor < incumbent)
+    {
+        // Expand usage counts through the grammar once in reverse rule order.
+        // Isomorphic occurrences have identical primitive multiplicities,
+        // even when their physical edge IDs differ.
+        std::vector<int> uses(firstPass.terminals.size() + firstPass.rules.size());
+        for (const auto &fragment : firstPass.residual) ++uses[fragment.symbol];
+        for (auto rule = firstPass.rules.rbegin(); rule != firstPass.rules.rend(); ++rule)
+        {
+            uses[rule->left] += uses[rule->id];
+            uses[rule->right] += uses[rule->id];
+        }
+        uses.resize(firstPass.terminals.size());
+        assembly_bounds::VectorBoundCache bounds(0);
+        floor = bounds.lowerBound(std::move(uses), incumbent);
+    }
+    return std::max(0, floor - componentJoins);
+}
+
 // Random depth-first bond order, including ring closures and all components.
 inline std::vector<MoleculeEdge> randomBondOrder(
     const molGraph &graph, const std::vector<MoleculeEdge> &edges, std::mt19937_64 &rng)
@@ -356,8 +383,10 @@ inline Result calculate(const molGraph &graph, bool compensateDisjoint = false,
     if (iterations < 1) throw std::invalid_argument("Re-Pair iterations must be positive");
     auto edges = graph.writeEdgeList();
     auto best = implementation::compress(graph, edges, compensateDisjoint);
+    const int floor = iterations > 1 && best.upperBound > 0
+        ? implementation::retryLowerBound(best, graph.totalBonds) : 0;
     std::mt19937_64 rng(seed);
-    for (int i = 1; i < iterations && best.upperBound > 0; ++i)
+    for (int i = 1; i < iterations && best.upperBound > floor; ++i)
     {
         if (interruptionRequested()) break;
         auto order = implementation::randomBondOrder(graph, edges, rng);

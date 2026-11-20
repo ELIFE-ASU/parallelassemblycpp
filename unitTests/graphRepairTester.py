@@ -380,6 +380,10 @@ def run(
             expected = exact((tuple(graph[0]), tuple(graph[1])))
         certificate = probes[0].query(graph)
         bound = certificate["upper_bound"]
+        require(
+            certificate["retry_lower_bound"] <= expected,
+            f"retry floor exceeds exact {expected}: {graph!r}",
+        )
         require(bound >= expected, f"bound {bound} below exact {expected}: {graph!r}")
         largest_gap = max(largest_gap, bound - expected)
         results[category] += 1
@@ -476,6 +480,11 @@ def run(
             require(
                 compensated["upper_bound"] == normal["upper_bound"] - adjustment,
                 "component compensation differs from certificate construction",
+            )
+            require(
+                compensated["retry_lower_bound"]
+                == max(0, normal["retry_lower_bound"] - adjustment),
+                "retry floor uses the wrong component adjustment",
             )
             results["compensation_cases"] += 1
 
