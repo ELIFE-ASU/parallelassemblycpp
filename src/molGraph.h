@@ -230,6 +230,15 @@ public:
         return output;
     }
 
+    /** Classify a primitive bond independently of its endpoint order. */
+    bondClassKey bondClass(const MoleculeEdge &edge) const
+    {
+        const auto [first, second] = std::minmax(
+            atomType(edge.sourceAtomIndex), atomType(edge.targetAtomIndex)
+        );
+        return {first, second, bondType(edge.sourceAtomIndex, edge.sourceBondIndex)};
+    }
+
     /**
      * @brief Group edges by unordered endpoint labels and bond label
      *
@@ -251,16 +260,11 @@ public:
                 short k = elem(i, j);
                 if (i < static_cast<size_t>(k))
                 {
-                    const string &sourceType = atomType(i);
-                    const string &targetType = atomType(k);
-                    bondClassKey key = sourceType < targetType
-                        ? bondClassKey{sourceType, targetType, bondType(i, j)}
-                        : bondClassKey{targetType, sourceType, bondType(i, j)};
                     short source = static_cast<short>(i);
                     short bondIndex = static_cast<short>(j);
                     MoleculeEdge edge(source, k, bondIndex);
                     auto [entry, inserted] = edgeClasses.try_emplace(
-                        std::move(key),
+                        bondClass(edge),
                         1,
                         edge
                     );

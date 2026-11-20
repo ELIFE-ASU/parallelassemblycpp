@@ -183,8 +183,7 @@ inline Result compress(const molGraph &graph, const std::vector<MoleculeEdge> &e
     const int adjustment = compensateDisjoint ? result.components : 1;
     result.trivialUpperBound = static_cast<int>(edges.size()) - adjustment;
 
-    // These keys never outlive this invocation or its canonical interner.
-    CanonicalMap dictionary;
+    std::unordered_map<bondClassKey, int, bondClassKeyHash> primitiveIds;
     std::vector<Token> tokens;
     std::vector<std::size_t> active;
     tokens.reserve(edges.size() * 2);
@@ -192,9 +191,8 @@ inline Result compress(const molGraph &graph, const std::vector<MoleculeEdge> &e
     for (std::size_t i = 0; i < edges.size(); ++i)
     {
         const std::vector<int> selected{static_cast<int>(i)};
-        auto key = canonical(graph, edges, selected);
-        const auto [position, inserted] = dictionary.emplace(
-            std::move(key), static_cast<int>(dictionary.size()));
+        const auto [position, inserted] = primitiveIds.try_emplace(
+            graph.bondClass(edges[i]), static_cast<int>(primitiveIds.size()));
         if (inserted) result.terminals.push_back({position->second, selected});
         std::vector<int> vertices{edges[i].sourceAtomIndex, edges[i].targetAtomIndex};
         std::sort(vertices.begin(), vertices.end());
@@ -202,6 +200,9 @@ inline Result compress(const molGraph &graph, const std::vector<MoleculeEdge> &e
         active.push_back(i);
     }
 
+    // Every joined product has at least two bonds. Only these products need
+    // graph canonicalisation; primitive and product IDs share one sequence.
+    CanonicalMap dictionary;
     // Stable token IDs let unchanged adjacent pairs reuse their exact forms.
     std::map<std::pair<std::size_t, std::size_t>, graphHash> pairKeys;
     while (active.size() > 1)
@@ -275,7 +276,7 @@ inline Result compress(const molGraph &graph, const std::vector<MoleculeEdge> &e
             const auto representative = bestPairs.front();
             const auto &left = tokens[representative.first].fragment;
             const auto &right = tokens[representative.second].fragment;
-            group.symbol = static_cast<int>(dictionary.size());
+            group.symbol = static_cast<int>(result.terminals.size() + result.rules.size());
             dictionary.emplace(pairKeys.at(std::minmax(representative.first,
                                                        representative.second)), group.symbol);
             result.rules.push_back({group.symbol, left.symbol, right.symbol,
